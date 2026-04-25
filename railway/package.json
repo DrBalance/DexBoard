@@ -1,6 +1,7 @@
 {
   "name": "dexboard-railway",
   "version": "1.0.0",
+  "type": "module",
   "description": "DexBoard – Railway option chain collector & DEX calculator",
   "main": "index.js",
   "scripts": {
