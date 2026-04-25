@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DexBoard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="./css/base.css">
+<link rel="stylesheet" href="./css/layout.css">
+<link rel="stylesheet" href="./css/components.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ── Header ──────────────────────────────── -->
+  <header>
+    <div class="logo">DEX<span>board</span></div>
+
+    <nav>
+      <button class="tab-btn active" data-tab="live">DEX Live</button>
+      <button class="tab-btn" data-tab="structure">Structure</button>
+      <button class="tab-btn" data-tab="screener">Screener</button>
+      <button class="tab-btn" data-tab="chart">Chart</button>
+    </nav>
+
+    <div class="header-right">
+      <!-- Market state badge -->
+      <div class="market-badge" id="market-badge">
+        <div class="market-dot" id="market-dot"></div>
+        <span id="market-label">마감</span>
+      </div>
+
+      <!-- Clock -->
+      <div class="clock">
+        <span id="clock-kst">--:--:-- KST</span>
+        <span class="clock-sep">|</span>
+        <span id="clock-et">--:--:-- ET</span>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Main ────────────────────────────────── -->
+  <main>
+
+    <!-- Tab 1: DEX Live -->
+    <div class="tab-panel active" id="tab-live">
+      <!-- js/tabs/live.js 에서 렌더링 -->
+
+      <div class="metrics" id="live-metrics">
+        <div class="metric">
+          <div class="metric-label">SPY</div>
+          <div class="metric-value" id="m-spy">—</div>
+          <div class="metric-sub" id="m-spy-sub">price</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">VIX</div>
+          <div class="metric-value" id="m-vix">—</div>
+          <div class="metric-sub" id="m-vix-sub">volatility</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">DEX 0DTE</div>
+          <div class="metric-value" id="m-dex0">—</div>
+          <div class="metric-sub" id="m-dex0-sub">dealer delta</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">GEX 0DTE</div>
+          <div class="metric-value" id="m-gex0">—</div>
+          <div class="metric-sub" id="m-gex0-sub">gamma exp.</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Vanna</div>
+          <div class="metric-value" id="m-vanna0" style="color:var(--purple)">—</div>
+          <div class="metric-sub">vol sensitivity</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Charm</div>
+          <div class="metric-value" id="m-charm0" style="color:var(--teal)">—</div>
+          <div class="metric-sub">time decay</div>
+        </div>
+      </div>
+
+      <div class="card" style="flex:1">
+        <div class="card-header">
+          <span class="card-title">0DTE Strike Heatmap</span>
+          <div class="heatmap-legend">
+            <span><span class="swatch" style="background:var(--green)"></span> Call DEX</span>
+            <span><span class="swatch" style="background:var(--red)"></span> Put DEX</span>
+            <span class="ts" id="heatmap-ts">—</span>
+          </div>
+        </div>
+        <div class="heatmap-wrap">
+          <canvas id="heatmap-canvas" style="height:64px;width:100%;display:block"></canvas>
+        </div>
+        <div class="dex-est">
+          <span class="dex-formula">DEX<sub>t</sub> = DEX<sub>t-15</sub> + (ΔSpot·Γ) + (ΔVIX·Vanna)</span>
+          <span class="dex-result" id="dex-live-est">—</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">0DTE Strikes</span>
+          <span class="ts" id="strike-count">—</span>
+        </div>
+        <div style="max-height:220px;overflow-y:auto;overflow-x:auto">
+          <table class="data-table">
+            <thead><tr>
+              <th>Strike</th><th>Type</th><th>DEX</th>
+              <th>GEX</th><th>Vanna</th><th>Charm</th>
+            </tr></thead>
+            <tbody id="strike-tbody">
+              <tr><td colspan="6"><div class="loading">
+                <div class="spinner"></div>Loading…
+              </div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 2: Structure -->
+    <div class="tab-panel" id="tab-structure">
+      <!-- js/tabs/structure.js 에서 렌더링 -->
+
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <div class="toggle-group" id="expiry-toggle">
+          <button class="toggle-btn active" data-group="weekly">Weekly</button>
+          <button class="toggle-btn" data-group="monthly">Monthly</button>
+          <button class="toggle-btn" data-group="quarterly">Quarterly</button>
+        </div>
+        <span class="ts" id="structure-ts">—</span>
+      </div>
+
+      <div class="metrics">
+        <div class="metric">
+          <div class="metric-label">SPY</div>
+          <div class="metric-value" id="s-spy">—</div>
+          <div class="metric-sub">current price</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">VIX</div>
+          <div class="metric-value" id="s-vix">—</div>
+          <div class="metric-sub" id="s-vix-sub">volatility</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">DEX Total</div>
+          <div class="metric-value" id="s-dex">—</div>
+          <div class="metric-sub" id="s-count">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">GEX Total</div>
+          <div class="metric-value" id="s-gex">—</div>
+          <div class="metric-sub">gamma exp.</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Vanna</div>
+          <div class="metric-value" id="s-vanna" style="color:var(--purple)">—</div>
+          <div class="metric-sub">vol sensitivity</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Charm</div>
+          <div class="metric-value" id="s-charm" style="color:var(--teal)">—</div>
+          <div class="metric-sub">time decay</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">Term DEX Estimate</span></div>
+        <div class="card-body" style="font-family:var(--mono);font-size:11px">
+          <div style="color:var(--text3);margin-bottom:8px">
+            DEX<sub>Term</sub> = DEX<sub>open</sub> + (ΔVIX × Vanna) + (ΔTime × Charm)
+          </div>
+          <div style="display:flex;gap:20px;flex-wrap:wrap">
+            <span><span style="color:var(--text3)">DEXopen </span><span id="s-dexopen">—</span></span>
+            <span><span style="color:var(--text3)">ΔVIX </span><span id="s-dvix">—</span></span>
+            <span><span style="color:var(--text3)">ΔTime </span><span id="s-dtime">—</span></span>
+            <span><span style="color:var(--text3)">Est </span>
+              <span id="s-dexterm" style="font-weight:500">—</span></span>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Strike Distribution</span>
+          <div class="heatmap-legend">
+            <span><span class="swatch" style="background:var(--green)"></span> Call</span>
+            <span><span class="swatch" style="background:var(--red)"></span> Put</span>
+          </div>
+        </div>
+        <div class="heatmap-wrap">
+          <canvas id="structure-canvas" style="height:64px;width:100%;display:block"></canvas>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header"><span class="card-title">Strike Detail</span></div>
+        <div style="max-height:240px;overflow-y:auto;overflow-x:auto">
+          <table class="data-table">
+            <thead><tr>
+              <th>Strike</th><th>DTE</th><th>Type</th>
+              <th>DEX</th><th>GEX</th><th>Vanna</th>
+            </tr></thead>
+            <tbody id="structure-tbody">
+              <tr><td colspan="6"><div class="loading">
+                <div class="spinner"></div>Loading…
+              </div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 3: Screener -->
+    <div class="tab-panel" id="tab-screener">
+      <div class="card" style="flex:1">
+        <div class="card-header">
+          <span class="card-title">Options Screener</span>
+          <button class="btn btn-ghost" id="screener-refresh">Refresh</button>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead><tr>
+              <th>Ticker</th><th>Signal</th><th>DEX</th>
+              <th>GEX</th><th>Vanna</th><th>Updated</th><th></th>
+            </tr></thead>
+            <tbody id="screener-tbody">
+              <tr><td colspan="7"><div class="loading">
+                <div class="spinner"></div>Loading…
+              </div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 4: Chart -->
+    <div class="tab-panel" id="tab-chart">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <input class="ticker-input" id="chart-ticker" value="SPY" maxlength="5">
+        <div class="toggle-group" id="chart-expiry-toggle">
+          <button class="toggle-btn active" data-group="weekly">Weekly</button>
+          <button class="toggle-btn" data-group="monthly">Monthly</button>
+          <button class="toggle-btn" data-group="quarterly">Quarterly</button>
+        </div>
+        <button class="btn" id="chart-load-btn">Load</button>
+        <span class="ts" id="chart-ts">—</span>
+      </div>
+
+      <div class="metrics">
+        <div class="metric">
+          <div class="metric-label">DEX Total</div>
+          <div class="metric-value" id="c-dex">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">GEX Total</div>
+          <div class="metric-value" id="c-gex">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Call DEX</div>
+          <div class="metric-value up" id="c-calldex">—</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Put DEX</div>
+          <div class="metric-value down" id="c-putdex">—</div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">DEX Heatmap — <span id="chart-title">SPY</span></span>
+          <div class="heatmap-legend">
+            <span><span class="swatch" style="background:var(--green)"></span> Call</span>
+            <span><span class="swatch" style="background:var(--red)"></span> Put</span>
+          </div>
+        </div>
+        <div class="heatmap-wrap">
+          <canvas id="chart-canvas" style="height:64px;width:100%;display:block"></canvas>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Strike Detail — <span id="chart-title2">SPY</span></span>
+        </div>
+        <div style="max-height:240px;overflow-y:auto;overflow-x:auto">
+          <table class="data-table">
+            <thead><tr>
+              <th>Strike</th><th>DTE</th><th>Type</th>
+              <th>DEX</th><th>GEX</th><th>Vanna</th>
+            </tr></thead>
+            <tbody id="chart-tbody">
+              <tr><td colspan="6">
+                <div class="empty">티커 입력 후 Load</div>
+              </td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </main>
+</div>
+
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
