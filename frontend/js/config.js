@@ -1,7 +1,7 @@
 // ── API Endpoints ─────────────────────────────────
 export const CF_API   = 'https://drbalance-dex.weoncheonlee.workers.dev';
-export const FINNHUB_TOKEN = 'YOUR_FINNHUB_TOKEN';   // Finnhub WebSocket
-export const TWELVE_KEY    = 'YOUR_TWELVE_DATA_KEY';  // market_state + OBV
+export const FINNHUB_TOKEN = 'd78t9i1r01qp0fl6ert0d78t9i1r01qp0fl6ertg';   // Finnhub WebSocket
+export const TWELVE_KEY    = '4fe9a71838f245e2957c0f41fdf213f8';  // market_state + OBV
 
 // ── Polling intervals ─────────────────────────────
 export const INTERVAL_SNAP        = 60_000;       // 1분 (snapshot 갱신)
