@@ -1,0 +1,34 @@
+name = "drbalance-dex"
+main = "src/worker.js"
+compatibility_date = "2025-01-01"
+
+# ─────────────────────────────────────
+# Cron Triggers
+# ─────────────────────────────────────
+[triggers]
+crons = [
+  "*/1  13-20 * * 1-5",   # SPY 현재가 + VIX (1분, 정규장)
+  "*/3  4-13  * * 1-5",   # SPY 현재가 + VIX (3분, 프리마켓)
+  "*/3  20-23 * * 1-5",   # SPY 현재가 + VIX (3분, 애프터)
+  "*/15 13-20 * * 1-5",   # 옵션체인 + DEX 계산 트리거 → Railway 호출
+  "0    13    * * 1-5",   # 장 시작 옵션체인 스냅샷 (DEXopen)
+  "30   20    * * 1-5"    # 개별종목 EOD DEX 계산
+]
+
+# ─────────────────────────────────────
+# KV Namespaces
+# ─────────────────────────────────────
+[[kv_namespaces]]
+binding = "DEX_KV"
+id = "REPLACE_WITH_YOUR_KV_ID"
+preview_id = "REPLACE_WITH_YOUR_PREVIEW_KV_ID"
+
+# ─────────────────────────────────────
+# Environment Variables
+# (Secrets → wrangler secret put 으로 등록)
+# ─────────────────────────────────────
+[vars]
+RAILWAY_URL    = "https://REPLACE.railway.app"
+TWELVE_DATA_KEY = "REPLACE_WITH_TWELVE_DATA_KEY"
+CBOE_BASE      = "https://cdn.cboe.com/api/global/delayed_quotes/options"
+YAHOO_BASE     = "https://query1.finance.yahoo.com/v8/finance/chart"
