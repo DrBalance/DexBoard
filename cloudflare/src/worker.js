@@ -49,6 +49,13 @@ export default {
       return json(data, 200, corsHeaders);
     }
 
+    // ── GET /api/snapshot/prev ──────────────────────────────────────
+    if (request.method === "GET" && path === "/api/snapshot/prev") {
+      const data = await env.DEX_KV.get("snapshot:prev", { type: "json" });
+      if (!data) return json({ error: "No prev snapshot" }, 404, corsHeaders);
+      return json(data, 200, corsHeaders);
+    }
+    
     // ── GET /api/dex/:group ─────────────────────────────────────
     const dexMatch = path.match(/^\/api\/dex\/(0dte|weekly|monthly|quarterly|structure)$/);
     if (request.method === "GET" && dexMatch) {
