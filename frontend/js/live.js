@@ -21,6 +21,7 @@
 //   AFTER   진입 시 WebSocket 해제
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 import { CF_API }                              from '../config.js';
+import { RAILWAY_WS_URL }                      from '../config.js';
 import { connectWS, disconnectWS }             from '../ws.js';
 import {
   fmtPrice, fmtChange, fmtChangePct,
@@ -28,6 +29,7 @@ import {
   colorBySign, colorVix, COLOR,
 } from '../fmt.js';
 import { renderHeatmap }                       from '../heatmap.js';
+import { buildNarrative, buildAnalysisPayload } from '../narrative.js';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 내부 상태
@@ -82,6 +84,14 @@ async function fetchKV() {
   const spotPrice = _state.spyLive ?? _state.spy.price;
   if (_state.strikes.length > 0 && spotPrice) {
     renderHeatmap('heatmap-canvas', _state.strikes, spotPrice);
+  }
+
+  // 판단 패널 갱신
+  renderNarrative();
+
+  // 정규장일 때만 AI 자동 분석 (15분 데이터 갱신과 연동)
+  if (window._marketState === 'REGULAR') {
+    requestAIAnalysis(true);  // auto=true: 버튼 상태 변경 안 함
   }
 }
 
@@ -184,16 +194,134 @@ function renderCards() {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 판단 패널 렌더링
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+const LEVEL_STYLE = {
+  danger: { bg: 'rgba(239,68,68,.12)',   border: '#ef4444', icon: '🔴' },
+  warn:   { bg: 'rgba(245,158,11,.10)',  border: '#f59e0b', icon: '⚠️' },
+  good:   { bg: 'rgba(34,197,94,.10)',   border: '#22c55e', icon: '🟢' },
+  info:   { bg: 'rgba(107,114,128,.10)', border: '#6b7280', icon: '💬' },
+};
+
+function renderNarrative() {
+  const el = document.getElementById('live-narrative');
+  if (!el) return;
+
+  const events = buildNarrative({
+    ..._state,
+    marketState: window._marketState,
+  });
+
+  el.innerHTML = events.map(({ level, msg }) => {
+    const s = LEVEL_STYLE[level] ?? LEVEL_STYLE.info;
+    return `
+      <div style="
+        display:flex;align-items:flex-start;gap:8px;
+        padding:8px 10px;border-radius:6px;
+        background:${s.bg};border-left:3px solid ${s.border};
+        font-size:12px;line-height:1.5;color:var(--text1,#e6edf3);
+      ">
+        <span style="flex-shrink:0;margin-top:1px">${s.icon}</span>
+        <span>${msg}</span>
+      </div>`;
+  }).join('');
+}
+
+// ── AI 분석 요청 ─────────────────────────────────────────
+let _aiLoading = false;
+
+async function requestAIAnalysis(auto = false) {
+  if (_aiLoading) return;
+  _aiLoading = true;
+
+  const btn    = document.getElementById('ai-analyze-btn');
+  const result = document.getElementById('ai-analysis-result');
+  if (!result) { _aiLoading = false; return; }
+
+  // 수동 클릭 시에만 버튼 상태 변경
+  if (!auto && btn) {
+    btn.disabled    = true;
+    btn.textContent = '분석 중…';
+  }
+
+  result.style.display = 'block';
+  if (!auto) result.textContent = 'Gemini가 분석 중입니다…';
+
+  try {
+    const payload = buildAnalysisPayload({
+      ..._state,
+      marketState: window._marketState,
+    });
+
+    // Railway /analyze 경유 (GEMINI_KEY 보호)
+    const railwayBase = RAILWAY_WS_URL
+      .replace('wss://', 'https://')
+      .replace('/ws', '');
+
+    const res = await fetch(`${railwayBase}/analyze`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify(payload),
+    });
+
+    const data = await res.json();
+    if (data.ok) {
+      result.textContent = data.analysis;
+    } else {
+      result.textContent = `분석 실패: ${data.error}`;
+    }
+  } catch (e) {
+    result.textContent = `오류: ${e.message}`;
+  } finally {
+    _aiLoading = false;
+    if (!auto && btn) {
+      btn.disabled    = false;
+      btn.textContent = '🤖 AI 분석';
+    }
+  }
+}
+
+// ── 판단 패널 HTML 초기화 ────────────────────────────────
+function initNarrativePanel() {
+  const container = document.getElementById('live-narrative-panel');
+  if (!container) return;
+
+  container.innerHTML = `
+    <div style="
+      display:flex;align-items:center;justify-content:space-between;
+      margin-bottom:8px;
+    ">
+      <span style="font-size:12px;font-weight:600;color:var(--text2,#8b949e)">
+        실시간 판단
+      </span>
+      <button id="ai-analyze-btn" style="
+        padding:4px 12px;font-size:11px;border-radius:4px;
+        border:1px solid #a78bfa;background:rgba(167,139,250,.12);
+        color:#a78bfa;cursor:pointer;
+      ">🤖 AI 분석</button>
+    </div>
+    <div id="live-narrative" style="display:flex;flex-direction:column;gap:6px"></div>
+    <div id="ai-analysis-result" style="
+      display:none;margin-top:10px;padding:10px 12px;
+      border-radius:6px;border:1px solid #a78bfa;
+      background:rgba(167,139,250,.08);
+      font-size:12px;line-height:1.6;color:var(--text1,#e6edf3);
+      white-space:pre-wrap;
+    "></div>`;
+
+  document.getElementById('ai-analyze-btn')
+    ?.addEventListener('click', requestAIAnalysis);
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 장 상태 변화 처리
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function handleMarketState({ marketState }) {
   if (marketState === 'REGULAR') {
-    // 정규장 진입: WebSocket 연결 + VOLD 초기화
     _state.vold         = 0;
     _state.rspPrevPrice = null;
     connectWS();
   } else if (marketState === 'AFTER') {
-    // 애프터 진입: WebSocket 해제
     disconnectWS();
   }
 }
@@ -202,11 +330,17 @@ function handleMarketState({ marketState }) {
 // initLive — 진입점 (main.js에서 호출)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export function initLive() {
+  // 판단 패널 초기화
+  initNarrativePanel();
+
   // 최초 1회 즉시 fetch
   fetchKV();
 
   // 30분 폴링
-  window.addEventListener('clockPoll30m', () => fetchKV());
+  window.addEventListener('clockPoll30m', () => {
+    fetchKV();
+    renderNarrative();
+  });
 
   // 장 상태 변화
   window.addEventListener('marketStateChanged', ({ detail }) =>
@@ -223,3 +357,4 @@ export function initLive() {
     connectWS();
   }
 }
+
