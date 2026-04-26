@@ -13,14 +13,12 @@ export const COLOR = {
 };
 
 // ── 가격 표시 (소수점 2자리) ──────────────────────────────
-// 예: 567.89
 export function fmtPrice(v) {
   if (v == null || isNaN(v)) return '—';
   return Number(v).toFixed(2);
 }
 
 // ── 변화량 표시 (+/- 기호 포함) ──────────────────────────
-// 예: +6.63  /  -2.10
 export function fmtChange(v) {
   if (v == null || isNaN(v)) return '—';
   const n = Number(v);
@@ -28,7 +26,6 @@ export function fmtChange(v) {
 }
 
 // ── 변화율 표시 (+/- 기호 + %) ───────────────────────────
-// 예: (+1.24%)  /  (-0.87%)
 export function fmtChangePct(v) {
   if (v == null || isNaN(v)) return '—';
   const n = Number(v);
@@ -36,7 +33,6 @@ export function fmtChangePct(v) {
 }
 
 // ── M단위 표시 (Greeks, GEX 등) ──────────────────────────
-// 예: +1,234M  /  -567M
 export function fmtM(v) {
   if (v == null || isNaN(v)) return '—';
   const n = Number(v) / 1_000_000;
@@ -45,7 +41,6 @@ export function fmtM(v) {
 }
 
 // ── VOLD 표시 (M단위, 소수점 1자리) ─────────────────────
-// 예: +12.3M  /  -5.7M
 export function fmtVold(v) {
   if (v == null || isNaN(v)) return '—';
   const n = Number(v) / 1_000_000;
@@ -60,7 +55,6 @@ export function colorBySign(v) {
 }
 
 // ── VIX 기준 색상 ────────────────────────────────────────
-// < 17: 녹색 / 17~25: amber / > 25: 빨간색
 export function colorVix(v) {
   if (v == null || isNaN(v)) return COLOR.muted;
   const n = Number(v);
@@ -68,3 +62,68 @@ export function colorVix(v) {
   if (n <= 25) return COLOR.amber;
   return COLOR.red;
 }
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// fmt 객체 — oi-chart.js 등에서 import { fmt } 로 사용
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+export const fmt = {
+
+  // OI / 계약 수량  1234567 → "1.23M"
+  oi(v) {
+    if (v == null || isNaN(v)) return '—';
+    const abs  = Math.abs(v);
+    const sign = v < 0 ? '-' : '';
+    if (abs >= 1_000_000) return sign + (abs / 1_000_000).toFixed(2) + 'M';
+    if (abs >= 1_000)     return sign + (abs / 1_000).toFixed(1) + 'K';
+    return sign + abs.toLocaleString();
+  },
+
+  // Greeks (DEX / GEX / Vanna / Charm)
+  greek(v) {
+    if (v == null || isNaN(v)) return '—';
+    const abs  = Math.abs(v);
+    const sign = v < 0 ? '-' : '';
+    if (abs >= 1_000_000_000) return sign + (abs / 1_000_000_000).toFixed(2) + 'B';
+    if (abs >= 1_000_000)     return sign + (abs / 1_000_000).toFixed(2) + 'M';
+    if (abs >= 1_000)         return sign + (abs / 1_000).toFixed(1) + 'K';
+    if (abs >= 1)             return sign + abs.toFixed(2);
+    return sign + abs.toFixed(4);
+  },
+
+  // 가격  595.23
+  price(v, decimals = 2) {
+    if (v == null || isNaN(v)) return '—';
+    return Number(v).toFixed(decimals);
+  },
+
+  // 퍼센트  0.0342 → "+3.42%"
+  pct(v, decimals = 2) {
+    if (v == null || isNaN(v)) return '—';
+    const sign = v > 0 ? '+' : '';
+    return sign + (v * 100).toFixed(decimals) + '%';
+  },
+
+  // VIX
+  vix(v) {
+    if (v == null || isNaN(v)) return '—';
+    return Number(v).toFixed(2);
+  },
+
+  // 타임스탬프 → "HH:MM ET"
+  tsET(v) {
+    if (!v) return '—';
+    const d = new Date(v);
+    if (isNaN(d)) return '—';
+    return d.toLocaleTimeString('en-US', {
+      hour: '2-digit', minute: '2-digit',
+      timeZone: 'America/New_York', hour12: false,
+    }) + ' ET';
+  },
+
+  // 증감 (부호 포함 OI 포맷)
+  delta(v) {
+    if (v == null || isNaN(v)) return '—';
+    const sign = v > 0 ? '+' : '';
+    return sign + fmt.oi(Math.abs(v));
+  },
+};
