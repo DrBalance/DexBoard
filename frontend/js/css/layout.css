@@ -1,0 +1,144 @@
+/* ═══════════════════════════════════════════════
+   layout.css — 헤더 · 탭 · 메인 레이아웃
+═══════════════════════════════════════════════ */
+
+/* ── #app 전체 컨테이너 ──────────────────────── */
+#app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+
+/* ── 헤더 ────────────────────────────────────── */
+header {
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  height: var(--header-h);
+  background: var(--bg1);
+  border-bottom: 1px solid var(--border);
+
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 0 20px;
+}
+
+/* 로고 */
+.logo {
+  font-family: var(--mono);
+  font-size: 15px;
+  font-weight: 500;
+  letter-spacing: -0.3px;
+  color: var(--text1);
+  flex-shrink: 0;
+}
+.logo span {
+  color: var(--text3);
+}
+
+/* 탭 버튼 그룹 */
+nav {
+  display: flex;
+  gap: 2px;
+  flex: 1;
+}
+
+.tab-btn {
+  padding: 5px 14px;
+  border-radius: var(--r-md);
+  color: var(--text2);
+  font-size: 12px;
+  font-weight: 400;
+  transition: color 0.15s, background 0.15s;
+}
+.tab-btn:hover {
+  color: var(--text1);
+  background: var(--bg3);
+}
+.tab-btn.active {
+  color: var(--text1);
+  background: var(--bg3);
+  font-weight: 500;
+}
+
+/* 헤더 우측 (뱃지 + 시계) */
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+  margin-left: auto;
+}
+
+/* 장 상태 뱃지 */
+.market-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--text2);
+}
+
+.market-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--text3);
+  flex-shrink: 0;
+}
+
+/* 장 상태별 점 색상 — JS에서 class로 제어 */
+.market-dot.open     { background: var(--green); box-shadow: 0 0 6px var(--green); }
+.market-dot.pre      { background: var(--amber); }
+.market-dot.after    { background: var(--amber); }
+.market-dot.closed   { background: var(--text3); }
+
+/* 시계 */
+.clock {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text2);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.clock-sep { color: var(--text3); }
+
+/* ── 메인 컨테이너 ───────────────────────────── */
+main {
+  position: relative;   /* 탭 패널 position:absolute 기준점 */
+  overflow: hidden;     /* 오프스크린 패널 스크롤바 방지 */
+  flex: 1;
+  padding: 16px 20px;
+}
+
+/* ── 탭 패널 전환 ─────────────────────────────
+   핵심: display:none 사용 안 함
+   → canvas 치수 유지 → Chart.js 재생성 불필요
+──────────────────────────────────────────── */
+.tab-panel {
+  /* 오프스크린: DOM에 살아있지만 화면 밖 */
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+
+  transform: translateX(-9999px);
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.tab-panel.active {
+  /* 다시 일반 흐름으로 복귀 */
+  position: relative;
+  transform: none;
+  visibility: visible;
+  pointer-events: auto;
+  opacity: 1;
+}

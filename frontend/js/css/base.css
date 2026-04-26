@@ -1,0 +1,97 @@
+/* ═══════════════════════════════════════════════
+   base.css — 리셋 · CSS 변수 · 전역 타이포그래피
+═══════════════════════════════════════════════ */
+
+/* ── CSS 변수 ────────────────────────────────── */
+:root {
+  /* 색상 — 가이드 문서 확정값 */
+  --green:   #22c55e;
+  --red:     #ef4444;
+  --purple:  #a78bfa;
+  --teal:    #2dd4bf;
+  --amber:   #f59e0b;
+  --blue:    #60a5fa;
+
+  /* 배경 계층 */
+  --bg0:  #0a0b0d;   /* 최하단 페이지 배경 */
+  --bg1:  #111318;   /* 헤더·사이드바 */
+  --bg2:  #181c24;   /* 카드 배경 */
+  --bg3:  #1e2330;   /* 카드 내부 섹션 */
+
+  /* 텍스트 계층 */
+  --text1: #e8eaf0;  /* 주요 수치 */
+  --text2: #9ca3af;  /* 레이블 */
+  --text3: #4b5563;  /* 힌트·비활성 */
+
+  /* 테두리 */
+  --border:  rgba(255,255,255,0.07);
+  --border2: rgba(255,255,255,0.12);
+
+  /* 폰트 */
+  --sans: 'DM Sans', system-ui, sans-serif;
+  --mono: 'JetBrains Mono', 'Fira Code', monospace;
+
+  /* 반경 */
+  --r-sm: 4px;
+  --r-md: 8px;
+  --r-lg: 12px;
+
+  /* 헤더 높이 (JS에서 참조 가능) */
+  --header-h: 52px;
+}
+
+/* ── 리셋 ────────────────────────────────────── */
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html, body {
+  height: 100%;
+  background: var(--bg0);
+  color: var(--text1);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+button {
+  font-family: inherit;
+  font-size: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+input {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+}
+
+a {
+  color: var(--blue);
+  text-decoration: none;
+}
+
+/* ── 스크롤바 ─────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 4px;
+  height: 4px;
+}
+::-webkit-scrollbar-track  { background: transparent; }
+::-webkit-scrollbar-thumb  { background: var(--bg3); border-radius: 2px; }
+::-webkit-scrollbar-thumb:hover { background: var(--text3); }
+
+/* ── 공통 유틸 ───────────────────────────────── */
+.up   { color: var(--green); }
+.down { color: var(--red); }
+.muted { color: var(--text3); }
+
+.ts { color: var(--text2); font-size: 11px; }
