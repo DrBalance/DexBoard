@@ -13,8 +13,8 @@ const CRON_SECRET = process.env.CRON_SECRET || "";
 const FINNHUB_KEY = process.env.FINNHUB_KEY || "";
 const GEMINI_KEY  = process.env.GEMINI_KEY  || "";
 
-const GEMINI_URL  =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent";
+const GEMINI_URL =
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
 
 // ─────────────────────────────────────────────────────────────────
 // Gemini 분석 요청
@@ -22,49 +22,94 @@ const GEMINI_URL  =
 async function callGemini(payload) {
   if (!GEMINI_KEY) throw new Error("GEMINI_KEY not set");
 
-  // Strike 요약: DEX 절대값 상위 5개만 추출
-  const topStrikes = (payload.strikes ?? [])
+  // Strike 압축 전송 (상위 10개, 축약 키)
+  // s=strike, cd=callDex, pd=putDex, g=gex, v=vanna, c=charm
+  const compressedStrikes = (payload.strikes ?? [])
     .sort((a, b) => Math.abs(b.dex) - Math.abs(a.dex))
-    .slice(0, 5)
-    .map(s => `  Strike ${s.strike}: DEX ${(s.dex/1e6).toFixed(1)}M, GEX ${(s.gex/1e6).toFixed(1)}M`)
-    .join("\n");
+    .slice(0, 10)
+    .map(s => ({
+      s:  s.strike,
+      cd: s.type === 'C' ? +(s.dex / 1e6).toFixed(1) : 0,
+      pd: s.type === 'P' ? +(s.dex / 1e6).toFixed(1) : 0,
+      g:  +(s.gex   / 1e6).toFixed(1),
+      v:  +(s.vanna  / 1e6).toFixed(1),
+      c:  +(s.charm  / 1e6).toFixed(1),
+    }));
 
-  const prompt = `
-당신은 옵션 딜러 헤징 메커니즘 전문가입니다.
-아래 SPY 옵션 데이터를 보고 현재 딜러들의 헤징 방향과 압력을 분석해주세요.
-한국어로 4~5문장으로 간결하게 답해주세요.
-수식이나 불릿포인트 없이 자연스러운 문장으로만 작성해주세요.
+  const systemInstruction =
+    "너는 옵션 시장과 현물 거래량의 상관관계를 분석하는 퀀트 전문가야. " +
+    "DEX 히트맵의 장벽(Wall)과 VOLD의 에너지를 비교하여 시장의 페이크 상승/하락을 포착하고 " +
+    "시나리오별 확률을 도출하는 것이 네 임무야. " +
+    "반드시 지정된 JSON 형식으로만 응답해야 하며, 다른 텍스트는 포함하지 마.";
 
-[현재 시장 상태]
-- 장 상태: ${payload.marketState}
-- ET 시각: ${payload.etTime}
-- SPY 현재가: $${payload.spot} (전일 대비 ${payload.spyChangePct}%)
-- VIX: ${payload.vix} (전일 대비 ${payload.vixChangePct}%)
+  const userPrompt = `
+# 키 매핑
+s=strike, cd=call_dex(M), pd=put_dex(M), g=gex(M), v=vanna(M), c=charm(M)
+최신 데이터(시계열 끝)가 현재 상태를 가장 잘 반영함.
 
-[딜러 포지션 요약 (0DTE)]
-- DEX 총합: ${(payload.dex/1e6).toFixed(1)}M (${payload.dex >= 0 ? "양수: 딜러 매수 헤지" : "음수: 딜러 매도 헤지"})
-- GEX 총합: ${(payload.gex/1e6).toFixed(1)}M
-- Vanna 총합: ${(payload.vanna/1e6).toFixed(1)}M
-- Charm 총합: ${(payload.charm/1e6).toFixed(1)}M
-- VOLD(RSP breadth): ${(payload.vold/1e6).toFixed(1)}M
+# 현재 시장 상태
+- 장 상태: ${payload.marketState} / ET: ${payload.etTime}
+- SPY: $${payload.spot} (${payload.spyChangePct}%)
+- VIX: ${payload.vix} (${payload.vixChangePct}%)
 
-[주요 Strike (DEX 상위 5개)]
-${topStrikes || "  데이터 없음"}
+# 딜러 포지션 (0DTE 합산, 단위 M)
+- DEX: ${(payload.dex / 1e6).toFixed(1)}M
+- GEX: ${(payload.gex / 1e6).toFixed(1)}M
+- Vanna: ${(payload.vanna / 1e6).toFixed(1)}M
+- Charm: ${(payload.charm / 1e6).toFixed(1)}M
+- VOLD(RSP): ${(payload.vold / 1e6).toFixed(1)}M
 
-질문: 지금 딜러들은 어떤 방향으로 헤징하고 있고, 어떤 압력이 예상되나요?
-`.trim();
+# Strike 데이터 (DEX 상위 10개)
+${JSON.stringify(compressedStrikes)}
+
+# 응답 형식 (JSON만, 한국어)
+{
+  "market_regime": {
+    "phase": "시장 국면 (예: Gamma Pin, Vanna Squeeze 등)",
+    "volatility_context": "변동성 환경 한 줄 요약",
+    "dominance": "Dealer-Driven 또는 Flow-Driven"
+  },
+  "deep_dive": {
+    "dealer_inventory": {
+      "gamma_exposure": "GEX 상태 및 위험 구간 설명",
+      "vanna_flow": "VIX 변화에 따른 딜러 강제 매수/매도 압력"
+    },
+    "breadth_analysis": {
+      "vold_signal": "VOLD 다이버전스 여부 및 강도",
+      "interpretation": "현물 수급 에너지 해석"
+    }
+  },
+  "scenarios": [
+    {
+      "case": "상승 시나리오",
+      "trigger": "발생 조건",
+      "target": "목표가 또는 저항선",
+      "probability": 60
+    },
+    {
+      "case": "하락 시나리오",
+      "trigger": "발생 조건",
+      "target": "지지선 또는 Put Wall",
+      "probability": 40
+    }
+  ],
+  "expert_insight": "최종 전문가 결론 및 주의사항 (2~3문장)"
+}`.trim();
 
   const res = await fetch(`${GEMINI_URL}?key=${GEMINI_KEY}`, {
-    method: "POST",
+    method:  "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: prompt }] }],
+      system_instruction: { parts: [{ text: systemInstruction }] },
+      contents: [{ parts: [{ text: userPrompt }] }],
       generationConfig: {
-        temperature:     0.4,
-        maxOutputTokens: 400,
+        temperature:      0.15,
+        topP:             0.8,
+        maxOutputTokens:  1024,
+        responseMimeType: "application/json",
       },
     }),
-    signal: AbortSignal.timeout(15_000),
+    signal: AbortSignal.timeout(20_000),
   });
 
   if (!res.ok) {
@@ -75,7 +120,14 @@ ${topStrikes || "  데이터 없음"}
   const json = await res.json();
   const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) throw new Error("Gemini: 응답 텍스트 없음");
-  return text.trim();
+
+  // JSON 파싱 검증
+  try {
+    const parsed = JSON.parse(text);
+    return parsed;
+  } catch {
+    throw new Error("Gemini: JSON 파싱 실패");
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────
