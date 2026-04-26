@@ -435,3 +435,8 @@ export function initLive() {
   }
 }
 
+export function refreshLive() {
+  console.log('[Live] refresh');
+  fetchKV();
+}
+
