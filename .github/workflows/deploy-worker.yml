@@ -5,7 +5,8 @@ on:
     branches:
       - main
     paths:
-      - 'cloudflare/**'   # cloudflare 폴더 변경 시에만 실행
+      - 'cloudflare/**'
+  workflow_dispatch:    # 수동 실행 버튼 활성화
 
 jobs:
   deploy:
