@@ -73,6 +73,7 @@ async function fetchKV() {
       _state.vanna     = dex.vanna_total ?? null;
       _state.charm     = dex.charm_total ?? null;
       _state.strikes   = dex.strikes     ?? [];
+      _state.spot      = dex.spot        ?? null
     }
   } catch (e) {
     console.warn('[Live] KV fetch 실패:', e.message);
@@ -81,7 +82,7 @@ async function fetchKV() {
   renderCards();
 
   // 히트맵: SPY 현재가 기준 (WS 우선, 없으면 KV)
-  const spotPrice = _state.spyLive ?? _state.spy.price;
+  const spotPrice = _state.spyLive ?? _state.spy.price ?? _state.spot;
   if (_state.strikes.length > 0 && spotPrice) {
     renderHeatmap('heatmap-canvas', _state.strikes, spotPrice);
   }
