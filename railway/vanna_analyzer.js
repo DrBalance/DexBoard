@@ -94,8 +94,9 @@ function normPDF(x) {
 }
 
 export function calcGreeks(spot, strike, dte, iv, r = 0.05) {
-  const T = dte / 365;
-  if (T <= 0 || iv <= 0 || spot <= 0 || strike <= 0) return null;
+  const T_MIN = 2 / (365 * 24);  // 2시간 — Charm 폭발 방지
+  const T = Math.max(dte / 365, T_MIN);
+  if (iv <= 0 || spot <= 0 || strike <= 0) return null;
 
   const sqrtT = Math.sqrt(T);
   const d1 = (Math.log(spot / strike) + (r + (iv * iv) / 2) * T) / (iv * sqrtT);
@@ -259,9 +260,9 @@ export async function calculateAndStore(spot, vix) {
       type,
       oi:    oi,
       dex:   sign * (o.delta ?? greeks.delta) * oiEff * 100,
-      gex:   greeks.gamma * oiEff * 100,
-      vanna: greeks.vanna * oiEff * 100,
-      charm: greeks.charm * oiEff * 100,
+      gex:   sign * greeks.gamma * oiEff * 100 * spot,
+      vanna: sign * greeks.vanna * oiEff * 100 * spot,
+      charm: sign * greeks.charm * oiEff * 100 * spot,
     });
   }
 
