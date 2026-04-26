@@ -1,25 +1,35 @@
 // DexBoard – Cloudflare Workers main
 // Routes:
 //   GET  /api/snapshot      → latest 1min snapshot from KV
+//   GET  /api/snapshot/prev → previous snapshot from KV
 //   GET  /api/dex/:group    → DEX data (0dte | weekly | monthly | quarterly | structure)
+//   GET  /api/dex/open      → opening snapshot
 //   POST /kv-write          → internal: Railway writes KV through here
 // Cron:
-//   */1  13-20 → fetchSnapshot (Twelve Data + Yahoo VIX)
-//   */15 13-20 → triggerRailway (POST /calculate to Railway)
-//   0    13    → snapshotOpen  (장 시작 스냅샷 저장)
-//   30   20    → (future) EOD individual stocks
+//   */1  13-20 * * 1-5  → fetchSnapshot (정규장 1분)
+//   */3  4-13  * * 1-5  → fetchSnapshot (프리마켓 3분)
+//   */3  20-23 * * 1-5  → fetchSnapshot (애프터 3분)
+//   */15 13-20 * * 1-5  → triggerRailway (DEX 계산)
+//   0    13    * * 1-5  → snapshotOpen  (장 시작 스냅샷)
+//   30   20    * * 1-5  → (future) EOD individual stocks
+//
+// snapshot:1min 구조:
+//   {
+//     spy: { price, change, changePct },
+//     vix: { price, change, changePct },
+//     ts: "ISO string"
+//   }
 
 export default {
   // ─────────────────────────────────────────
   // HTTP fetch handler
   // ─────────────────────────────────────────
   async fetch(request, env) {
-    const url = new URL(request.url);
+    const url  = new URL(request.url);
     const path = url.pathname;
 
-    // CORS
     const corsHeaders = {
-      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Origin":  "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
       "Access-Control-Allow-Headers": "Content-Type, x-kv-secret",
     };
@@ -33,7 +43,7 @@ export default {
       if (secret !== env.CF_KV_SECRET) {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
-      const body = await request.json();
+      const body        = await request.json();
       const { key, value } = body;
       if (!key || value === undefined) {
         return json({ error: "key and value required" }, 400, corsHeaders);
@@ -49,13 +59,13 @@ export default {
       return json(data, 200, corsHeaders);
     }
 
-    // ── GET /api/snapshot/prev ──────────────────────────────────────
+    // ── GET /api/snapshot/prev ──────────────────────────────────
     if (request.method === "GET" && path === "/api/snapshot/prev") {
       const data = await env.DEX_KV.get("snapshot:prev", { type: "json" });
       if (!data) return json({ error: "No prev snapshot" }, 404, corsHeaders);
       return json(data, 200, corsHeaders);
     }
-    
+
     // ── GET /api/dex/:group ─────────────────────────────────────
     const dexMatch = path.match(/^\/api\/dex\/(0dte|weekly|monthly|quarterly|structure)$/);
     if (request.method === "GET" && dexMatch) {
@@ -105,12 +115,12 @@ export default {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// fetchSnapshot – SPY price (Twelve Data) + VIX (Yahoo)
+// fetchSnapshot – SPY (Twelve Data /quote) + VIX (Yahoo Finance)
 // ─────────────────────────────────────────────────────────────────
 async function fetchSnapshot(env) {
   try {
     const [spy, vix] = await Promise.all([
-      fetchSPYPrice(env),
+      fetchSPYQuote(env),
       fetchVIX(env),
     ]);
 
@@ -126,7 +136,7 @@ async function fetchSnapshot(env) {
       ts: new Date().toISOString(),
     };
     await env.DEX_KV.put("snapshot:1min", JSON.stringify(snapshot));
-    console.log(`[snapshot] SPY=${spy} VIX=${vix}`);
+    console.log(`[snapshot] SPY=${spy.price} (${spy.changePct}%) VIX=${vix.price} (${vix.changePct}%)`);
   } catch (e) {
     console.error("[snapshot] error:", e.message);
   }
@@ -166,10 +176,13 @@ async function triggerRailway(env) {
     const res = await fetch(`${env.RAILWAY_URL}/calculate`, {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
+        "Content-Type":  "application/json",
         "x-cron-secret": env.CRON_SECRET || "",
       },
-      body: JSON.stringify({ spot: snapshot.spy, vix: snapshot.vix }),
+      body: JSON.stringify({
+        spot: snapshot.spy.price,
+        vix:  snapshot.vix.price,
+      }),
     });
 
     const text = await res.text();
@@ -180,20 +193,33 @@ async function triggerRailway(env) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// fetchSPYPrice – Twelve Data REST (1min bar close)
+// fetchSPYQuote – Twelve Data /quote
+// 반환: { price, change, changePct }
 // ─────────────────────────────────────────────────────────────────
-async function fetchSPYPrice(env) {
-  const url = `https://api.twelvedata.com/price?symbol=SPY&apikey=${env.TWELVE_DATA_KEY}`;
+async function fetchSPYQuote(env) {
+  const url = `https://api.twelvedata.com/quote?symbol=SPY&apikey=${env.TWELVE_DATA_KEY}`;
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`Twelve Data: ${res.status}`);
-  const json = await res.json();
-  const price = parseFloat(json.price);
+  if (!res.ok) throw new Error(`Twelve Data /quote: ${res.status}`);
+
+  const data = await res.json();
+  if (data.status === "error") throw new Error(`Twelve Data: ${data.message}`);
+
+  const price     = parseFloat(data.close);
+  const change    = parseFloat(data.change);
+  const changePct = parseFloat(data.percent_change);
+
   if (isNaN(price)) throw new Error("Twelve Data: invalid price");
-  return price;
+
+  return {
+    price:     round2(price),
+    change:    round2(change),
+    changePct: round2(changePct),
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────
-// fetchVIX – Yahoo Finance fallback
+// fetchVIX – Yahoo Finance
+// 반환: { price, change, changePct }
 // ─────────────────────────────────────────────────────────────────
 async function fetchVIX(env) {
   const url = `${env.YAHOO_BASE}/%5EVIX?interval=1m&range=1d`;
@@ -201,16 +227,35 @@ async function fetchVIX(env) {
     headers: { "User-Agent": "Mozilla/5.0" },
   });
   if (!res.ok) throw new Error(`Yahoo VIX: ${res.status}`);
-  const json = await res.json();
-  const quotes = json?.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [];
-  const last = quotes.filter(Boolean).pop();
-  if (!last) throw new Error("Yahoo VIX: no data");
-  return last;
+
+  const data   = await res.json();
+  const result = data?.chart?.result?.[0];
+  if (!result) throw new Error("Yahoo VIX: no result");
+
+  const meta   = result.meta;
+  const quotes = result.indicators?.quote?.[0]?.close ?? [];
+  const price  = quotes.filter(Boolean).pop();
+  if (!price) throw new Error("Yahoo VIX: no close data");
+
+  // Yahoo meta에서 변화값 직접 추출
+  const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? null;
+  const change    = prevClose != null ? round2(price - prevClose) : null;
+  const changePct = prevClose != null ? round2((price - prevClose) / prevClose * 100) : null;
+
+  return {
+    price:     round2(price),
+    change,
+    changePct,
+  };
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Helper: JSON response
+// Helpers
 // ─────────────────────────────────────────────────────────────────
+function round2(n) {
+  return Math.round(n * 100) / 100;
+}
+
 function json(data, status = 200, extraHeaders = {}) {
   return new Response(JSON.stringify(data), {
     status,
