@@ -27,23 +27,25 @@ import {
   fmtM, fmtVold,
   colorBySign, colorVix, COLOR,
 } from '../fmt.js';
+import { renderHeatmap }                       from '../heatmap.js';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 내부 상태
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 const _state = {
   // KV에서 가져온 값
-  spy:   { price: null, change: null, changePct: null },
-  vix:   { price: null, change: null, changePct: null },
-  gex:   null,
-  vanna: null,
-  charm: null,
+  spy:     { price: null, change: null, changePct: null },
+  vix:     { price: null, change: null, changePct: null },
+  gex:     null,
+  vanna:   null,
+  charm:   null,
+  strikes: [],         // strike별 raw 데이터 (히트맵용)
 
   // WebSocket 실시간
-  spyLive:     null,   // SPY 현재가 (WS 수신 시 덮어씀)
+  spyLive:      null,  // SPY 현재가 (WS 수신 시 덮어씀)
 
   // VOLD 누적 (RSP 기반)
-  vold:        0,
+  vold:         0,
   rspPrevPrice: null,  // 직전 틱 가격 (방향 판단용)
 };
 
@@ -68,12 +70,19 @@ async function fetchKV() {
       _state.gex       = dex.gex_total   ?? null;
       _state.vanna     = dex.vanna_total ?? null;
       _state.charm     = dex.charm_total ?? null;
+      _state.strikes   = dex.strikes     ?? [];
     }
   } catch (e) {
     console.warn('[Live] KV fetch 실패:', e.message);
   }
 
   renderCards();
+
+  // 히트맵: SPY 현재가 기준 (WS 우선, 없으면 KV)
+  const spotPrice = _state.spyLive ?? _state.spy.price;
+  if (_state.strikes.length > 0 && spotPrice) {
+    renderHeatmap('heatmap-canvas', _state.strikes, spotPrice);
+  }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
