@@ -1,0 +1,306 @@
+/* ═══════════════════════════════════════════════
+   components.css — UI 컴포넌트
+═══════════════════════════════════════════════ */
+
+/* ── Metric 카드 행 ──────────────────────────── */
+.metrics {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.metric {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  padding: 12px 16px;
+  min-width: 110px;
+  flex: 1;
+}
+
+.metric-label {
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  margin-bottom: 4px;
+}
+
+.metric-value {
+  font-family: var(--mono);
+  font-size: 20px;
+  font-weight: 500;
+  color: var(--text1);
+  line-height: 1.2;
+}
+
+.metric-sub {
+  font-size: 10px;
+  color: var(--text3);
+  margin-top: 2px;
+}
+
+/* ── Card ────────────────────────────────────── */
+.card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-lg);
+  overflow: hidden;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.card-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text2);
+  letter-spacing: 0.2px;
+}
+
+.card-body {
+  padding: 12px 14px;
+}
+
+/* ── 데이터 테이블 ────────────────────────────── */
+.data-table {
+  width: 100%;
+  font-size: 11px;
+  font-family: var(--mono);
+}
+
+.data-table th {
+  padding: 7px 10px;
+  text-align: right;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: var(--bg3);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.data-table th:first-child { text-align: left; }
+
+.data-table td {
+  padding: 6px 10px;
+  text-align: right;
+  color: var(--text2);
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.data-table td:first-child { text-align: left; color: var(--text1); }
+
+.data-table tbody tr:hover td {
+  background: var(--bg3);
+}
+
+/* 현재가 행 강조 */
+.data-table tr.spot-row td {
+  background: rgba(245,158,11,0.08);
+  color: var(--amber);
+}
+
+/* 증감 색상 */
+.data-table td.up   { color: var(--green); }
+.data-table td.down { color: var(--red); }
+
+/* ── 히트맵 ──────────────────────────────────── */
+.heatmap-wrap {
+  padding: 10px 14px;
+  overflow-x: auto;
+}
+
+.heatmap-legend {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--text2);
+}
+
+.swatch {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  vertical-align: middle;
+  margin-right: 2px;
+}
+
+/* ── DEX 추정 바 ─────────────────────────────── */
+.dex-est {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  gap: 12px;
+  font-size: 11px;
+}
+
+.dex-formula {
+  font-family: var(--mono);
+  color: var(--text3);
+  font-size: 10px;
+}
+
+.dex-result {
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--text1);
+}
+
+/* ── Toggle 그룹 (만기 선택) ─────────────────── */
+.toggle-group {
+  display: flex;
+  gap: 2px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: 2px;
+}
+
+.toggle-btn {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text2);
+  transition: color 0.12s, background 0.12s;
+}
+.toggle-btn:hover { color: var(--text1); }
+.toggle-btn.active {
+  background: var(--bg3);
+  color: var(--text1);
+  font-weight: 500;
+}
+
+/* ── 버튼 ────────────────────────────────────── */
+.btn {
+  padding: 5px 14px;
+  border-radius: var(--r-md);
+  font-size: 12px;
+  font-weight: 500;
+  background: var(--bg3);
+  color: var(--text1);
+  border: 1px solid var(--border2);
+  transition: background 0.12s, border-color 0.12s;
+}
+.btn:hover {
+  background: var(--border2);
+  border-color: var(--text3);
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: var(--border);
+  color: var(--text2);
+}
+.btn-ghost:hover {
+  color: var(--text1);
+  background: var(--bg3);
+}
+
+/* ── 티커 인풋 ───────────────────────────────── */
+.ticker-input {
+  background: var(--bg2);
+  border: 1px solid var(--border2);
+  border-radius: var(--r-md);
+  padding: 5px 10px;
+  color: var(--text1);
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 500;
+  width: 72px;
+  text-transform: uppercase;
+  outline: none;
+  transition: border-color 0.12s;
+}
+.ticker-input:focus {
+  border-color: var(--blue);
+}
+
+/* ── 로딩 스피너 ─────────────────────────────── */
+.loading {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 24px;
+  color: var(--text3);
+  font-size: 12px;
+}
+
+.spinner {
+  width: 14px;
+  height: 14px;
+  border: 2px solid var(--border2);
+  border-top-color: var(--blue);
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ── 빈 상태 ─────────────────────────────────── */
+.empty {
+  padding: 24px;
+  text-align: center;
+  color: var(--text3);
+  font-size: 12px;
+}
+
+/* ── 내러티브 패널 ───────────────────────────── */
+#live-narrative-panel {
+  font-size: 12px;
+  color: var(--text2);
+  line-height: 1.7;
+}
+
+/* ── Top5 급등 패널 (향후 사용) ──────────────── */
+.spike-panel {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 6px;
+  padding: 10px 14px;
+}
+
+.spike-card {
+  background: var(--bg3);
+  border-radius: var(--r-md);
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+}
+
+.spike-strike {
+  font-family: var(--mono);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text1);
+}
+
+.spike-delta {
+  font-family: var(--mono);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.spike-label {
+  font-size: 10px;
+  color: var(--text3);
+  margin-top: 2px;
+}
