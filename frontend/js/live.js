@@ -206,12 +206,7 @@ const LEVEL_STYLE = {
 function renderNarrative() {
   const el = document.getElementById('live-narrative');
   if (!el) return;
-
-  const events = buildNarrative({
-    ..._state,
-    marketState: window._marketState,
-  });
-
+  const events = buildNarrative({ ..._state, marketState: window._marketState });
   el.innerHTML = events.map(({ level, msg }) => {
     const s = LEVEL_STYLE[level] ?? LEVEL_STYLE.info;
     return `
@@ -227,6 +222,58 @@ function renderNarrative() {
   }).join('');
 }
 
+// ── AI 결과 JSON 렌더링 ──────────────────────────────────
+function renderAIResult(data) {
+  const el = document.getElementById('ai-analysis-result');
+  if (!el) return;
+  const { market_regime: mr, deep_dive: dd, scenarios, expert_insight } = data;
+
+  const scenarioHTML = (scenarios ?? []).map(sc => {
+    const prob  = sc.probability ?? 50;
+    const color = prob >= 60 ? '#22c55e' : prob <= 40 ? '#ef4444' : '#f59e0b';
+    return `
+      <div style="margin-bottom:6px;padding:7px 8px;border-radius:4px;
+                  background:rgba(255,255,255,.04);border:1px solid #30363d">
+        <div style="display:flex;justify-content:space-between;margin-bottom:3px">
+          <span style="font-size:11px;font-weight:600;color:${color}">${sc.case}</span>
+          <span style="font-size:12px;font-weight:700;color:${color}">${prob}%</span>
+        </div>
+        <div style="font-size:11px;color:#8b949e;margin-bottom:1px">▶ ${sc.trigger}</div>
+        <div style="font-size:11px;color:#8b949e">목표: ${sc.target}</div>
+      </div>`;
+  }).join('');
+
+  el.innerHTML = `
+    <div style="margin-bottom:8px;padding:7px 9px;border-radius:5px;
+                background:rgba(167,139,250,.1);border-left:3px solid #a78bfa">
+      <div style="font-size:10px;color:#a78bfa;font-weight:600;margin-bottom:2px">시장 국면</div>
+      <div style="font-size:12px;font-weight:700;color:#e6edf3;margin-bottom:3px">${mr?.phase ?? '—'}</div>
+      <div style="font-size:11px;color:#8b949e;margin-bottom:3px">${mr?.volatility_context ?? ''}</div>
+      <span style="font-size:10px;padding:2px 7px;border-radius:10px;
+                   background:rgba(167,139,250,.2);color:#a78bfa">${mr?.dominance ?? ''}</span>
+    </div>
+    <div style="margin-bottom:8px">
+      <div style="font-size:10px;color:#8b949e;font-weight:600;margin-bottom:4px">딜러 포지션</div>
+      <div style="font-size:11px;color:#e6edf3;line-height:1.5;margin-bottom:3px">${dd?.dealer_inventory?.gamma_exposure ?? '—'}</div>
+      <div style="font-size:11px;color:#e6edf3;line-height:1.5">${dd?.dealer_inventory?.vanna_flow ?? '—'}</div>
+    </div>
+    <div style="margin-bottom:8px;padding:7px 9px;border-radius:5px;
+                background:rgba(34,197,94,.06);border-left:3px solid #22c55e">
+      <div style="font-size:10px;color:#22c55e;font-weight:600;margin-bottom:3px">수급 (VOLD)</div>
+      <div style="font-size:11px;color:#e6edf3;margin-bottom:2px">${dd?.breadth_analysis?.vold_signal ?? '—'}</div>
+      <div style="font-size:11px;color:#8b949e">${dd?.breadth_analysis?.interpretation ?? ''}</div>
+    </div>
+    <div style="margin-bottom:8px">
+      <div style="font-size:10px;color:#8b949e;font-weight:600;margin-bottom:4px">시나리오</div>
+      ${scenarioHTML}
+    </div>
+    <div style="padding:7px 9px;border-radius:5px;
+                background:rgba(245,158,11,.08);border-left:3px solid #f59e0b">
+      <div style="font-size:10px;color:#f59e0b;font-weight:600;margin-bottom:3px">전문가 의견</div>
+      <div style="font-size:11px;color:#e6edf3;line-height:1.6">${expert_insight ?? '—'}</div>
+    </div>`;
+}
+
 // ── AI 분석 요청 ─────────────────────────────────────────
 let _aiLoading = false;
 
@@ -234,44 +281,42 @@ async function requestAIAnalysis(auto = false) {
   if (_aiLoading) return;
   _aiLoading = true;
 
-  const btn    = document.getElementById('ai-analyze-btn');
-  const result = document.getElementById('ai-analysis-result');
+  const btn      = document.getElementById('ai-analyze-btn');
+  const result   = document.getElementById('ai-analysis-result');
+  const wrap     = document.getElementById('ai-result-wrap');
+  const scrollEl = document.getElementById('ai-result-scroll');
   if (!result) { _aiLoading = false; return; }
 
-  // 수동 클릭 시에만 버튼 상태 변경
   if (!auto && btn) {
     btn.disabled    = true;
     btn.textContent = '분석 중…';
   }
-
-  result.style.display = 'block';
-  if (!auto) result.textContent = 'Gemini가 분석 중입니다…';
+  if (wrap) wrap.style.display = 'block';
+  result.innerHTML = `
+    <div style="text-align:center;padding:20px;color:#8b949e;font-size:12px">
+      Gemini가 분석 중입니다…
+    </div>`;
 
   try {
-    const payload = buildAnalysisPayload({
-      ..._state,
-      marketState: window._marketState,
-    });
-
-    // Railway /analyze 경유 (GEMINI_KEY 보호)
-    const railwayBase = RAILWAY_WS_URL
-      .replace('wss://', 'https://')
-      .replace('/ws', '');
-
-    const res = await fetch(`${railwayBase}/analyze`, {
+    const payload     = buildAnalysisPayload({ ..._state, marketState: window._marketState });
+    const railwayBase = RAILWAY_WS_URL.replace('wss://', 'https://').replace('/ws', '');
+    const res         = await fetch(`${railwayBase}/analyze`, {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify(payload),
     });
-
     const data = await res.json();
-    if (data.ok) {
-      result.textContent = data.analysis;
+
+    if (data.ok && typeof data.analysis === 'object') {
+      renderAIResult(data.analysis);
+      if (scrollEl) scrollEl.scrollTop = 0;
     } else {
-      result.textContent = `분석 실패: ${data.error}`;
+      result.innerHTML = `<div style="color:#ef4444;font-size:12px;padding:8px">
+        분석 실패: ${data.error ?? '알 수 없는 오류'}</div>`;
     }
   } catch (e) {
-    result.textContent = `오류: ${e.message}`;
+    result.innerHTML = `<div style="color:#ef4444;font-size:12px;padding:8px">
+      오류: ${e.message}</div>`;
   } finally {
     _aiLoading = false;
     if (!auto && btn) {
@@ -287,30 +332,62 @@ function initNarrativePanel() {
   if (!container) return;
 
   container.innerHTML = `
-    <div style="
-      display:flex;align-items:center;justify-content:space-between;
-      margin-bottom:8px;
-    ">
-      <span style="font-size:12px;font-weight:600;color:var(--text2,#8b949e)">
-        실시간 판단
-      </span>
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <span style="font-size:12px;font-weight:600;color:var(--text2,#8b949e)">실시간 판단</span>
       <button id="ai-analyze-btn" style="
         padding:4px 12px;font-size:11px;border-radius:4px;
         border:1px solid #a78bfa;background:rgba(167,139,250,.12);
-        color:#a78bfa;cursor:pointer;
+        color:#a78bfa;cursor:pointer;white-space:nowrap;
       ">🤖 AI 분석</button>
     </div>
-    <div id="live-narrative" style="display:flex;flex-direction:column;gap:6px"></div>
-    <div id="ai-analysis-result" style="
-      display:none;margin-top:10px;padding:10px 12px;
-      border-radius:6px;border:1px solid #a78bfa;
-      background:rgba(167,139,250,.08);
-      font-size:12px;line-height:1.6;color:var(--text1,#e6edf3);
-      white-space:pre-wrap;
-    "></div>`;
 
-  document.getElementById('ai-analyze-btn')
-    ?.addEventListener('click', requestAIAnalysis);
+    <!-- 자체 판단 메시지 -->
+    <div id="live-narrative" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
+
+    <!-- AI 결과 영역 -->
+    <div id="ai-result-wrap" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+        <span style="font-size:11px;font-weight:600;color:#a78bfa">🤖 AI 분석 결과</span>
+        <div style="display:flex;gap:4px">
+          <button id="ai-scroll-up" style="
+            width:26px;height:20px;border-radius:3px;
+            border:1px solid #30363d;background:transparent;
+            color:#8b949e;cursor:pointer;font-size:11px;
+            display:flex;align-items:center;justify-content:center;
+          ">▲</button>
+          <button id="ai-scroll-down" style="
+            width:26px;height:20px;border-radius:3px;
+            border:1px solid #30363d;background:transparent;
+            color:#8b949e;cursor:pointer;font-size:11px;
+            display:flex;align-items:center;justify-content:center;
+          ">▼</button>
+        </div>
+      </div>
+      <!-- 스크롤 컨테이너: overscroll-behavior로 페이지 스크롤 전파 차단 -->
+      <div id="ai-result-scroll" style="
+        max-height:240px;
+        overflow-y:scroll;
+        overscroll-behavior:contain;
+        border:1px solid #30363d;border-radius:6px;
+        padding:10px;background:rgba(13,17,23,.6);
+      ">
+        <div id="ai-analysis-result"></div>
+      </div>
+    </div>`;
+
+  document.getElementById('ai-analyze-btn')?.addEventListener('click', () => {
+    const wrap = document.getElementById('ai-result-wrap');
+    if (wrap) wrap.style.display = 'block';
+    requestAIAnalysis(false);
+  });
+
+  const scrollEl = document.getElementById('ai-result-scroll');
+  document.getElementById('ai-scroll-up')?.addEventListener('click', () => {
+    if (scrollEl) scrollEl.scrollTop -= 80;
+  });
+  document.getElementById('ai-scroll-down')?.addEventListener('click', () => {
+    if (scrollEl) scrollEl.scrollTop += 80;
+  });
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
