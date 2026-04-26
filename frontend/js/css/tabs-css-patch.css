@@ -1,0 +1,39 @@
+/* ─────────────────────────────────────────────
+   layout.css 에서 .tab-panel 관련 기존 규칙을
+   아래 내용으로 교체하세요.
+   (display:none 방식 → position 오프스크린 방식)
+───────────────────────────────────────────── */
+
+/* 탭 패널 컨테이너: 상대 위치 기준점 */
+main {
+  position: relative;   /* 이미 있다면 유지 */
+  overflow: hidden;     /* 오프스크린 패널이 스크롤바를 만들지 않도록 */
+}
+
+/* 모든 탭 패널 기본 상태: 오프스크린 */
+.tab-panel {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+
+  /* 화면 밖으로 밀어냄 — canvas 치수는 유지됨 */
+  transform: translateX(-9999px);
+
+  /* 숨겨진 패널은 키보드/스크린리더 접근 차단 */
+  visibility: hidden;
+  pointer-events: none;
+
+  /* 전환 애니메이션 (선택 — 없애도 됨) */
+  /* transition: opacity 0.15s ease; */
+  opacity: 0;
+}
+
+/* 활성 탭 패널: 제자리로 */
+.tab-panel.active {
+  position: relative;   /* 다시 일반 흐름으로 */
+  transform: none;
+  visibility: visible;
+  pointer-events: auto;
+  opacity: 1;
+}
