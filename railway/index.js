@@ -2,6 +2,7 @@
 // CF Workers cron calls POST /calculate every 15 min during market hours
 // This service: fetches CBOE option chain → filters → calculates Greeks → writes to CF KV
 // WebSocket /ws → Finnhub WSS 중계 (SPY + RSP 틱)
+// POST /analyze  → Gemini API 호출 (키 보호)
 
 import http from "http";
 import { WebSocketServer, WebSocket } from "ws";
@@ -10,6 +11,72 @@ import { calculateAndStore } from "./vanna_analyzer.js";
 const PORT        = process.env.PORT        || 3000;
 const CRON_SECRET = process.env.CRON_SECRET || "";
 const FINNHUB_KEY = process.env.FINNHUB_KEY || "";
+const GEMINI_KEY  = process.env.GEMINI_KEY  || "";
+
+const GEMINI_URL  =
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent";
+
+// ─────────────────────────────────────────────────────────────────
+// Gemini 분석 요청
+// ─────────────────────────────────────────────────────────────────
+async function callGemini(payload) {
+  if (!GEMINI_KEY) throw new Error("GEMINI_KEY not set");
+
+  // Strike 요약: DEX 절대값 상위 5개만 추출
+  const topStrikes = (payload.strikes ?? [])
+    .sort((a, b) => Math.abs(b.dex) - Math.abs(a.dex))
+    .slice(0, 5)
+    .map(s => `  Strike ${s.strike}: DEX ${(s.dex/1e6).toFixed(1)}M, GEX ${(s.gex/1e6).toFixed(1)}M`)
+    .join("\n");
+
+  const prompt = `
+당신은 옵션 딜러 헤징 메커니즘 전문가입니다.
+아래 SPY 옵션 데이터를 보고 현재 딜러들의 헤징 방향과 압력을 분석해주세요.
+한국어로 4~5문장으로 간결하게 답해주세요.
+수식이나 불릿포인트 없이 자연스러운 문장으로만 작성해주세요.
+
+[현재 시장 상태]
+- 장 상태: ${payload.marketState}
+- ET 시각: ${payload.etTime}
+- SPY 현재가: $${payload.spot} (전일 대비 ${payload.spyChangePct}%)
+- VIX: ${payload.vix} (전일 대비 ${payload.vixChangePct}%)
+
+[딜러 포지션 요약 (0DTE)]
+- DEX 총합: ${(payload.dex/1e6).toFixed(1)}M (${payload.dex >= 0 ? "양수: 딜러 매수 헤지" : "음수: 딜러 매도 헤지"})
+- GEX 총합: ${(payload.gex/1e6).toFixed(1)}M
+- Vanna 총합: ${(payload.vanna/1e6).toFixed(1)}M
+- Charm 총합: ${(payload.charm/1e6).toFixed(1)}M
+- VOLD(RSP breadth): ${(payload.vold/1e6).toFixed(1)}M
+
+[주요 Strike (DEX 상위 5개)]
+${topStrikes || "  데이터 없음"}
+
+질문: 지금 딜러들은 어떤 방향으로 헤징하고 있고, 어떤 압력이 예상되나요?
+`.trim();
+
+  const res = await fetch(`${GEMINI_URL}?key=${GEMINI_KEY}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature:     0.4,
+        maxOutputTokens: 400,
+      },
+    }),
+    signal: AbortSignal.timeout(15_000),
+  });
+
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`Gemini ${res.status}: ${txt.slice(0, 200)}`);
+  }
+
+  const json = await res.json();
+  const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) throw new Error("Gemini: 응답 텍스트 없음");
+  return text.trim();
+}
 
 // ─────────────────────────────────────────────────────────────────
 // Finnhub WebSocket 중계
@@ -94,7 +161,42 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Main trigger from CF Workers
+  // ── POST /analyze  (브라우저 → Gemini AI 분석) ──────────────────
+  if (req.method === "POST" && req.url === "/analyze") {
+    const corsHeaders = {
+      "Access-Control-Allow-Origin":  "*",
+      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type",
+      "Content-Type": "application/json",
+    };
+
+    if (req.method === "OPTIONS") {
+      res.writeHead(204, corsHeaders);
+      res.end();
+      return;
+    }
+
+    let body = "";
+    req.on("data", (chunk) => (body += chunk));
+    req.on("end", async () => {
+      try {
+        const payload = JSON.parse(body || "{}");
+        const analysis = await callGemini(payload);
+        res.writeHead(200, corsHeaders);
+        res.end(JSON.stringify({ ok: true, analysis }));
+      } catch (err) {
+        console.error("[Gemini] 오류:", err.message);
+        res.writeHead(500, {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        });
+        res.end(JSON.stringify({ ok: false, error: err.message }));
+      }
+    });
+    return;
+  }
+
+  // ── POST /calculate  (CF Workers 크론 트리거) ─────────────────────
   if (req.method === "POST" && req.url === "/calculate") {
     const auth = req.headers["x-cron-secret"];
     if (CRON_SECRET && auth !== CRON_SECRET) {
