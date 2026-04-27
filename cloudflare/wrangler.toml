@@ -5,3 +5,7 @@ compatibility_date = "2024-01-01"
 [[kv_namespaces]]
 binding = "DEX_KV"
 id = "a0c7f445d41a42b68db2e73efff5c79d"
+
+[vars]
+RAILWAY_URL = "https://dexboard-production.up.railway.app"
+YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
