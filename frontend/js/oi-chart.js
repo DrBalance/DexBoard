@@ -183,14 +183,9 @@ function _aggregateByStrike(strikes) {
         callDelta: 0, putDelta: 0,
       };
     }
-    const isCall = s.type === 'C' || s.type === 'call';
-    if (isCall) {
-      map[k].callOI    += s.oi    ?? 0;
-      map[k].callDelta += s.delta15m ?? 0;
-    } else {
-      map[k].putOI    += s.oi    ?? 0;
-      map[k].putDelta += s.delta15m ?? 0;
-    }
+    
+    map[k].callOI += s.callOI ?? 0;
+    map[k].putOI  += s.putOI  ?? 0;
     map[k].dex   += s.dex   ?? 0;
     map[k].gex   += s.gex   ?? 0;
     map[k].vanna += s.vanna ?? 0;
