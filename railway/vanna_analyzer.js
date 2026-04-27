@@ -107,7 +107,7 @@ export function calcGreeks(spot, strike, dte, iv, r = 0.05) {
 
   const delta = Nd1;
   const gamma = phi / (spot * iv * sqrtT);
-  const vanna = phi * (d2 / iv);           // spot은 밖에서 곱함
+  const vanna = phi * d2 / (iv * spot);
   const charmRaw = -phi * (r / (iv * sqrtT) - d2 / (2 * T));
   const charm = isFinite(charmRaw) ? charmRaw : 0;
 
