@@ -273,9 +273,9 @@ export async function calculateAndStore(spot, vix) {
   for (const [group, items] of Object.entries(groups)) {
     const summary = {
       dex_total:         sum(items, "dex"),
-      gex_total:   sum(items, "gex") / 1e6,
-      vanna_total: sum(items, "vanna") / 1e6,
-      charm_total: sum(items, "charm") / 1e6,
+      gex_total:   sum(items, "gex"),
+      vanna_total: sum(items, "vanna"),
+      charm_total: sum(items, "charm"),
       spot,
       vix,
       count:             items.length,
