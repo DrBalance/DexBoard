@@ -213,7 +213,7 @@ function _buildChartData(strikes, spotPrice) {
     labels : filtered.map(s => s.strike % 5 === 0 ? `$${s.strike}` : ''),
     callOI : filtered.map(s =>  s.callOI),
     putOI  : filtered.map(s => -s.putOI),
-    gex    : filtered.map(s => +((s.gex ?? 0) / 1e6).toFixed(3)),
+    gex    : filtered.map(s => +((s.gex ?? 0)).toFixed(3)),
     raw    : filtered,
   };
 }
