@@ -153,8 +153,6 @@ export function classifyExpiry(dte, expiry, nextTradingDate) {
 //   기존대로 iv > 0, gamma > 0, open_interest > 0
 // ─────────────────────────────────────────────────────────────────
 export function filterOptions(options, nextTradingDate) {
-  const lo = spot * 0.90;
-  const hi = spot * 1.10;
 
   return options.filter((o) => {
     const parsed = parseOption(o.option);
