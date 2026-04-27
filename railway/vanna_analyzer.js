@@ -280,11 +280,11 @@ export async function calculateAndStore(spot, vix) {
         // DEX: Call Delta*OI - Put Delta*OI
         dex:   greeks.delta * callOI * 100 - greeks.delta * putOI * 100,
         // GEX: netOI 기반 (예전 방식)
-        gex:   netOI * greeks.gamma * 100 * spot,
+        gex:   netOI * greeks.gamma * 100 * spot / 1e6,
         // Vanna: 예전 공식 nd1*(d2/sigma)*netOI*100*spot
-        vanna: greeks.vanna * netOI * 100 * spot,
+        vanna: greeks.vanna * netOI * 100 * spot / 1e6,
         // Charm: 예전 공식 -nd1*(r/(sigma*sqrtT)-d2/(2*T))*netOI*100
-        charm: greeks.charm * netOI * 100,
+        charm: greeks.charm * netOI * 100 / 1e6,
       });
     }
   }
@@ -296,9 +296,9 @@ export async function calculateAndStore(spot, vix) {
   for (const [group, items] of Object.entries(groups)) {
     const summary = {
       dex_total:         sum(items, "dex"),
-      gex_total:         sum(items, "gex") / 1e6,
-      vanna_total:       sum(items, "vanna") / 1e6,
-      charm_total:       sum(items, "charm") / 1e6,
+      gex_total:         sum(items, "gex"),
+      vanna_total:       sum(items, "vanna"),
+      charm_total:       sum(items, "charm"),
       spot,
       vix,
       count:             items.length,
