@@ -32,7 +32,7 @@ export function fmtChangePct(v) {
   return `(${n >= 0 ? '+' : ''}${n.toFixed(2)}%)`;
 }
 
-// ── M단위 표시 (카드 메트릭 — 이미 M단위로 저장된 값) ────
+// ── M단위 표시 (Greeks, GEX 등) ──────────────────────────
 export function fmtM(v) {
   if (v == null || isNaN(v)) return '—';
   const n = Number(v);
@@ -78,14 +78,16 @@ export const fmt = {
     return sign + abs.toLocaleString();
   },
 
-  // Greeks (DEX / GEX / Vanna / Charm) — 테이블/데이터 표시용
-  // 백만 이상일 때만 M단위, 나머지는 원래 숫자 그대로
+  // Greeks (DEX / GEX / Vanna / Charm)
   greek(v) {
     if (v == null || isNaN(v)) return '—';
     const abs  = Math.abs(v);
     const sign = v < 0 ? '-' : '';
-    if (abs >= 1_000_000) return sign + (abs / 1_000_000).toFixed(2) + 'M';
-    return sign + abs.toFixed(2);
+    if (abs >= 1_000_000_000) return sign + (abs / 1_000_000_000).toFixed(2) + 'B';
+    if (abs >= 1_000_000)     return sign + (abs / 1_000_000).toFixed(2) + 'M';
+    if (abs >= 1_000)         return sign + (abs / 1_000).toFixed(1) + 'K';
+    if (abs >= 1)             return sign + abs.toFixed(2);
+    return sign + abs.toFixed(4);
   },
 
   // 가격  595.23
