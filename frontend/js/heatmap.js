@@ -8,7 +8,7 @@
 //   [{ strike, callOI, putOI, dex, gex, vanna, charm }, ...]
 //
 // 내부 처리:
-//   1. strike 기준 Call+Put 합산
+//   1. strike 기준 합산
 //   2. spot ±8% 필터링
 //   3. 낮은 → 높은 순 정렬
 //   4. DEX 색상 히트맵 렌더링
@@ -28,15 +28,15 @@ function _dexColor(value, maxAbs) {
     : `rgba(239,68,68,${opacity.toFixed(2)})`;  // --red
 }
 
-// ── M단위 수치 포매터 ─────────────────────────────────────
+// ── M단위 수치 포매터 (이미 M단위로 저장된 값) ───────────
 function _fmtM(v) {
   if (v == null || isNaN(v)) return '—';
-  const n = v / 1_000_000;
+  const n = v;
   const sign = n >= 0 ? '+' : '';
   return `${sign}${n.toFixed(1)}M`;
 }
 
-// ── strike 기준 Call+Put 합산 ─────────────────────────────
+// ── strike 기준 합산 ──────────────────────────────────────
 function _aggregateStrikes(strikes) {
   const map = {};
   for (const row of strikes) {
@@ -203,7 +203,6 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     requestAnimationFrame(() => {
       const scrollEl = document.getElementById(scrollId);
       if (!scrollEl) return;
-      // spot 열의 중앙이 컨테이너 중앙에 오도록
       const colOffset = LBL_W + spotIdx * COL_W;
       const containerW = scrollEl.clientWidth;
       scrollEl.scrollLeft = colOffset - containerW / 2 + COL_W / 2;
