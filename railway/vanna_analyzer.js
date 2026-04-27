@@ -107,7 +107,9 @@ export function calcGreeks(spot, strike, dte, iv, r = 0.05) {
 
   const delta = Nd1;
   const gamma = phi / (spot * iv * sqrtT);
-  const vanna = phi * d2 / (iv * spot);
+  // Vanna: 예전 공식과 동일 — nd1 * (d2/sigma), spot은 밖에서 곱함
+  const vanna = phi * d2 / iv;
+  // Charm: 예전 공식과 동일
   const charmRaw = -phi * (r / (iv * sqrtT) - d2 / (2 * T));
   const charm = isFinite(charmRaw) ? charmRaw : 0;
 
@@ -143,17 +145,8 @@ export function classifyExpiry(dte, expiry, nextTradingDate) {
 
 // ─────────────────────────────────────────────────────────────────
 // Filter options
-//
-// 0dte (expiry === nextTradingDate):
-//   주말/장마감 중에는 OI가 아직 업데이트 안 된 경우가 많음
-//   → open_interest 조건 완화: OI > 0 OR volume > 0
-//   → gamma 조건도 완화: CBOE가 0으로 내려보내는 경우 있음
-//
-// 그 외 만기:
-//   기존대로 iv > 0, gamma > 0, open_interest > 0
 // ─────────────────────────────────────────────────────────────────
 export function filterOptions(options, nextTradingDate) {
-
   return options.filter((o) => {
     const parsed = parseOption(o.option);
     if (!parsed) return false;
@@ -162,7 +155,6 @@ export function filterOptions(options, nextTradingDate) {
     if (nextTradingDate && parsed.expiry === nextTradingDate) {
       return (o.open_interest > 0 || o.volume > 0);
     }
-
     return o.gamma > 0 && o.open_interest > 0;
   });
 }
@@ -212,8 +204,8 @@ export async function calculateAndStore(spot, vix) {
   console.log(`[Calc] 기준 거래일: ${nextTradingDate}`);
 
   // 2. CBOE 옵션체인 fetch
-  const raw     = await fetchCBOE();
-  const all     = raw?.data?.options ?? [];
+  const raw = await fetchCBOE();
+  const all = raw?.data?.options ?? [];
   if (all.length === 0) throw new Error("CBOE returned empty options array");
 
   // spot을 CBOE current_price로 대체
@@ -221,11 +213,45 @@ export async function calculateAndStore(spot, vix) {
   if (cboeSpot) spot = cboeSpot;
   console.log(`[Calc] spot=${spot} (CBOE: ${cboeSpot})`);
 
-  // 3. nextTradingDate 를 filterOptions 에 직접 전달 → 0dte 조건 완화 적용
+  // 3. 필터링
   const filtered = filterOptions(all, nextTradingDate);
   console.log(`Filtered ${filtered.length} / ${all.length} options`);
 
-  // 4. 그룹 분류 + Greeks 계산
+  // 4. 만기별 strike 맵 구성
+  // 구조: expiryMap[expiry][strike] = { callOI, putOI, callVol, putVol, iv, dte, expiry }
+  const expiryMap = {};
+
+  for (const o of filtered) {
+    const parsed = parseOption(o.option);
+    if (!parsed) continue;
+    const { strike, dte, type, expiry } = parsed;
+
+    if (!expiryMap[expiry]) expiryMap[expiry] = {};
+    if (!expiryMap[expiry][strike]) {
+      expiryMap[expiry][strike] = {
+        strike, dte, expiry,
+        callOI: 0, putOI: 0,
+        callVol: 0, putVol: 0,
+        iv: 0, ivCount: 0,
+      };
+    }
+
+    const s = expiryMap[expiry][strike];
+    const oi  = o.open_interest || 0;
+    const vol = o.volume        || 0;
+    const oiEff = oi > 0 ? oi : vol;
+
+    if (type === "C") {
+      s.callOI  += oiEff;
+      s.callVol += vol;
+    } else {
+      s.putOI   += oiEff;
+      s.putVol  += vol;
+    }
+    if (o.iv > 0) { s.iv += o.iv; s.ivCount++; }
+  }
+
+  // 5. 그룹 분류 + Greeks 계산 (strike별 netOI 방식)
   const groups = {
     "0dte":      [],
     "weekly":    [],
@@ -233,49 +259,46 @@ export async function calculateAndStore(spot, vix) {
     "quarterly": [],
   };
 
-  for (const o of filtered) {
-    const parsed = parseOption(o.option);
-    if (!parsed) continue;
+  for (const [expiry, strikeMap] of Object.entries(expiryMap)) {
+    for (const s of Object.values(strikeMap)) {
+      const { strike, dte, callOI, putOI } = s;
+      const iv = s.ivCount > 0 ? s.iv / s.ivCount : 0.20;
+      const group = classifyExpiry(dte, expiry, nextTradingDate);
 
-    const { strike, dte, type, expiry } = parsed;
-    const group = classifyExpiry(dte, expiry, nextTradingDate);
+      const dteForGreeks = dte === 0 ? 0.001 : dte;
+      const greeks = calcGreeks(spot, strike, dteForGreeks, iv);
+      if (!greeks) continue;
 
-    // 0dte는 dte=1(주말 기준)이지만 Greeks 계산 시 당일 남은 시간 기준으로 조정
-    // 장중이면 실제 남은 시간, 장마감/주말이면 1일치로 계산
-    const dteForGreeks = dte === 0 ? 0.001 : dte;
-    const greeks = calcGreeks(spot, strike, dteForGreeks, o.iv);
-    if (!greeks) continue;
+      const netOI = callOI - putOI;  // 예전 방식: netOI = callOI - putOI
 
-    const isCall = type === "C";
-    const sign   = isCall ? 1 : -1;
-    const oi     = o.open_interest || 0;
-    const vol    = o.volume        || 0;
-    // OI 없으면 volume으로 대체 (주말 0dte)
-    const oiEff  = oi > 0 ? oi : vol;
-
-    groups[group].push({
-      strike,
-      expiry,
-      dte,
-      type,
-      oi:    oi,
-      dex:   sign * greeks.delta * oiEff * 100,
-      gex:   sign * greeks.gamma * oiEff * 100 * spot,
-      vanna: sign * greeks.vanna * oiEff * 100 * spot,
-      charm: sign * greeks.charm * oiEff * 100,
-    });
+      groups[group].push({
+        strike,
+        expiry,
+        dte,
+        callOI,
+        putOI,
+        // DEX: Call Delta*OI - Put Delta*OI
+        dex:   greeks.delta * callOI * 100 - greeks.delta * putOI * 100,
+        // GEX: netOI 기반 (예전 방식)
+        gex:   netOI * greeks.gamma * 100 * spot,
+        // Vanna: 예전 공식 nd1*(d2/sigma)*netOI*100*spot
+        vanna: greeks.vanna * netOI * 100 * spot,
+        // Charm: 예전 공식 -nd1*(r/(sigma*sqrtT)-d2/(2*T))*netOI*100
+        charm: greeks.charm * netOI * 100,
+      });
+    }
   }
 
-  // 5. KV 저장
+  // 6. KV 저장
   const updatedAt = new Date().toISOString();
   const results   = {};
 
   for (const [group, items] of Object.entries(groups)) {
     const summary = {
       dex_total:         sum(items, "dex"),
-      gex_total:   sum(items, "gex"),
-      vanna_total: sum(items, "vanna"),
-      charm_total: sum(items, "charm"),
+      gex_total:         sum(items, "gex"),
+      vanna_total:       sum(items, "vanna"),
+      charm_total:       sum(items, "charm"),
       spot,
       vix,
       count:             items.length,
@@ -295,11 +318,12 @@ export async function calculateAndStore(spot, vix) {
     await kvPut(`dex:spy:${group}`, summary);
     console.log(
       `[KV] dex:spy:${group} (${items.length}건, 기준일:${nextTradingDate})` +
-      ` → DEX=${summary.dex_total.toFixed(0)} GEX=${summary.gex_total.toFixed(0)}`
+      ` → DEX=${summary.dex_total.toFixed(0)} GEX=${summary.gex_total.toFixed(0)}` +
+      ` Vanna=${summary.vanna_total.toFixed(0)} Charm=${summary.charm_total.toFixed(0)}`
     );
   }
 
-  // 6. Structure 합산
+  // 7. Structure 합산
   await kvPut("dex:spy:structure", {
     "0dte":            results["0dte"],
     weekly:            results["weekly"],
