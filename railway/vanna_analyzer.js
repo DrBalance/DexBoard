@@ -265,10 +265,10 @@ export async function calculateAndStore(spot, vix) {
       dte,
       type,
       oi:    oi,
-      dex:   sign * (o.delta ?? greeks.delta) * oiEff * 100,
-      gex:   sign * greeks.gamma * oiEff * 100 * spot,
-      vanna: sign * greeks.vanna * oiEff * 100 * spot,
-      charm: sign * greeks.charm * oiEff * 100,          // spot 제거
+      dex:   sign * greeks.delta * oiEff * 100,
+      gex:   sign * greeks.gamma * oiEff * 100 * spot / 1e6,
+      vanna: sign * greeks.vanna * oiEff * 100 / 1e6,
+      charm: sign * greeks.charm * oiEff * 100 / 1e6,
     });
   }
 
@@ -279,9 +279,9 @@ export async function calculateAndStore(spot, vix) {
   for (const [group, items] of Object.entries(groups)) {
     const summary = {
       dex_total:         sum(items, "dex"),
-      gex_total:         sum(items, "gex"),
-      vanna_total:       sum(items, "vanna"),
-      charm_total:       sum(items, "charm"),
+      gex_total:   sum(items, "gex") / 1e6,
+      vanna_total: sum(items, "vanna") / 1e6,
+      charm_total: sum(items, "charm") / 1e6,
       spot,
       vix,
       count:             items.length,
