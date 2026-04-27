@@ -4,8 +4,8 @@
 // 사용법:
 //   renderHeatmap(containerId, strikes, spotPrice)
 //
-// strikes: KV dex:spy:0dte.strikes 배열 (Call/Put 미합산 raw)
-//   [{ strike, type, dex, gex, vanna, charm }, ...]
+// strikes: KV dex:spy:0dte.strikes 배열 (strike별 netOI 합산)
+//   [{ strike, callOI, putOI, dex, gex, vanna, charm }, ...]
 //
 // 내부 처리:
 //   1. strike 기준 Call+Put 합산
