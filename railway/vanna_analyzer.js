@@ -260,9 +260,9 @@ export async function calculateAndStore(spot, vix) {
       type,
       oi:    oi,
       dex:   sign * greeks.delta * oiEff * 100,
-      gex:   sign * greeks.gamma * oiEff * 100 * spot / 1e6,
-      vanna: sign * greeks.vanna * oiEff * 100 / 1e6,
-      charm: sign * greeks.charm * oiEff * 100 / 1e6,
+      gex:   sign * greeks.gamma * oiEff * 100 * spot,
+      vanna: sign * greeks.vanna * oiEff * 100,
+      charm: sign * greeks.charm * oiEff * 100,
     });
   }
 
