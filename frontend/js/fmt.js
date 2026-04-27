@@ -32,7 +32,7 @@ export function fmtChangePct(v) {
   return `(${n >= 0 ? '+' : ''}${n.toFixed(2)}%)`;
 }
 
-// ── M단위 표시 (Greeks, GEX 등) ──────────────────────────
+// ── M단위 표시 (카드 메트릭 — 이미 M단위로 저장된 값) ────
 export function fmtM(v) {
   if (v == null || isNaN(v)) return '—';
   const n = Number(v);
@@ -68,35 +68,26 @@ export function colorVix(v) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export const fmt = {
 
-  // OI / 계약 수량 (1234567 → "1.23M", 1234 → "1,234")
+  // OI / 계약 수량  1234567 → "1.23M"
   oi(v) {
     if (v == null || isNaN(v)) return '—';
     const abs  = Math.abs(v);
     const sign = v < 0 ? '-' : '';
-    
-    // 100만 이상일 때만 M 단위 표시
     if (abs >= 1_000_000) return sign + (abs / 1_000_000).toFixed(2) + 'M';
-    
-    // 100만 미만은 정수로 반올림 후 천 단위 쉼표 삽입
-    return sign + Math.round(abs).toLocaleString();
+    if (abs >= 1_000)     return sign + (abs / 1_000).toFixed(1) + 'K';
+    return sign + abs.toLocaleString();
   },
-  
-// Greeks (B, M, K 단위 적용 및 1000 미만 쉼표 처리)
+
+  // Greeks (DEX / GEX / Vanna / Charm) — 테이블/데이터 표시용
+  // 백만 이상일 때만 M단위, 나머지는 원래 숫자 그대로
   greek(v) {
     if (v == null || isNaN(v)) return '—';
     const abs  = Math.abs(v);
     const sign = v < 0 ? '-' : '';
-
-    if (abs >= 1_000_000_000) return sign + (abs / 1_000_000_000).toFixed(2) + 'B';
-    if (abs >= 1_000_000)     return sign + (abs / 1_000_000).toFixed(2) + 'M';
-//    if (abs >= 1_000)         return sign + (abs / 1_000).toFixed(1) + 'K';
-    
-    // 1,000 미만일 때: 정수로 표시하고 싶다면 Math.round 후 toLocaleString 사용
-    // 만약 1미만의 소수점도 정수로 보려면 Math.round가 필수입니다.
-    //return sign + Math.round(abs).toLocaleString();
-    return sign + abs.toLocaleString();
+    if (abs >= 1_000_000) return sign + (abs / 1_000_000).toFixed(2) + 'M';
+    return sign + abs.toFixed(2);
   },
-  
+
   // 가격  595.23
   price(v, decimals = 2) {
     if (v == null || isNaN(v)) return '—';
@@ -127,22 +118,6 @@ export const fmt = {
     }) + ' ET';
   },
 
-  // DEX — 1,000,000 초과 시 M단위, 나머지는 쉼표+정수 숫자
-  dex(v) {
-    if (v == null || isNaN(v)) return '—';
-    const sign = v >= 0 ? '+' : '-';
-    const abs  = Math.abs(v);
-
-    // 1. 1,000,000 이상일 때 M 단위 표시
-    if (abs >= 1_000_000) {
-      return `${sign}${(abs / 1_000_000).toFixed(2)}M`;
-    }
-
-    // 2. 1,000,000 미만일 때 정수 처리 및 천 단위 쉼표
-    // Math.round를 통해 소수점을 제거하고 정수로 만듭니다.
-    return sign + Math.round(abs).toLocaleString('en-US');
-  },
-  
   // 증감 (부호 포함 OI 포맷)
   delta(v) {
     if (v == null || isNaN(v)) return '—';
