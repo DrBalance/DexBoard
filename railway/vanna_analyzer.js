@@ -297,8 +297,8 @@ export async function calculateAndStore(spot, vix) {
     const summary = {
       dex_total:         sum(items, "dex"),
       gex_total:         sum(items, "gex"),
-      vanna_total:       sum(items, "vanna"),
-      charm_total:       sum(items, "charm"),
+      vanna_total:       sum(items, "vanna") / 1e6,
+      charm_total:       sum(items, "charm") / 1e6,
       spot,
       vix,
       count:             items.length,
