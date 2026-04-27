@@ -278,7 +278,7 @@ export async function calculateAndStore(spot, vix) {
         callOI,
         putOI,
         // DEX: Call Delta*OI - Put Delta*OI
-        dex:   )greeks.delta * callOI * 100 - greeks.delta * putOI * 100) / 1e6,
+        dex:   (greeks.delta * callOI * 100 - greeks.delta * putOI * 100) / 1e6,
         // GEX: netOI 기반 (예전 방식)
         gex:   netOI * greeks.gamma * 100 * spot / 1e6,
         // Vanna: 예전 공식 nd1*(d2/sigma)*netOI*100*spot
