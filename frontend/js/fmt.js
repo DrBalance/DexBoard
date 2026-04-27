@@ -35,7 +35,7 @@ export function fmtChangePct(v) {
 // ── M단위 표시 (Greeks, GEX 등) ──────────────────────────
 export function fmtM(v) {
   if (v == null || isNaN(v)) return '—';
-  const n = Number(v) / 1_000_000;
+  const n = Number(v);
   const sign = n >= 0 ? '+' : '';
   return `${sign}${n.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}M`;
 }
