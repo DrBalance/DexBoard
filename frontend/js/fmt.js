@@ -93,7 +93,8 @@ export const fmt = {
     
     // 1,000 미만일 때: 정수로 표시하고 싶다면 Math.round 후 toLocaleString 사용
     // 만약 1미만의 소수점도 정수로 보려면 Math.round가 필수입니다.
-    return sign + Math.round(abs).toLocaleString();
+    //return sign + Math.round(abs).toLocaleString();
+    return sign + abs.toLocaleString();
   },
   
   // 가격  595.23
