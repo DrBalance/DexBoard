@@ -222,6 +222,11 @@ export async function calculateAndStore(spot, vix) {
   const all     = raw?.data?.options ?? [];
   if (all.length === 0) throw new Error("CBOE returned empty options array");
 
+  // spot을 CBOE current_price로 대체
+  const cboeSpot = raw?.data?.current_price;
+  if (cboeSpot) spot = cboeSpot;
+  console.log(`[Calc] spot=${spot} (CBOE: ${cboeSpot})`);
+
   // 3. nextTradingDate 를 filterOptions 에 직접 전달 → 0dte 조건 완화 적용
   const filtered = filterOptions(all, spot, nextTradingDate);
   console.log(`Filtered ${filtered.length} / ${all.length} options`);
