@@ -152,23 +152,19 @@ export function classifyExpiry(dte, expiry, nextTradingDate) {
 // 그 외 만기:
 //   기존대로 iv > 0, gamma > 0, open_interest > 0
 // ─────────────────────────────────────────────────────────────────
-export function filterOptions(options, spot, nextTradingDate) {
+export function filterOptions(options, nextTradingDate) {
   const lo = spot * 0.90;
   const hi = spot * 1.10;
 
   return options.filter((o) => {
     const parsed = parseOption(o.option);
     if (!parsed) return false;
-    if (parsed.strike < lo || parsed.strike > hi) return false;
-    if (parsed.dte < 0 || parsed.dte > 60) return false;
+    if (parsed.dte < 0) return false;
     if (o.iv <= 0) return false;
-
-    // 0dte: OI 또는 volume 있으면 통과, gamma 조건 완화
     if (nextTradingDate && parsed.expiry === nextTradingDate) {
       return (o.open_interest > 0 || o.volume > 0);
     }
 
-    // 그 외: 기존 조건
     return o.gamma > 0 && o.open_interest > 0;
   });
 }
@@ -228,7 +224,7 @@ export async function calculateAndStore(spot, vix) {
   console.log(`[Calc] spot=${spot} (CBOE: ${cboeSpot})`);
 
   // 3. nextTradingDate 를 filterOptions 에 직접 전달 → 0dte 조건 완화 적용
-  const filtered = filterOptions(all, spot, nextTradingDate);
+  const filtered = filterOptions(all, nextTradingDate);
   console.log(`Filtered ${filtered.length} / ${all.length} options`);
 
   // 4. 그룹 분류 + Greeks 계산
