@@ -107,9 +107,9 @@ export function calcGreeks(spot, strike, dte, iv, r = 0.05) {
 
   const delta = Nd1;
   const gamma = phi / (spot * iv * sqrtT);
-  const vanna = -phi * d2 / iv;
-  const charmRaw = -phi * (2 * r * T - d2 * iv * sqrtT) / (2 * T * iv * sqrtT);
-  const charm = isFinite(charmRaw) ? Math.max(-100, Math.min(100, charmRaw)) : 0;
+  const vanna = phi * (d2 / iv);           // spot은 밖에서 곱함
+  const charmRaw = -phi * (r / (iv * sqrtT) - d2 / (2 * T));
+  const charm = isFinite(charmRaw) ? charmRaw : 0;
 
   return { delta, gamma, vanna, charm };
 }
@@ -263,7 +263,7 @@ export async function calculateAndStore(spot, vix) {
       dex:   sign * (o.delta ?? greeks.delta) * oiEff * 100,
       gex:   sign * greeks.gamma * oiEff * 100 * spot,
       vanna: sign * greeks.vanna * oiEff * 100 * spot,
-      charm: sign * greeks.charm * oiEff * 100 * spot,
+      charm: sign * greeks.charm * oiEff * 100,          // spot 제거
     });
   }
 
