@@ -261,7 +261,7 @@ export async function calculateAndStore(spot, vix) {
       oi:    oi,
       dex:   sign * greeks.delta * oiEff * 100,
       gex:   sign * greeks.gamma * oiEff * 100 * spot,
-      vanna: sign * greeks.vanna * oiEff * 100,
+      vanna: sign * greeks.vanna * oiEff * 100 * spot,
       charm: sign * greeks.charm * oiEff * 100,
     });
   }
