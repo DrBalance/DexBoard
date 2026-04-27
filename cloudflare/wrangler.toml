@@ -9,3 +9,13 @@ id = "a0c7f445d41a42b68db2e73efff5c79d"
 [vars]
 RAILWAY_URL = "https://dexboard-production.up.railway.app"
 YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
+
+[triggers]
+crons = [
+  "0 13 * * 1-5",
+  "*/1 13-20 * * 1-5",
+  "*/15 13-20 * * 1-5",
+  "30 20 * * 1-5",
+  "*/3 20-23 * * 1-5",
+  "*/3 4-13 * * 1-5"
+]
