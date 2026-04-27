@@ -108,7 +108,8 @@ export function calcGreeks(spot, strike, dte, iv, r = 0.05) {
   const delta = Nd1;
   const gamma = phi / (spot * iv * sqrtT);
   const vanna = -phi * d2 / iv;
-  const charm = -phi * (2 * r * T - d2 * iv * sqrtT) / (2 * T * iv * sqrtT);
+  const charmRaw = -phi * (2 * r * T - d2 * iv * sqrtT) / (2 * T * iv * sqrtT);
+  const charm = isFinite(charmRaw) ? Math.max(-100, Math.min(100, charmRaw)) : 0;
 
   return { delta, gamma, vanna, charm };
 }
