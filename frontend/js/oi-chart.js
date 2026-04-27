@@ -125,7 +125,7 @@ export function renderStrikeTable(tbodyId, strikes, opts = {}) {
       ${dteTd}
       <td style="color:var(--green)">${fmt.oi(row.callOI)}</td>
       <td style="color:var(--red)">${fmt.oi(row.putOI)}</td>
-      <td class="${dexCls}">${fmt.greek(row.dex)}</td>
+      <td class="${dexCls}">${fmt.dex(row.dex)}</td>
       <td>${fmt.greek(row.gex)}</td>
       <td style="color:var(--purple)">${fmt.greek(row.vanna)}</td>
       <td style="color:var(--teal)">${fmt.greek(row.charm)}</td>
@@ -183,14 +183,20 @@ function _aggregateByStrike(strikes) {
         callDelta: 0, putDelta: 0,
       };
     }
-    map[k].callOI    += s.callOI   ?? 0;
-    map[k].putOI     += s.putOI    ?? 0;
+    const isCall = s.type === 'C' || s.type === 'call';
+    if (isCall) {
+      map[k].callOI    += s.oi    ?? 0;
+      map[k].callDelta += s.delta15m ?? 0;
+    } else {
+      map[k].putOI    += s.oi    ?? 0;
+      map[k].putDelta += s.delta15m ?? 0;
+    }
     map[k].dex   += s.dex   ?? 0;
     map[k].gex   += s.gex   ?? 0;
     map[k].vanna += s.vanna ?? 0;
     map[k].charm += s.charm ?? 0;
   }
-    return map;
+  return map;
 }
 
 /* 차트용 데이터 빌드 */
@@ -212,7 +218,7 @@ function _buildChartData(strikes, spotPrice) {
     labels : filtered.map(s => s.strike % 5 === 0 ? `$${s.strike}` : ''),
     callOI : filtered.map(s =>  s.callOI),
     putOI  : filtered.map(s => -s.putOI),
-    gex    : filtered.map(s => +((s.gex ?? 0)).toFixed(3)),
+    gex    : filtered.map(s => +((s.gex ?? 0) / 1e6).toFixed(3)),
     raw    : filtered,
   };
 }

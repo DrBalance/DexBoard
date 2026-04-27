@@ -32,7 +32,7 @@ export function fmtChangePct(v) {
   return `(${n >= 0 ? '+' : ''}${n.toFixed(2)}%)`;
 }
 
-// ── M단위 표시 (카드 메트릭 — 이미 M단위로 저장된 값) ────
+// ── M단위 표시 (Greeks, GEX 등) ──────────────────────────
 export function fmtM(v) {
   if (v == null || isNaN(v)) return '—';
   const n = Number(v);
@@ -74,17 +74,20 @@ export const fmt = {
     const abs  = Math.abs(v);
     const sign = v < 0 ? '-' : '';
     if (abs >= 1_000_000) return sign + (abs / 1_000_000).toFixed(2) + 'M';
+    if (abs >= 1_000)     return sign + (abs / 1_000).toFixed(1) + 'K';
     return sign + abs.toLocaleString();
   },
 
-  // Greeks (DEX / GEX / Vanna / Charm) — 테이블/데이터 표시용
-  // 백만 이상일 때만 M단위, 나머지는 원래 숫자 그대로
+  // Greeks (DEX / GEX / Vanna / Charm)
   greek(v) {
     if (v == null || isNaN(v)) return '—';
     const abs  = Math.abs(v);
     const sign = v < 0 ? '-' : '';
-    if (abs >= 1_000_000) return sign + (abs / 1_000_000).toFixed(2) + 'M';
-    return sign + abs.toFixed(2);
+    if (abs >= 1_000_000_000) return sign + (abs / 1_000_000_000).toFixed(2) + 'B';
+    if (abs >= 1_000_000)     return sign + (abs / 1_000_000).toFixed(2) + 'M';
+    if (abs >= 1_000)         return sign + (abs / 1_000).toFixed(1) + 'K';
+    if (abs >= 1)             return sign + abs.toFixed(2);
+    return sign + abs.toFixed(4);
   },
 
   // 가격  595.23
@@ -115,6 +118,21 @@ export const fmt = {
       hour: '2-digit', minute: '2-digit',
       timeZone: 'America/New_York', hour12: false,
     }) + ' ET';
+  },
+
+  // DEX — 100,000 초과 시 M단위, 나머지는 쉼표+소수점 2자리 숫자
+  // 예) 1234567.8 → "+1.23M" / 1234.56 → "+1,234.56" / -0.05 → "-0.05"
+  dex(v) {
+    if (v == null || isNaN(v)) return '—';
+    const sign = v >= 0 ? '+' : '-';
+    const abs  = Math.abs(v);
+    if (abs >= 100_000) {
+      return `${sign}${(abs / 1_000_000).toFixed(2)}M`;
+    }
+    return sign + abs.toLocaleString('en-US', {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
   },
 
   // 증감 (부호 포함 OI 포맷)
