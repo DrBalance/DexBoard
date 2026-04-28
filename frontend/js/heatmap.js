@@ -103,7 +103,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     `<td style="
       position:sticky;left:0;z-index:2;
       min-width:${LBL_W}px;max-width:${LBL_W}px;height:${height}px;
-      padding:0 6px;font-size:11px;font-weight:600;
+      padding:0 6px;font-size:11px;font-weight:800;
       color:var(--text3);background:var(--bg,#0d1117);
       border-right:2px solid var(--border);
       white-space:nowrap;vertical-align:middle;text-align:right;
