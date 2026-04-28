@@ -126,7 +126,17 @@
           </div>
         </div>
         <!-- renderOIChart('live-chart-wrap', ...) 의 containerId -->
-        <div id="live-chart-wrap" style="width:100%;overflow-x:auto;padding:10px 14px"></div>
+        <!-- <div id="live-chart-wrap" style="width:100%;overflow-x:auto;padding:10px 14px"></div> -->
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px;color:var(--text3)">
+          <span>확대</span>
+          <input type="range" id="oi-zoom-slider" min="1" max="6" step="0.5" value="1"
+            style="width:140px;accent-color:var(--blue,#58a6ff)">
+          <span id="oi-zoom-val" style="color:var(--blue,#58a6ff);font-family:var(--mono);min-width:28px">1×</span>
+          <span>← 가로 스크롤 →</span>
+        </div>
+        <div id="live-chart-scroll" style="overflow-x:auto;overflow-y:hidden;border:1px solid var(--border);border-radius:6px">
+          <div id="live-chart-wrap" style="height:240px"></div>
+        </div>
       </div>
 
       <!-- Top5 급등 패널 (증감 KV 준비 후 display:'' 로 켬) -->
