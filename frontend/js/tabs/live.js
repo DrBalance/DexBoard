@@ -444,7 +444,8 @@ function _calcPutWall(strikes, spot) {
     if (!map[s.strike]) map[s.strike] = { strike: s.strike, putOI: 0 };
     map[s.strike].putOI += s.putOI ?? 0;
   }
-  return Object.values(map).sort((a, b) => b.putOI - a.putOI)[0]?.strike ?? null;
+  const s = Object.values(map).sort((a, b) => b.putOI - a.putOI)[0]?.strike;
+  return s != null ? Number(s) : null;
 }
 
 function _calcCallWall(strikes, spot) {
@@ -455,7 +456,8 @@ function _calcCallWall(strikes, spot) {
     if (!map[s.strike]) map[s.strike] = { strike: s.strike, callOI: 0 };
     map[s.strike].callOI += s.callOI ?? 0;
   }
-  return Object.values(map).sort((a, b) => b.callOI - a.callOI)[0]?.strike ?? null;
+  const s = Object.values(map).sort((a, b) => b.callOI - a.callOI)[0]?.strike;
+  return s != null ? Number(s) : null;
 }
 
 function _calcFlipZone(strikes) {
@@ -470,7 +472,7 @@ function _calcFlipZone(strikes) {
   for (const s of sorted) {
     const prev = cum;
     cum += s.gex;
-    if ((prev < 0 && cum >= 0) || (prev > 0 && cum <= 0)) return s.strike;
+    if ((prev < 0 && cum >= 0) || (prev > 0 && cum <= 0)) return Number(s.strike);
   }
   return null;
 }
