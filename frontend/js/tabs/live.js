@@ -57,6 +57,9 @@ async function fetchKV() {
 
     if (dexRes.ok) {
       const dex = await dexRes.json();
+
+      console.log('[debug] dex keys:', Object.keys(dex), 'strikes:', dex.strikes?.length);
+      
       if (!dex.error) {
         _state.gex     = dex.gex_total   ?? null;
         _state.vanna   = dex.vanna_total ?? null;
@@ -93,14 +96,13 @@ async function fetchKV() {
     }
   }
 
+  console.log('[debug] sp:', sp, 'putWall:', _state.putWall, 'callWall:', _state.callWall, 'flipZone:', _state.flipZone);
+  
   // Strike 테이블
   if (_state.strikes.length > 0) {
     const countEl = document.getElementById('strike-count');
     if (countEl) countEl.textContent = `${_state.strikes.length}건`;
     const sp = _state.spyLive ?? _state.spy.price ?? _state.spot;
-    
-    console.log('[debug] sp:', sp, 'putWall:', _state.putWall, 'callWall:', _state.callWall, 'flipZone:', _state.flipZone);
-  
     renderStrikeTable('strike-tbody', _state.strikes, {
     mode:      '0dte',
     spotPrice: sp,           // ← spotPrice → sp
