@@ -57,9 +57,6 @@ async function fetchKV() {
 
     if (dexRes.ok) {
       const dex = await dexRes.json();
-
-      console.log('[debug] dex keys:', Object.keys(dex), 'strikes:', dex.strikes?.length);
-      
       if (!dex.error) {
         _state.gex     = dex.gex_total   ?? null;
         _state.vanna   = dex.vanna_total ?? null;
@@ -96,8 +93,6 @@ async function fetchKV() {
     }
   }
 
-  console.log('[debug] sp:', sp, 'putWall:', _state.putWall, 'callWall:', _state.callWall, 'flipZone:', _state.flipZone);
-  
   // Strike 테이블
   if (_state.strikes.length > 0) {
     const countEl = document.getElementById('strike-count');
@@ -404,8 +399,6 @@ function handleMarketState({ marketState }) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export function initLive() {
 
-  console.log('[debug] initLive 시작');
-  
   initNarrativePanel();
   fetchKV();
 
