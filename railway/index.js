@@ -90,6 +90,48 @@ function _etMarketStateFallback() {
   return "CLOSED";
 }
 
+
+// ─────────────────────────────────────────────────────────────────
+// Rate Limiter
+// ─────────────────────────────────────────────────────────────────
+const _analyzeRateMap = new Map();
+const RATE_LIMIT_MAX    = 5;
+const RATE_LIMIT_WINDOW = 60_000;
+
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const entry = _analyzeRateMap.get(ip);
+  if (!entry || now > entry.resetAt) {
+    _analyzeRateMap.set(ip, { count: 1, resetAt: now + RATE_LIMIT_WINDOW });
+    return true;
+  }
+  if (entry.count >= RATE_LIMIT_MAX) return false;
+  entry.count++;
+  return true;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Gemini Backoff 래퍼
+// ─────────────────────────────────────────────────────────────────
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function callGeminiWithRetry(payload, retries = 3) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      return await callGemini(payload);
+    } catch (err) {
+      const is429 = err.message?.includes("429");
+      if (is429 && i < retries - 1) {
+        const wait = Math.pow(2, i) * 1500;
+        console.warn(`[Gemini] 429 — ${wait}ms 후 재시도 (${i + 1}/${retries - 1})`);
+        await sleep(wait);
+        continue;
+      }
+      throw err;
+    }
+  }
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Gemini 분석 요청
 // ─────────────────────────────────────────────────────────────────
@@ -382,24 +424,44 @@ const server = http.createServer(async (req, res) => {
     }
     let body = "";
     req.on("data", (chunk) => (body += chunk));
+    
     req.on("end", async () => {
       try {
-        const { spot, vix } = JSON.parse(body || "{}");
-        if (!spot || !vix) {
-          res.writeHead(400, { "Content-Type": "application/json" });
-          res.end(JSON.stringify({ error: "spot and vix required" }));
-          return;
+        const ip = req.socket.remoteAddress ?? "unknown";
+        if (!checkRateLimit(ip)) {
+          res.writeHead(429, corsHeaders);
+          return res.end(JSON.stringify({ ok: false, error: "서버 요청 한도 초과 (IP 기반)" }));
         }
-        console.log(`[${new Date().toISOString()}] /calculate → spot=${spot} vix=${vix}`);
-        const result = await calculateAndStore(spot, vix);
-        res.writeHead(200, { "Content-Type": "application/json" });
-        res.end(JSON.stringify(result));
-      } catch (err) {
-        console.error("calculateAndStore error:", err);
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: err.message }));
+
+      let payload;
+      try {
+        payload = JSON.parse(body || "{}");
+      } catch {
+        res.writeHead(400, corsHeaders);
+        return res.end(JSON.stringify({ ok: false, error: "잘못된 JSON 형식입니다." }));
       }
-    });
+
+      const analysis = await callGeminiWithRetry(payload);  // ← callGemini → callGeminiWithRetry
+
+      if (!res.writableEnded) {
+        res.writeHead(200, corsHeaders);
+        res.end(JSON.stringify({ ok: true, analysis }));
+      }
+    } catch (err) {
+      console.error("[Gemini] 최종 분석 실패:", err.message);
+      const isQuotaError = err.message?.includes("429");
+      if (!res.headersSent) {
+        res.writeHead(isQuotaError ? 429 : 500, corsHeaders);
+      }    
+      res.end(JSON.stringify({
+        ok: false,
+        error: isQuotaError
+          ? "Gemini API 할당량이 일시적으로 소진되었습니다."
+          : err.message,
+      }));
+    }  
+  });
+    
     return;
   }
 
