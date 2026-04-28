@@ -35,7 +35,7 @@ function _fmtM(v) {
   const abs  = Math.abs(real);
   const sign = real >= 0 ? '+' : '-';
   if (abs >= 10_000_000) return sign + Math.round(abs / 1_000_000).toLocaleString() + 'M';
-  if (abs >= 10_000)     return sign + Math.round(abs / 1_000).toLocaleString() + 'K';
+  if (abs >= 100_000)     return sign + Math.round(abs / 1_000).toLocaleString() + 'K';
   return sign + Math.round(abs).toLocaleString();
 }
 
