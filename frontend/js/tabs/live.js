@@ -98,6 +98,9 @@ async function fetchKV() {
     const countEl = document.getElementById('strike-count');
     if (countEl) countEl.textContent = `${_state.strikes.length}건`;
     const sp = _state.spyLive ?? _state.spy.price ?? _state.spot;
+
+console.warn('[Live] renderStrikeTable opts:', { flipZone: _state.flipZone, putWall: _state.putWall, callWall: _state.callWall });
+    
     renderStrikeTable('strike-tbody', _state.strikes, {
     mode:      '0dte',
     spotPrice: sp,           // ← spotPrice → sp
