@@ -15,7 +15,7 @@ const GEMINI_KEY  = process.env.GEMINI_KEY  || "";
 const TWELVE_KEY  = process.env.TWELVE_KEY  || "";
 
 const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent";
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 
 // ─────────────────────────────────────────────────────────────────
 // 장 상태 확인 (Twelve Data)
