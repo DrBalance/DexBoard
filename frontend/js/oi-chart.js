@@ -40,7 +40,7 @@ export function renderOIChart(containerId, strikes, spotPrice, opts = {}) {
   if (!canvas) {
     canvas = document.createElement('canvas');
     canvas.className = 'oi-chart-canvas';
-    canvas.style.cssText = 'display:block;width:100%;height:240px;';
+    canvas.style.cssText = 'display:block;width:100%;height:480px;';
     container.appendChild(canvas);
   }
 
