@@ -440,7 +440,7 @@ export function initLive() {
   initNarrativePanel();
 
   // VC 차트 초기화
-  initVCChart('vc-chart-container');
+  initVCChart('vc-chart-wrap');
 
   // VIX 전일 종가 설정 (snapshot에서 가져올 때까지 일단 KV 로드 후 반영)
   // → fetchKV 이후 _state.vix.price 가 들어오면 pushVixPoint 시작
