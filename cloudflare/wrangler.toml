@@ -6,6 +6,11 @@ compatibility_date = "2024-01-01"
 binding = "DEX_KV"
 id = "a0c7f445d41a42b68db2e73efff5c79d"
 
+[[d1_databases]]
+binding = "DB"
+database_name = "options-screener"
+database_id = "35b4574c-3e3e-4d85-b12d-7cf857414db7"
+
 [vars]
 RAILWAY_URL = "https://dexboard-production.up.railway.app"
 YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
