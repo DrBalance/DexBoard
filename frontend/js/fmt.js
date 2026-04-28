@@ -32,12 +32,20 @@ export function fmtChangePct(v) {
   return `(${n >= 0 ? '+' : ''}${n.toFixed(2)}%)`;
 }
 
-// ── M단위 표시 (Greeks, GEX 등) ──────────────────────────
+// ── Greeks/GEX 표시 — 값이 이미 M단위로 KV에 저장됨
+// 실제값(M×1,000,000) 기준:
+//   10M 이상        → "±NNN M"  (정수)
+//   10K~1M 미만     → "±NNN K"  (정수)
+//   10K 미만        → "±NNN,NNN" (정수, 콤마)
 export function fmtM(v) {
-  if (v == null || isNaN(v)) return '—';
-  const n = Number(v);
-  const sign = n >= 0 ? '+' : '';
-  return `${sign}${n.toFixed(0).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}M`;
+  if (v == null || isNaN(v)) return '\u2014';
+  const n    = Number(v);          // 단위: M
+  const real = n * 1_000_000;      // 실제 달러 값
+  const abs  = Math.abs(real);
+  const sign = real >= 0 ? '+' : '-';
+  if (abs >= 10_000_000)  return sign + Math.round(abs / 1_000_000).toLocaleString() + 'M';
+  if (abs >= 10_000)      return sign + Math.round(abs / 1_000).toLocaleString() + 'K';
+  return sign + Math.round(abs).toLocaleString();
 }
 
 // ── VOLD 표시 (M단위, 소수점 1자리) ─────────────────────
@@ -78,16 +86,15 @@ export const fmt = {
     return sign + abs.toLocaleString();
   },
 
-  // Greeks (DEX / GEX / Vanna / Charm)
+  // Greeks (GEX / Vanna / Charm) — 값이 이미 M단위로 KV에 저장됨
   greek(v) {
     if (v == null || isNaN(v)) return '—';
-    const abs  = Math.abs(v);
-    const sign = v < 0 ? '-' : '';
-    if (abs >= 1_000_000_000) return sign + (abs / 1_000_000_000).toFixed(2) + 'B';
-    if (abs >= 1_000_000)     return sign + (abs / 1_000_000).toFixed(2) + 'M';
-    if (abs >= 1_000)         return sign + (abs / 1_000).toFixed(1) + 'K';
-    if (abs >= 1)             return sign + abs.toFixed(2);
-    return sign + abs.toFixed(4);
+    const real = Number(v) * 1_000_000;
+    const abs  = Math.abs(real);
+    const sign = real >= 0 ? '+' : '-';
+    if (abs >= 10_000_000)  return sign + Math.round(abs / 1_000_000).toLocaleString() + 'M';
+    if (abs >= 10_000)      return sign + Math.round(abs / 1_000).toLocaleString() + 'K';
+    return sign + Math.round(abs).toLocaleString();
   },
 
   // 가격  595.23
@@ -120,15 +127,14 @@ export const fmt = {
     }) + ' ET';
   },
 
-  // DEX / GEX 계열 (M단위, 부호 포함)
-  // 1_000_000_000 이상 → B, 1_000_000 이상 → M, 나머지 → 정수
+  // DEX — 값이 이미 M단위로 KV에 저장됨
   dex(v) {
     if (v == null || isNaN(v)) return '—';
-    const abs  = Math.abs(v);
-    const sign = v < 0 ? '-' : '+';
-    if (abs >= 1_000_000_000) return sign + (abs / 1_000_000_000).toFixed(2) + 'B';
-    if (abs >= 1_000_000)     return sign + (abs / 1_000_000).toFixed(2) + 'M';
-    if (abs >= 1_000)         return sign + (abs / 1_000).toFixed(1) + 'K';
+    const real = Number(v) * 1_000_000;
+    const abs  = Math.abs(real);
+    const sign = real >= 0 ? '+' : '-';
+    if (abs >= 10_000_000)  return sign + Math.round(abs / 1_000_000).toLocaleString() + 'M';
+    if (abs >= 10_000)      return sign + Math.round(abs / 1_000).toLocaleString() + 'K';
     return sign + Math.round(abs).toLocaleString();
   },
 
