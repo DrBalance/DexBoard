@@ -15,7 +15,7 @@ const GEMINI_KEY  = process.env.GEMINI_KEY  || "";
 const TWELVE_KEY  = process.env.TWELVE_KEY  || "";
 
 const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
 
 // ─────────────────────────────────────────────────────────────────
 // 장 상태 확인 (Twelve Data)
@@ -89,79 +89,79 @@ async function callGemini(payload) {
       c:  +(s.charm  / 1e6).toFixed(1),
     }));
 
-  const systemInstruction =
-    "너는 옵션 시장과 현물 거래량의 상관관계를 분석하는 퀀트 전문가야. " +
-    "DEX 히트맵의 장벽(Wall)과 VOLD의 에너지를 비교하여 시장의 페이크 상승/하락을 포착하고 " +
-    "시나리오별 확률을 도출하는 것이 네 임무야. " +
-    "반드시 지정된 JSON 형식으로만 응답해야 하며, 다른 텍스트는 포함하지 마.";
+  const fullPrompt = `
+[역할 및 출력 규칙]
+너는 옵션 시장과 현물 거래량의 상관관계를 분석하는 퀀트 전문가야.
+DEX 히트맵의 장벽(Wall)과 VOLD의 에너지를 비교하여 시장의 페이크 상승/하락을 포착하고
+시나리오별 확률을 도출하는 것이 네 임무야.
+반드시 아래 JSON 형식으로만 응답해야 하며, 마크다운 코드블록이나 다른 텍스트는 절대 포함하지 마.
 
-  const userPrompt = `
-# 키 매핑
+[키 매핑]
 s=strike, cd=call_dex(M), pd=put_dex(M), g=gex(M), v=vanna(M), c=charm(M)
 
-# 현재 시장 상태
+[현재 시장 상태]
 - 장 상태: ${payload.marketState} / ET: ${payload.etTime}
 - SPY: $${payload.spot} (${payload.spyChangePct}%)
 - VIX: ${payload.vix} (${payload.vixChangePct}%)
 
-# 딜러 포지션 (0DTE 합산, 단위 M)
+[딜러 포지션 (0DTE 합산, 단위 M)]
 - DEX: ${(payload.dex / 1e6).toFixed(1)}M
 - GEX: ${(payload.gex / 1e6).toFixed(1)}M
 - Vanna: ${(payload.vanna / 1e6).toFixed(1)}M
 - Charm: ${(payload.charm / 1e6).toFixed(1)}M
 - VOLD(RSP): ${(payload.vold / 1e6).toFixed(1)}M
 
-# Strike 데이터 (DEX 상위 10개)
+[Strike 데이터 (DEX 상위 10개)]
 ${JSON.stringify(compressedStrikes)}
 
-# 응답 형식 (JSON만, 한국어)
+[응답 JSON 형식 — 한국어, 각 필드를 구체적이고 충분히 서술할 것]
 {
   "market_regime": {
-    "phase": "시장 국면",
-    "volatility_context": "변동성 환경 한 줄 요약",
-    "dominance": "Dealer-Driven 또는 Flow-Driven"
+    "phase": "시장 국면 (예: 감마 압축 구간, 언와인드 진행 중 등)",
+    "volatility_context": "현재 VIX 수준과 변동성 방향성에 대한 구체적 설명",
+    "dominance": "Dealer-Driven 또는 Flow-Driven — 근거 포함"
   },
   "deep_dive": {
     "dealer_inventory": {
-      "gamma_exposure": "GEX 상태 및 위험 구간 설명",
-      "vanna_flow": "VIX 변화에 따른 딜러 강제 매수/매도 압력"
+      "gamma_exposure": "GEX 부호 및 크기, 핵심 위험 스트라이크, 딜러 헷지 방향을 상세히 설명",
+      "vanna_flow": "현재 VIX 방향에 따른 Vanna 흐름이 딜러 델타 헷지에 미치는 압력 분석"
     },
     "breadth_analysis": {
-      "vold_signal": "VOLD 다이버전스 여부 및 강도",
-      "interpretation": "현물 수급 에너지 해석"
+      "vold_signal": "VOLD와 SPY 가격 간 다이버전스 여부, 강도, 지속 가능성 평가",
+      "interpretation": "현물 수급 에너지의 질적 해석 — 진짜 매수/매도 vs 파생 헷지 유발 흐름 구분"
     }
   },
   "scenarios": [
     {
       "case": "상승 시나리오",
-      "trigger": "발생 조건",
-      "target": "목표가 또는 저항선",
+      "trigger": "구체적인 발생 조건 (예: VIX 하락 + GEX 양전환 구간 돌파)",
+      "target": "목표 스트라이크 또는 Call Wall 레벨",
       "probability": 60
     },
     {
       "case": "하락 시나리오",
-      "trigger": "발생 조건",
-      "target": "지지선 또는 Put Wall",
+      "trigger": "구체적인 발생 조건 (예: Put Wall 하방 이탈 + VOLD 음전환)",
+      "target": "주요 지지선 또는 Put Wall 레벨",
       "probability": 40
     }
   ],
-  "expert_insight": "최종 전문가 결론 및 주의사항 (2~3문장)"
+  "expert_insight": "딜러 헷징 메커니즘 관점에서 현 국면의 핵심 리스크와 트레이딩 함의를 3~4문장으로 서술"
 }`.trim();
 
-  const res = await fetch(`${GEMINI_URL}?key=${GEMINI_KEY}`, {
+  const url = `${GEMINI_URL}?key=${GEMINI_KEY}`;
+  const res = await fetch(url, {
     method:  "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      system_instruction: { parts: [{ text: systemInstruction }] },
-      contents: [{ parts: [{ text: userPrompt }] }],
+      contents: [{ parts: [{ text: fullPrompt }] }],
       generationConfig: {
         temperature:      0.15,
         topP:             0.8,
-        maxOutputTokens:  1024,
+        maxOutputTokens:  2048,
         responseMimeType: "application/json",
       },
     }),
-    signal: AbortSignal.timeout(20_000),
+    signal: AbortSignal.timeout(30_000),
   });
 
   if (!res.ok) {
