@@ -4,6 +4,7 @@
 //   GET  /api/snapshot/prev → previous snapshot from KV
 //   GET  /api/dex/:group    → DEX data (0dte | weekly | monthly | quarterly | structure)
 //   GET  /api/dex/open      → opening snapshot
+//   GET  /api/vix-tick      → VIX 1분봉 포인트 배열 (vc-chart.js용)
 //   POST /kv-write          → internal: Railway writes KV through here
 // Cron:
 //   */1  13-20 * * 1-5  → fetchSnapshot (정규장 1분)
@@ -72,6 +73,39 @@ export default {
       const data = await env.DEX_KV.get("options:spy:open", { type: "json" });
       if (!data) return json({ error: "No open snapshot" }, 200, corsHeaders);
       return json(data, 200, corsHeaders);
+    }
+
+    // ── GET /api/vix-tick ───────────────────────────────────────
+    // VIX 1분봉 포인트 배열 반환 (vc-chart.js용)
+    // { prevClose: number, points: [{ ts: ISOstring, v: number }] }
+    if (request.method === "GET" && path === "/api/vix-tick") {
+      try {
+        const url = `${env.YAHOO_BASE}/%5EVIX?interval=1m&range=1d`;
+        const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+        if (!res.ok) return json({ error: `Yahoo VIX: ${res.status}` }, 502, corsHeaders);
+
+        const data      = await res.json();
+        const result    = data?.chart?.result?.[0];
+        if (!result)    return json({ error: "Yahoo VIX: no result" }, 502, corsHeaders);
+
+        const meta       = result.meta;
+        const timestamps = result.timestamp ?? [];
+        const closes     = result.indicators?.quote?.[0]?.close ?? [];
+        const prevClose  = meta.chartPreviousClose ?? meta.previousClose ?? null;
+
+        // timestamp(Unix초) → ET ISO 문자열 + 유효한 close만 추출
+        const points = timestamps
+          .map((ts, i) => ({ ts, v: closes[i] }))
+          .filter(d => d.v != null && !isNaN(d.v))
+          .map(d => ({
+            ts: new Date(d.ts * 1000).toISOString(),
+            v:  round2(d.v),
+          }));
+
+        return json({ prevClose, points }, 200, corsHeaders);
+      } catch (e) {
+        return json({ error: e.message }, 502, corsHeaders);
+      }
     }
 
     // ── Health check ────────────────────────────────────────────
