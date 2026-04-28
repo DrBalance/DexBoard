@@ -97,16 +97,16 @@ async function fetchKV() {
   if (_state.strikes.length > 0) {
     const countEl = document.getElementById('strike-count');
     if (countEl) countEl.textContent = `${_state.strikes.length}건`;
-    // renderStrikeTable('strike-tbody', _state.strikes, { mode: '0dte' });
-
-    console.log('[debug] spotPrice:', spotPrice, 'putWall:', _state.putWall, 'callWall:', _state.callWall, 'flipZone:', _state.flipZone);
-   
+    const sp = _state.spyLive ?? _state.spy.price ?? _state.spot;
+    
+    console.log('[debug] sp:', sp, 'putWall:', _state.putWall, 'callWall:', _state.callWall, 'flipZone:', _state.flipZone);
+  
     renderStrikeTable('strike-tbody', _state.strikes, {
-      mode:      '0dte',
-      spotPrice: spotPrice,
-      flipZone:  _state.flipZone  ?? null,
-      putWall:   _state.putWall   ?? null,
-      callWall:  _state.callWall  ?? null,
+    mode:      '0dte',
+    spotPrice: sp,           // ← spotPrice → sp
+    flipZone:  _state.flipZone  ?? null,
+    putWall:   _state.putWall   ?? null,
+    callWall:  _state.callWall  ?? null,
     });
   }
 
