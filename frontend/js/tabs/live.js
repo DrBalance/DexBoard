@@ -88,7 +88,14 @@ async function fetchKV() {
   if (_state.strikes.length > 0) {
     const countEl = document.getElementById('strike-count');
     if (countEl) countEl.textContent = `${_state.strikes.length}건`;
-    renderStrikeTable('strike-tbody', _state.strikes, { mode: '0dte' });
+    // renderStrikeTable('strike-tbody', _state.strikes, { mode: '0dte' });
+    renderStrikeTable('strike-tbody', _state.strikes, {
+      mode:      '0dte',
+      spotPrice: spotPrice,
+      flipZone:  _state.flipZone  ?? null,
+      putWall:   _state.putWall   ?? null,
+      callWall:  _state.callWall  ?? null,
+    });
   }
 
   // 판단 패널
