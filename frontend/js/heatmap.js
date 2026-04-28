@@ -64,7 +64,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
 
   // 데이터 없음
   if (!strikes || strikes.length === 0) {
-    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">히트맵 데이터 없음</div>';
+    el.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:8px">히트맵 데이터 없음</div>';
     return;
   }
 
@@ -77,7 +77,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
   );
 
   if (filtered.length === 0) {
-    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">표시할 행사가 없음 (±8% 범위)</div>';
+    el.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:8px">표시할 행사가 없음 (±8% 범위)</div>';
     return;
   } */
 
@@ -94,7 +94,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
 
   // ── 레이아웃 상수 ─────────────────────────────────────
   const COL_W    = 72;   // 데이터 열 너비 px
-  const LBL_W    = 36;   // sticky 라벨 열 너비 px
+  const LBL_W    = 30;   // sticky 라벨 열 너비 px
   const ROW_H_SM = 28;   // Strike / GEX / Vanna / Charm 행
   const ROW_H_LG = 52;   // DEX 히트맵 행
 
@@ -103,7 +103,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     `<td style="
       position:sticky;left:0;z-index:2;
       min-width:${LBL_W}px;max-width:${LBL_W}px;height:${height}px;
-      padding:0 6px;font-size:10px;font-weight:600;
+      padding:0 6px;font-size:11px;font-weight:600;
       color:var(--text3);background:var(--bg,#0d1117);
       border-right:2px solid var(--border);
       white-space:nowrap;vertical-align:middle;text-align:right;
@@ -117,7 +117,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     const isSpot = i === spotIdx;
     return `<td style="
       min-width:${COL_W}px;max-width:${COL_W}px;height:${ROW_H_SM}px;
-      text-align:center;font-size:11px;font-family:var(--mono);
+      text-align:center;font-size:13px;font-family:var(--mono);
       color:${isSpot ? '#fff' : 'var(--text2)'};
       font-weight:${isSpot ? '700' : '400'};
       background:${isSpot ? 'rgba(255,255,255,.08)' : 'transparent'};
@@ -147,7 +147,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     const color  = s.gex > 0 ? '#22c55e' : s.gex < 0 ? '#ef4444' : 'var(--text3)';
     return `<td style="
       min-width:${COL_W}px;max-width:${COL_W}px;height:${ROW_H_SM}px;
-      text-align:center;font-size:12px;font-family:var(--mono);
+      text-align:center;font-size:13px;font-family:var(--mono);
       color:${color};
       background:${isSpot ? 'rgba(255,255,255,.08)' : 'transparent'};
       border-right:1px solid var(--border);
@@ -160,7 +160,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     const isSpot = i === spotIdx;
     return `<td style="
       min-width:${COL_W}px;max-width:${COL_W}px;height:${ROW_H_SM}px;
-      text-align:center;font-size:12px;font-family:var(--mono);
+      text-align:center;font-size:13px;font-family:var(--mono);
       color:#a78bfa;
       background:${isSpot ? 'rgba(255,255,255,.08)' : 'transparent'};
       border-right:1px solid var(--border);
@@ -173,7 +173,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     const isSpot = i === spotIdx;
     return `<td style="
       min-width:${COL_W}px;max-width:${COL_W}px;height:${ROW_H_SM}px;
-      text-align:center;font-size:12px;font-family:var(--mono);
+      text-align:center;font-size:13px;font-family:var(--mono);
       color:#2dd4bf;
       background:${isSpot ? 'rgba(255,255,255,.08)' : 'transparent'};
       border-right:1px solid var(--border);
