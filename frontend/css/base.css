@@ -30,7 +30,7 @@
   /* 폰트 */
   --sans: 'DM Sans', system-ui, sans-serif;
   /* --mono: 'JetBrains Mono', 'Fira Code', monospace; */
-  --mono: 'Inter', sans-serif;
+  --mono: Arial, sans-serif;
 
   /* 반경 */
   --r-sm: 4px;
