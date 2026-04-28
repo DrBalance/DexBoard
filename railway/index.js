@@ -241,7 +241,12 @@ ${JSON.stringify(compressedStrikes)}
       .trim();
     return JSON.parse(cleaned);
   } catch {
-    console.log("[Gemini RAW] " + text.slice(0, 300));
+    // Railway 로그 truncation 우회 — 문자열을 쪼개서 출력
+    const raw = text.slice(0, 500);
+    const chunkSize = 80;
+    for (let i = 0; i < raw.length; i += chunkSize) {
+      console.log("[Gemini RAW] chunk" + Math.floor(i/chunkSize) + ": " + raw.slice(i, i + chunkSize));
+    }
     throw new Error("Gemini: JSON 파싱 실패");
   }
 }
