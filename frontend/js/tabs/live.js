@@ -12,6 +12,7 @@ import {
 import { renderHeatmap }                       from '../heatmap.js';
 import { buildNarrative, buildAnalysisPayload } from '../narrative.js';
 import { renderOIChart, updateOIChart, renderStrikeTable } from '../oi-chart.js';
+import { initVCChart, pushVixPoint, pushVoldPoint, setVixPrevClose } from '../vc-chart.js';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 내부 상태
@@ -134,6 +135,10 @@ function handleTick({ s, p, v }) {
       if (p > _state.rspPrevPrice)      _state.vold += tradeValue;
       else if (p < _state.rspPrevPrice) _state.vold -= tradeValue;
       renderVOLD();
+
+      // VOLD 차트에 포인트 추가
+      const tsET = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+      pushVoldPoint(new Date(tsET).toISOString(), _state.vold);
     }
     _state.rspPrevPrice = p;
   }
@@ -433,7 +438,16 @@ function handleMarketState({ marketState }) {
 export function initLive() {
 
   initNarrativePanel();
+
+  // VC 차트 초기화
+  initVCChart('vc-chart-container');
+
+  // VIX 전일 종가 설정 (snapshot에서 가져올 때까지 일단 KV 로드 후 반영)
+  // → fetchKV 이후 _state.vix.price 가 들어오면 pushVixPoint 시작
   fetchKV();
+
+  // VIX 1분봉 폴링 (1분마다)
+  _startVixPolling();
 
   window.addEventListener('clockPoll30m', () => {
     fetchKV();
@@ -510,7 +524,39 @@ function _calcFlipZone(strikes) {
   return null;
 }
 
-function _calcPCR(strikes) {
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// VIX 1분봉 폴링 (Yahoo Finance ^VIX)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+let _vixPollTimer = null;
+let _vixPrevCloseSet = false;
+
+async function _fetchVixPoint() {
+  try {
+    // Yahoo Finance: 1분봉 최근 2개 (CORS 우회 위해 CF Worker 경유)
+    const url = `${CF_API}/api/vix-tick`;   // CF Worker에서 Yahoo proxying
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) return;
+    const json = await res.json();
+
+    // { prevClose: number, points: [{ ts: ISOstring, v: number }] }
+    if (!_vixPrevCloseSet && json.prevClose != null) {
+      setVixPrevClose(json.prevClose);
+      _vixPrevCloseSet = true;
+    }
+    for (const pt of (json.points ?? [])) {
+      pushVixPoint(pt.ts, pt.v);
+    }
+  } catch (e) {
+    console.warn('[Live] VIX 폴링 실패:', e.message);
+  }
+}
+
+function _startVixPolling() {
+  if (_vixPollTimer) return;
+  _fetchVixPoint();                             // 즉시 1회
+  _vixPollTimer = setInterval(_fetchVixPoint, 60_000);  // 이후 1분마다
+}
   if (!strikes?.length) return null;
   let totalCall = 0, totalPut = 0;
   for (const s of strikes) {
