@@ -21,6 +21,9 @@ const GEMINI_URL =
 // 장 상태 확인 (Twelve Data)
 // returns: 'REGULAR' | 'PRE' | 'AFTER' | 'CLOSED'
 // ─────────────────────────────────────────────────────────────────
+
+let _wasRegular = false;  // 한번이라도 REGULAR였던 적 있는지
+
 async function fetchMarketState() {
   try {
     const url = `https://api.twelvedata.com/market_state?exchange=NYSE&apikey=${TWELVE_KEY}`;
@@ -28,36 +31,42 @@ async function fetchMarketState() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const json = await res.json();
-    console.log("[MarketState] 원본 응답:", JSON.stringify(json));  // ← 추가
-    
     const nyse = Array.isArray(json)
       ? (json.find(e => e.code === "XNYS") ?? json[0])
       : json;
 
-
-    console.log("[MarketState] nyse 객체:", JSON.stringify(nyse));  // ← 추가
-    console.log("[MarketState] is_market_open:", nyse?.is_market_open);  // ← 추가
-
-    
     if (!nyse) throw new Error("NYSE 데이터 없음");
 
-    if (nyse.is_market_open) return "REGULAR";
+    if (nyse.is_market_open) {
+      _wasRegular = true;
+      return "REGULAR";
+    }
 
-    // time_after_open > 0 이면 애프터마켓
     const afterSec = _parseHMS(nyse.time_after_open);
-    if (afterSec > 0) return "AFTER";
+    if (afterSec > 0) {
+      _wasRegular = false;  // 애프터마켓이면 정규장 종료 확정
+      return "AFTER";
+    }
 
-    // time_to_open 으로 프리마켓 판단 (ET 04:00~09:30)
-    const nowET  = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
-    const etHour = nowET.getHours() + nowET.getMinutes() / 60;
-    if (etHour >= 4.0 && etHour < 9.5) return "PRE";
+    // Twelve Data가 CLOSED를 반환했을 때
+    // 정규장이었던 적이 있으면 ET 시각으로 더블체크
+    if (_wasRegular) {
+      const etCheck = _etMarketStateFallback();
+      if (etCheck === "REGULAR" || etCheck === "PRE") {
+        console.warn("[MarketState] Twelve Data CLOSED 반환, ET 시각으로 오버라이드:", etCheck);
+        return etCheck;
+      }
+      // ET 시각도 CLOSED면 진짜 마감
+      _wasRegular = false;
+    }
 
-    return "CLOSED";
+    return _parseHMStoState(nyse);  // PRE/CLOSED 판단
   } catch (e) {
     console.warn("[MarketState] 조회 실패:", e.message, "→ ET 시각 기반 폴백");
     return _etMarketStateFallback();
   }
 }
+
 
 function _parseHMS(hms) {
   if (!hms) return 0;
