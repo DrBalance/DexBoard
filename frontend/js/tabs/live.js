@@ -180,6 +180,32 @@ function renderCharm() {
   setEl('m-charm0', fmtM(_state.charm), COLOR.teal);
 }
 
+function renderPutWall() {
+  const v = _state.putWall;
+  setEl('m-put-wall', v != null ? `$${v.toFixed(0)}` : '—', COLOR.red ?? 'var(--red)');
+}
+
+function renderCallWall() {
+  const v = _state.callWall;
+  setEl('m-call-wall', v != null ? `$${v.toFixed(0)}` : '—', COLOR.green ?? 'var(--green)');
+}
+
+function renderFlipZone() {
+  const v = _state.flipZone;
+  setEl('m-flip-zone', v != null ? `$${v.toFixed(0)}` : '—', COLOR.amber ?? 'var(--amber)');
+}
+
+function renderPCR() {
+  const v = _state.pcr;
+  let color = COLOR.muted;
+  if (v != null) {
+    color = v > 1.2 ? (COLOR.red   ?? 'var(--red)')
+          : v < 0.8 ? (COLOR.green ?? 'var(--green)')
+          :            (COLOR.amber ?? 'var(--amber)');
+  }
+  setEl('m-pcr', v != null ? v.toFixed(2) : '—', color);
+}
+
 function renderVOLD() {
   const color = colorBySign(_state.vold);
   setEl('m-dex0',     fmtVold(_state.vold), color);
@@ -195,6 +221,10 @@ function renderCards() {
   renderVanna();
   renderCharm();
   renderVOLD();
+  renderPutWall();
+  renderCallWall();
+  renderFlipZone();
+  renderPCR();
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
