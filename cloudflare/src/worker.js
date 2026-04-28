@@ -1,23 +1,29 @@
 // DexBoard – Cloudflare Workers main
 // Routes:
-//   GET  /api/snapshot      → latest 1min snapshot from KV
-//   GET  /api/snapshot/prev → previous snapshot from KV
-//   GET  /api/dex/:group    → DEX data (0dte | weekly | monthly | quarterly | structure)
-//   GET  /api/dex/open      → opening snapshot
-//   GET  /api/vix-tick      → VIX 1분봉 포인트 배열 (vc-chart.js용)
-//   POST /kv-write          → internal: Railway writes KV through here
+//   GET  /api/snapshot        → latest 1min snapshot from KV
+//   GET  /api/snapshot/prev   → previous snapshot from KV
+//   GET  /api/dex/:group      → DEX data (0dte | weekly | monthly | quarterly | structure)
+//   GET  /api/dex/open        → opening snapshot
+//   GET  /api/vix-tick        → VIX 1분봉 포인트 배열 (vc-chart.js용)
+//   GET  /api/screener        → 스크리너 점수 결과 (?date=YYYY-MM-DD)
+//   GET  /api/screener/sector → 섹터별 필터 (?sector=Technology&date=...)
+//   POST /api/screener/run    → 수동 스크리너 실행 (테스트용)
+//   POST /kv-write            → internal: Railway writes KV through here
 // Cron:
 //   */1  13-20 * * 1-5  → fetchSnapshot (정규장 1분)
 //   */3  4-13  * * 1-5  → fetchSnapshot (프리마켓 3분)
 //   */3  20-23 * * 1-5  → fetchSnapshot (애프터 3분)
 //   */15 13-20 * * 1-5  → triggerRailway (DEX 계산)
 //   0    13    * * 1-5  → snapshotOpen  (장 시작 스냅샷)
+//   30   20    * * 1-5  → runScreener   (장 마감 후 스크리너)
+
+import { runScreener, getScreenerResults } from './screener-v2.js';
 
 export default {
   // ─────────────────────────────────────────
   // HTTP fetch handler
   // ─────────────────────────────────────────
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const url  = new URL(request.url);
     const path = url.pathname;
 
@@ -108,6 +114,38 @@ export default {
       }
     }
 
+    // ── GET /api/screener ───────────────────────────────────────
+    if (request.method === "GET" && path === "/api/screener") {
+      const date = url.searchParams.get("date") || undefined;
+      const results = await getScreenerResults(env.DB, date);
+      return json(results, 200, corsHeaders);
+    }
+
+    // ── GET /api/screener/sector ────────────────────────────────
+    if (request.method === "GET" && path === "/api/screener/sector") {
+      const sector = url.searchParams.get("sector");
+      const date   = url.searchParams.get("date") || new Date().toISOString().split("T")[0];
+      if (!sector) return json({ error: "sector param required" }, 400, corsHeaders);
+      const rows = await env.DB.prepare(`
+        SELECT sc.*, s.name
+        FROM screener_scores sc
+        JOIN symbols s USING (symbol)
+        WHERE sc.date = ? AND sc.sector = ?
+        ORDER BY sc.total_score DESC
+      `).bind(date, sector).all();
+      return json(rows.results, 200, corsHeaders);
+    }
+
+    // ── POST /api/screener/run (수동 트리거) ────────────────────
+    if (request.method === "POST" && path === "/api/screener/run") {
+      const secret = request.headers.get("x-kv-secret");
+      if (secret !== env.CF_KV_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      ctx.waitUntil(runScreener(env));
+      return json({ ok: true, message: "스크리너 실행 시작" }, 200, corsHeaders);
+    }
+
     // ── Health check ────────────────────────────────────────────
     if (path === "/health") {
       return json({ status: "ok", ts: new Date().toISOString() }, 200, corsHeaders);
@@ -130,6 +168,12 @@ export default {
 
     if (cron === "*/15 13-20 * * 1-5") {
       ctx.waitUntil(triggerRailway(env));
+      return;
+    }
+
+    // 장 마감 후 스크리너 실행 (20:30 UTC = 16:30 ET)
+    if (cron === "30 20 * * 1-5") {
+      ctx.waitUntil(runScreener(env));
       return;
     }
 
