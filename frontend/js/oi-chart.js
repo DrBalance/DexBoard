@@ -79,6 +79,10 @@ export function renderStrikeTable(tbodyId, strikes, opts = {}) {
     mode       = '0dte',
     showDelta  = false,
     showDTE    = false,
+    spotPrice  = null,
+    flipZone   = null,
+    putWall    = null,
+    callWall   = null,
   } = opts;
 
   /* thead 갱신 */
@@ -115,13 +119,21 @@ export function renderStrikeTable(tbodyId, strikes, opts = {}) {
   tbody.innerHTML = sorted.map(row => {
     const dexCls = row.dex >= 0 ? 'up' : 'down';
     const dteTd  = showDTE ? `<td>${row.dte ?? '—'}</td>` : '';
-    const deltaTd = showDelta ? `
-      <td class="${row.callDelta >= 0 ? 'up' : 'down'}">${fmt.delta(row.callDelta)}</td>
-      <td class="${row.putDelta  >= 0 ? 'up' : 'down'}">${fmt.delta(row.putDelta)}</td>
-    ` : '';
+    const isCur  = spotPrice && Math.abs(row.strike - spotPrice) < 0.5;
+    const isFlip = flipZone  && row.strike === flipZone;
+    const isPW   = putWall   && row.strike === putWall;
+    const isCW   = callWall  && row.strike === callWall;
+    const tags   = [
+      isCur  ? `<span style="font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px;background:rgba(88,166,255,.2);color:#58a6ff">현재가</span>` : '',
+      isFlip ? `<span style="font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px;background:rgba(245,158,11,.2);color:#f59e0b">Flip</span>` : '',
+      isPW   ? `<span style="font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px;background:rgba(239,68,68,.2);color:#ef4444">Put Wall</span>` : '',
+      isCW   ? `<span style="font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px;background:rgba(34,197,94,.2);color:#22c55e">Call Wall</span>` : '',
+    ].join('');
+    const rowBg = isCur ? 'background:rgba(88,166,255,.07)' : isFlip ? 'background:rgba(245,158,11,.05)' : '';
 
-    return `<tr>
-      <td>$${row.strike}</td>
+    return `<tr style="${rowBg}">
+      <td>$${row.strike}${tags}</td>
+    
       ${dteTd}
       <td style="color:var(--green)">${fmt.oi(row.callOI)}</td>
       <td style="color:var(--red)">${fmt.oi(row.putOI)}</td>
@@ -264,6 +276,12 @@ function _buildConfig(chartData, spotPrice, opts) {
             title: items => {
               const s = chartData.raw[items[0].dataIndex];
               return s ? `$${s.strike}` : '';
+            },
+            label: item => {
+              const abs = Math.abs(item.raw);
+              if (item.dataset.label === 'Call OI') return ` Call OI: ${abs.toLocaleString()}`;
+              if (item.dataset.label === 'Put OI')  return ` Put OI: ${abs.toLocaleString()}`;
+              return ` ${item.dataset.label}: ${item.formattedValue}`;
             },
             afterBody: items => {
               const s = chartData.raw[items[0].dataIndex];
