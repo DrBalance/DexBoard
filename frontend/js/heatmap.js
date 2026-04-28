@@ -22,7 +22,7 @@ const _scrollInitialized = {};
 // 양수: 녹색 (딜러 매수 헤지), 음수: 빨간색 (딜러 매도 헤지)
 function _dexColor(value, maxAbs) {
   if (!value || maxAbs === 0) return 'transparent';
-  const opacity = Math.min(Math.abs(value) / maxAbs, 1) * 0.85;
+  const opacity = Math.min(Math.abs(value) / maxAbs, 1) * 1; //색채 농도조절은 마지막 *1의 1이 최대값의 농도.현재는 100%
   return value > 0
     ? `rgba(34,197,94,${opacity.toFixed(2)})`   // --green
     : `rgba(239,68,68,${opacity.toFixed(2)})`;  // --red
