@@ -234,6 +234,10 @@ ${JSON.stringify(compressedStrikes)}
   const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) throw new Error("Gemini: 응답 텍스트 없음");
 
+
+console.log("[Gemini] 원본 응답:", text.slice(0, 500)); // ← 추가
+
+  
   try {
     return JSON.parse(text);
   } catch {
