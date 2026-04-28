@@ -28,6 +28,10 @@ const _state = {
   spyLive:      null,
   vold:         0,
   rspPrevPrice: null,
+  putWall:  null,
+  callWall: null,
+  flipZone: null,
+  pcr:      null,
 };
 
 // OI 차트 인스턴스 (탭 재방문 시 재생성 방지)
@@ -59,6 +63,11 @@ async function fetchKV() {
         _state.charm   = dex.charm_total ?? null;
         _state.strikes = dex.strikes     ?? [];
         _state.spot    = dex.spot        ?? null;  // snapshot 없을 때 폴백용
+
+        _state.putWall  = _calcPutWall(_state.strikes, _state.spot);
+        _state.callWall = _calcCallWall(_state.strikes, _state.spot);
+        _state.flipZone = _calcFlipZone(_state.strikes);
+        _state.pcr      = _calcPCR(_state.strikes);
       }
     }
   } catch (e) {
@@ -424,4 +433,53 @@ export function initLive() {
 export function refreshLive() {
   console.log('[Live] refresh');
   fetchKV();
+}
+
+function _calcPutWall(strikes, spot) {
+  if (!strikes?.length || !spot) return null;
+  const near = strikes.filter(s => Math.abs(s.strike - spot) / spot < 0.10);
+  const map = {};
+  for (const s of near) {
+    if (!map[s.strike]) map[s.strike] = { strike: s.strike, putOI: 0 };
+    map[s.strike].putOI += s.putOI ?? 0;
+  }
+  return Object.values(map).sort((a, b) => b.putOI - a.putOI)[0]?.strike ?? null;
+}
+
+function _calcCallWall(strikes, spot) {
+  if (!strikes?.length || !spot) return null;
+  const near = strikes.filter(s => Math.abs(s.strike - spot) / spot < 0.10);
+  const map = {};
+  for (const s of near) {
+    if (!map[s.strike]) map[s.strike] = { strike: s.strike, callOI: 0 };
+    map[s.strike].callOI += s.callOI ?? 0;
+  }
+  return Object.values(map).sort((a, b) => b.callOI - a.callOI)[0]?.strike ?? null;
+}
+
+function _calcFlipZone(strikes) {
+  if (!strikes?.length) return null;
+  const map = {};
+  for (const s of strikes) {
+    if (!map[s.strike]) map[s.strike] = { strike: s.strike, gex: 0 };
+    map[s.strike].gex += s.gex ?? 0;
+  }
+  const sorted = Object.values(map).sort((a, b) => a.strike - b.strike);
+  let cum = 0;
+  for (const s of sorted) {
+    const prev = cum;
+    cum += s.gex;
+    if ((prev < 0 && cum >= 0) || (prev > 0 && cum <= 0)) return s.strike;
+  }
+  return null;
+}
+
+function _calcPCR(strikes) {
+  if (!strikes?.length) return null;
+  let totalCall = 0, totalPut = 0;
+  for (const s of strikes) {
+    totalCall += s.callOI ?? 0;
+    totalPut  += s.putOI  ?? 0;
+  }
+  return totalCall > 0 ? totalPut / totalCall : null;
 }
