@@ -71,7 +71,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
   // 1. 합산
   const aggregated = _aggregateStrikes(strikes);
 
-  // 2. spot ±8% 필터링
+  /* // 2. spot ±8% 필터링
   const filtered = aggregated.filter(
     (s) => Math.abs(s.strike - spotPrice) / spotPrice < 0.08
   );
@@ -79,8 +79,11 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
   if (filtered.length === 0) {
     el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">표시할 행사가 없음 (±8% 범위)</div>';
     return;
-  }
+  } */
 
+  // 수정 후 — filtered 대신 aggregated 그대로 사용
+  const filtered = aggregated;  // 전범위
+  
   // 3. DEX 최대 절대값 (색상 정규화용)
   const maxAbsDex = Math.max(...filtered.map((s) => Math.abs(s.dex)));
 
