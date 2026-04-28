@@ -130,6 +130,10 @@ export function renderStrikeTable(tbodyId, strikes, opts = {}) {
       isCW   ? `<span style="font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px;background:rgba(34,197,94,.2);color:#22c55e">Call Wall</span>` : '',
     ].join('');
     const rowBg = isCur ? 'background:rgba(88,166,255,.07)' : isFlip ? 'background:rgba(245,158,11,.05)' : '';
+    const deltaTd = showDelta ? `
+      <td class="${row.callDelta >= 0 ? 'up' : 'down'}">${fmt.delta(row.callDelta)}</td>
+      <td class="${row.putDelta  >= 0 ? 'up' : 'down'}">${fmt.delta(row.putDelta)}</td>
+      ` : '';
 
     return `<tr style="${rowBg}">
       <td>$${row.strike}${tags}</td>
