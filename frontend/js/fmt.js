@@ -120,6 +120,18 @@ export const fmt = {
     }) + ' ET';
   },
 
+  // DEX / GEX 계열 (M단위, 부호 포함)
+  // 1_000_000_000 이상 → B, 1_000_000 이상 → M, 나머지 → 정수
+  dex(v) {
+    if (v == null || isNaN(v)) return '—';
+    const abs  = Math.abs(v);
+    const sign = v < 0 ? '-' : '+';
+    if (abs >= 1_000_000_000) return sign + (abs / 1_000_000_000).toFixed(2) + 'B';
+    if (abs >= 1_000_000)     return sign + (abs / 1_000_000).toFixed(2) + 'M';
+    if (abs >= 1_000)         return sign + (abs / 1_000).toFixed(1) + 'K';
+    return sign + Math.round(abs).toLocaleString();
+  },
+
   // 증감 (부호 포함 OI 포맷)
   delta(v) {
     if (v == null || isNaN(v)) return '—';
