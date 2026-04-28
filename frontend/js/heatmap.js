@@ -94,7 +94,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
 
   // ── 레이아웃 상수 ─────────────────────────────────────
   const COL_W    = 72;   // 데이터 열 너비 px
-  const LBL_W    = 52;   // sticky 라벨 열 너비 px
+  const LBL_W    = 36;   // sticky 라벨 열 너비 px
   const ROW_H_SM = 28;   // Strike / GEX / Vanna / Charm 행
   const ROW_H_LG = 52;   // DEX 히트맵 행
 
@@ -130,10 +130,11 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
   const dexRow = filtered.map((s, i) => {
     const isSpot = i === spotIdx;
     const bg     = _dexColor(s.dex, maxAbsDex);
-    const color  = s.dex >= 0 ? '#22c55e' : '#ef4444';
+    // const color  = s.dex >= 0 ? '#22c55e' : '#ef4444'; //적색+녹색
+    const color  = '#ffffff';   // 흰색 고정
     return `<td style="
       min-width:${COL_W}px;max-width:${COL_W}px;height:${ROW_H_LG}px;
-      text-align:center;font-size:12px;font-weight:700;font-family:var(--mono);
+      text-align:center;font-size:13px;font-weight:800;font-family:var(--mono);
       color:${color};background:${bg};
       border-right:1px solid rgba(255,255,255,.06);
       ${isSpot ? spotBorder : ''}
