@@ -28,10 +28,17 @@ async function fetchMarketState() {
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
     const json = await res.json();
+    console.log("[MarketState] 원본 응답:", JSON.stringify(json));  // ← 추가
+    
     const nyse = Array.isArray(json)
       ? (json.find(e => e.code === "XNYS") ?? json[0])
       : json;
 
+
+    console.log("[MarketState] nyse 객체:", JSON.stringify(nyse));  // ← 추가
+    console.log("[MarketState] is_market_open:", nyse?.is_market_open);  // ← 추가
+
+    
     if (!nyse) throw new Error("NYSE 데이터 없음");
 
     if (nyse.is_market_open) return "REGULAR";
