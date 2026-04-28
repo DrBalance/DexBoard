@@ -398,6 +398,17 @@ export function initLive() {
     handleTick(detail)
   );
 
+  document.getElementById('oi-zoom-slider')?.addEventListener('input', (e) => {
+    const zoom = parseFloat(e.target.value);
+    document.getElementById('oi-zoom-val').textContent = zoom + '×';
+    const scrollWrap = document.getElementById('live-chart-scroll');
+    const chartWrap  = document.getElementById('live-chart-wrap');
+    if (scrollWrap && chartWrap) {
+      chartWrap.style.width = (scrollWrap.clientWidth * zoom) + 'px';
+      if (_chartInst) _chartInst.resize();
+    }
+  });
+
   if (window._marketState === 'REGULAR') {
     connectWS();
   }
