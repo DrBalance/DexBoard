@@ -44,23 +44,26 @@ async function fetchMarketState() {
 
     const afterSec = _parseHMS(nyse.time_after_open);
     if (afterSec > 0) {
-      _wasRegular = false;  // 애프터마켓이면 정규장 종료 확정
+      _wasRegular = false;
       return "AFTER";
     }
 
-    // Twelve Data가 CLOSED를 반환했을 때
-    // 정규장이었던 적이 있으면 ET 시각으로 더블체크
+    // Twelve Data가 CLOSED 반환 시 더블체크
     if (_wasRegular) {
       const etCheck = _etMarketStateFallback();
       if (etCheck === "REGULAR" || etCheck === "PRE") {
         console.warn("[MarketState] Twelve Data CLOSED 반환, ET 시각으로 오버라이드:", etCheck);
         return etCheck;
       }
-      // ET 시각도 CLOSED면 진짜 마감
       _wasRegular = false;
     }
 
-    return _parseHMStoState(nyse);  // PRE/CLOSED 판단
+    // PRE 판단 (기존 로직 유지)
+    const nowET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+    const etHour = nowET.getHours() + nowET.getMinutes() / 60;
+    if (etHour >= 4.0 && etHour < 9.5) return "PRE";
+
+    return "CLOSED";
   } catch (e) {
     console.warn("[MarketState] 조회 실패:", e.message, "→ ET 시각 기반 폴백");
     return _etMarketStateFallback();
