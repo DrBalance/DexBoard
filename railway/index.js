@@ -234,15 +234,18 @@ ${JSON.stringify(compressedStrikes)}
   const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
   if (!text) throw new Error("Gemini: 응답 텍스트 없음");
 
-
-console.log("[Gemini] 원본 응답:", text.slice(0, 500)); // ← 추가
-
-  
   try {
-    return JSON.parse(text);
+    const cleaned = text
+      .replace(/^```json\s*/i, "")
+      .replace(/^```\s*/i, "")
+      .replace(/```\s*$/, "")
+      .trim();
+    return JSON.parse(cleaned);
   } catch {
+    console.log("[Gemini RAW] " + text.slice(0, 300)); // 실패시에만 로그
     throw new Error("Gemini: JSON 파싱 실패");
-  }
+  }    
+  
 }
 
 // ─────────────────────────────────────────────────────────────────
