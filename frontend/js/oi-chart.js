@@ -119,10 +119,11 @@ export function renderStrikeTable(tbodyId, strikes, opts = {}) {
   tbody.innerHTML = sorted.map(row => {
     const dexCls = row.dex >= 0 ? 'up' : 'down';
     const dteTd  = showDTE ? `<td>${row.dte ?? '—'}</td>` : '';
-    const isCur  = spotPrice && Math.abs(row.strike - spotPrice) < 0.5;
-    const isFlip = flipZone  && row.strike === flipZone;
-    const isPW   = putWall   && row.strike === putWall;
-    const isCW   = callWall  && row.strike === callWall;
+    const strike = Number(row.strike);
+    const isCur  = spotPrice != null && Math.abs(strike - spotPrice) < 0.5;
+    const isFlip = flipZone  != null && strike === Number(flipZone);
+    const isPW   = putWall   != null && strike === Number(putWall);
+    const isCW   = callWall  != null && strike === Number(callWall);
     const tags   = [
       isCur  ? `<span style="font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px;background:rgba(88,166,255,.2);color:#58a6ff">현재가</span>` : '',
       isFlip ? `<span style="font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px;background:rgba(245,158,11,.2);color:#f59e0b">Flip</span>` : '',
