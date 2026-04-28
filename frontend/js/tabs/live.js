@@ -557,6 +557,8 @@ function _startVixPolling() {
   _fetchVixPoint();                             // 즉시 1회
   _vixPollTimer = setInterval(_fetchVixPoint, 60_000);  // 이후 1분마다
 }
+
+function _calcPCR(strikes) {
   if (!strikes?.length) return null;
   let totalCall = 0, totalPut = 0;
   for (const s of strikes) {
