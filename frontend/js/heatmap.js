@@ -147,7 +147,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     const color  = s.gex > 0 ? '#22c55e' : s.gex < 0 ? '#ef4444' : 'var(--text3)';
     return `<td style="
       min-width:${COL_W}px;max-width:${COL_W}px;height:${ROW_H_SM}px;
-      text-align:center;font-size:11px;font-family:var(--mono);
+      text-align:center;font-size:12px;font-family:var(--mono);
       color:${color};
       background:${isSpot ? 'rgba(255,255,255,.08)' : 'transparent'};
       border-right:1px solid var(--border);
@@ -160,7 +160,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     const isSpot = i === spotIdx;
     return `<td style="
       min-width:${COL_W}px;max-width:${COL_W}px;height:${ROW_H_SM}px;
-      text-align:center;font-size:11px;font-family:var(--mono);
+      text-align:center;font-size:12px;font-family:var(--mono);
       color:#a78bfa;
       background:${isSpot ? 'rgba(255,255,255,.08)' : 'transparent'};
       border-right:1px solid var(--border);
@@ -173,7 +173,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     const isSpot = i === spotIdx;
     return `<td style="
       min-width:${COL_W}px;max-width:${COL_W}px;height:${ROW_H_SM}px;
-      text-align:center;font-size:11px;font-family:var(--mono);
+      text-align:center;font-size:12px;font-family:var(--mono);
       color:#2dd4bf;
       background:${isSpot ? 'rgba(255,255,255,.08)' : 'transparent'};
       border-right:1px solid var(--border);
