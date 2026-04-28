@@ -15,7 +15,7 @@ const GEMINI_KEY  = process.env.GEMINI_KEY  || "";
 const TWELVE_KEY  = process.env.TWELVE_KEY  || "";
 
 const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
+  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
 
 // ─────────────────────────────────────────────────────────────────
 // 장 상태 확인 (Twelve Data)
@@ -89,7 +89,6 @@ function _etMarketStateFallback() {
   if (etHour >= 16.0 && etHour < 20.0) return "AFTER";
   return "CLOSED";
 }
-
 
 // ─────────────────────────────────────────────────────────────────
 // Rate Limiter
@@ -242,10 +241,9 @@ ${JSON.stringify(compressedStrikes)}
       .trim();
     return JSON.parse(cleaned);
   } catch {
-    console.log("[Gemini RAW] " + text.slice(0, 300)); // 실패시에만 로그
+    console.log("[Gemini RAW] " + text.slice(0, 300));
     throw new Error("Gemini: JSON 파싱 실패");
-  }    
-  
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -408,14 +406,38 @@ const server = http.createServer(async (req, res) => {
     req.on("data", (chunk) => (body += chunk));
     req.on("end", async () => {
       try {
-        const payload  = JSON.parse(body || "{}");
-        const analysis = await callGemini(payload);
-        res.writeHead(200, corsHeaders);
-        res.end(JSON.stringify({ ok: true, analysis }));
+        const ip = req.socket.remoteAddress ?? "unknown";
+        if (!checkRateLimit(ip)) {
+          res.writeHead(429, corsHeaders);
+          return res.end(JSON.stringify({ ok: false, error: "서버 요청 한도 초과 (IP 기반)" }));
+        }
+
+        let payload;
+        try {
+          payload = JSON.parse(body || "{}");
+        } catch {
+          res.writeHead(400, corsHeaders);
+          return res.end(JSON.stringify({ ok: false, error: "잘못된 JSON 형식입니다." }));
+        }
+
+        const analysis = await callGeminiWithRetry(payload);
+
+        if (!res.writableEnded) {
+          res.writeHead(200, corsHeaders);
+          res.end(JSON.stringify({ ok: true, analysis }));
+        }
       } catch (err) {
-        console.error("[Gemini] 오류:", err.message);
-        res.writeHead(500, { "Content-Type": "application/json", "Access-Control-Allow-Origin": "*" });
-        res.end(JSON.stringify({ ok: false, error: err.message }));
+        console.error("[Gemini] 최종 분석 실패:", err.message);
+        const isQuotaError = err.message?.includes("429");
+        if (!res.headersSent) {
+          res.writeHead(isQuotaError ? 429 : 500, corsHeaders);
+        }
+        res.end(JSON.stringify({
+          ok: false,
+          error: isQuotaError
+            ? "Gemini API 할당량이 일시적으로 소진되었습니다."
+            : err.message,
+        }));
       }
     });
     return;
@@ -431,44 +453,24 @@ const server = http.createServer(async (req, res) => {
     }
     let body = "";
     req.on("data", (chunk) => (body += chunk));
-    
     req.on("end", async () => {
       try {
-        const ip = req.socket.remoteAddress ?? "unknown";
-        if (!checkRateLimit(ip)) {
-          res.writeHead(429, corsHeaders);
-          return res.end(JSON.stringify({ ok: false, error: "서버 요청 한도 초과 (IP 기반)" }));
+        const { spot, vix } = JSON.parse(body || "{}");
+        if (!spot || !vix) {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "spot and vix required" }));
+          return;
         }
-
-      let payload;
-      try {
-        payload = JSON.parse(body || "{}");
-      } catch {
-        res.writeHead(400, corsHeaders);
-        return res.end(JSON.stringify({ ok: false, error: "잘못된 JSON 형식입니다." }));
+        console.log(`[${new Date().toISOString()}] /calculate → spot=${spot} vix=${vix}`);
+        const result = await calculateAndStore(spot, vix);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(result));
+      } catch (err) {
+        console.error("calculateAndStore error:", err);
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
       }
-
-      const analysis = await callGeminiWithRetry(payload);  // ← callGemini → callGeminiWithRetry
-
-      if (!res.writableEnded) {
-        res.writeHead(200, corsHeaders);
-        res.end(JSON.stringify({ ok: true, analysis }));
-      }
-    } catch (err) {
-      console.error("[Gemini] 최종 분석 실패:", err.message);
-      const isQuotaError = err.message?.includes("429");
-      if (!res.headersSent) {
-        res.writeHead(isQuotaError ? 429 : 500, corsHeaders);
-      }    
-      res.end(JSON.stringify({
-        ok: false,
-        error: isQuotaError
-          ? "Gemini API 할당량이 일시적으로 소진되었습니다."
-          : err.message,
-      }));
-    }  
-  });
-    
+    });
     return;
   }
 
