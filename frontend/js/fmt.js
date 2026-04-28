@@ -78,12 +78,18 @@ export const fmt = {
 
   // OI / 계약 수량  1234567 → "1.23M"
   oi(v) {
-    if (v == null || isNaN(v)) return '—';
+    /* if (v == null || isNaN(v)) return '—';
     const abs  = Math.abs(v);
     const sign = v < 0 ? '-' : '';
     if (abs >= 1_000_000) return sign + (abs / 1_000_000).toFixed(2) + 'M';
     if (abs >= 1_000)     return sign + (abs / 1_000).toFixed(1) + 'K';
-    return sign + abs.toLocaleString();
+    return sign + abs.toLocaleString(); */
+    if (v == null || isNaN(v)) return '—';
+    const abs  = Math.abs(v);
+    const sign = v < 0 ? '-' : '';
+    if (abs >= 1_000_000) return sign + (abs / 1_000_000).toFixed(1) + 'M';
+    if (abs >= 100_000)   return sign + Math.round(abs / 1_000).toLocaleString() + 'K';
+    return sign + Math.round(abs).toLocaleString();
   },
 
   // Greeks (GEX / Vanna / Charm) — 값이 이미 M단위로 KV에 저장됨
