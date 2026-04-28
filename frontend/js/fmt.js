@@ -37,15 +37,19 @@ export function fmtChangePct(v) {
 //   10M 이상        → "±NNN M"  (정수)
 //   10K~1M 미만     → "±NNN K"  (정수)
 //   10K 미만        → "±NNN,NNN" (정수, 콤마)
+
+// 공통 포매터 헬퍼
+function _fmt(real, sign) {
+  const abs = Math.abs(real);
+  if (abs >= 10_000_000) return sign + (abs / 1_000_000).toFixed(1) + 'M';
+  if (abs >= 100_000)   return sign + Math.round(abs / 1_000).toLocaleString() + 'K';
+  return sign + Math.round(abs).toLocaleString();
+}
 export function fmtM(v) {
   if (v == null || isNaN(v)) return '\u2014';
   const n    = Number(v);          // 단위: M
   const real = n * 1_000_000;      // 실제 달러 값
-  const abs  = Math.abs(real);
-  const sign = real >= 0 ? '+' : '-';
-  if (abs >= 10_000_000)  return sign + Math.round(abs / 1_000_000).toLocaleString() + 'M';
-  if (abs >= 100_000)      return sign + Math.round(abs / 1_000).toLocaleString() + 'K';
-  return sign + Math.round(abs).toLocaleString();
+  return _fmt(real, real >= 0 ? '+' : '-');
 }
 
 // ── VOLD 표시 (M단위, 소수점 1자리) ─────────────────────
@@ -78,29 +82,14 @@ export const fmt = {
 
   // OI / 계약 수량  1234567 → "1.23M"
   oi(v) {
-    /* if (v == null || isNaN(v)) return '—';
-    const abs  = Math.abs(v);
-    const sign = v < 0 ? '-' : '';
-    if (abs >= 1_000_000) return sign + (abs / 1_000_000).toFixed(2) + 'M';
-    if (abs >= 1_000)     return sign + (abs / 1_000).toFixed(1) + 'K';
-    return sign + abs.toLocaleString(); */
     if (v == null || isNaN(v)) return '—';
-    const abs  = Math.abs(v);
-    const sign = v < 0 ? '-' : '';
-    if (abs >= 10_000_000) return sign + (abs / 1_000_000).toFixed(1) + 'M';
-    if (abs >= 100_000)   return sign + Math.round(abs / 1_000).toLocaleString() + 'K';
-    return sign + Math.round(abs).toLocaleString();
-  },
+    return _fmt(Number(v), v < 0 ? '-' : '');
 
   // Greeks (GEX / Vanna / Charm) — 값이 이미 M단위로 KV에 저장됨
   greek(v) {
     if (v == null || isNaN(v)) return '—';
     const real = Number(v) * 1_000_000;
-    const abs  = Math.abs(real);
-    const sign = real >= 0 ? '+' : '-';
-    if (abs >= 10_000_000)  return sign + Math.round(abs / 1_000_000).toLocaleString() + 'M';
-    if (abs >= 100_000)      return sign + Math.round(abs / 1_000).toLocaleString() + 'K';
-    return sign + Math.round(abs).toLocaleString();
+    return _fmt(real, real >= 0 ? '+' : '-');
   },
 
   // 가격  595.23
@@ -137,11 +126,7 @@ export const fmt = {
   dex(v) {
     if (v == null || isNaN(v)) return '—';
     const real = Number(v) * 1_000_000;
-    const abs  = Math.abs(real);
-    const sign = real >= 0 ? '+' : '-';
-    if (abs >= 10_000_000)  return sign + Math.round(abs / 1_000_000).toLocaleString() + 'M';
-    if (abs >= 100_000)      return sign + Math.round(abs / 1_000).toLocaleString() + 'K';
-    return sign + Math.round(abs).toLocaleString();
+    return _fmt(real, real >= 0 ? '+' : '-');
   },
 
   // 증감 (부호 포함 OI 포맷)
