@@ -18,6 +18,7 @@
 //   30   20    * * 1-5  → runScreener   (장 마감 후 스크리너)
 
 import { runScreener, getScreenerResults } from './screener-v2.js';
+import { handleAdmin } from './admin.js';
 
 export default {
   // ─────────────────────────────────────────
@@ -112,6 +113,39 @@ export default {
       } catch (e) {
         return json({ error: e.message }, 502, corsHeaders);
       }
+    }
+
+    // ── GET /api/symbols (자동완성 — 인증 불필요) ───────────────
+    if (request.method === "GET" && path === "/api/symbols") {
+      const q    = url.searchParams.get("q")?.toUpperCase() || "";
+      const rows = await env.DB.prepare(`
+        SELECT symbol, name, type, sector FROM symbols
+        WHERE is_active = 1
+          AND (symbol LIKE ? OR name LIKE ?)
+        ORDER BY type DESC, symbol
+        LIMIT 20
+      `).bind(q + "%", q + "%").all();
+      return json({ symbols: rows.results }, 200, corsHeaders);
+    }
+
+    // ── GET /api/admin/quote (티커 → 회사명, 인증 필요) ────────
+    if (request.method === "GET" && path === "/api/admin/quote") {
+      const secret = request.headers.get("x-admin-secret");
+      if (secret !== (env.INIT_SECRET || "drbalance-init-2026")) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      const sym = url.searchParams.get("symbol");
+      if (!sym) return json({ error: "symbol required" }, 400, corsHeaders);
+      const r = await fetch(
+        `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(sym)}&apikey=${env.TWELVE_DATA_KEY}`
+      );
+      const d = await r.json();
+      return json({ symbol: d.symbol, name: d.name || null }, 200, corsHeaders);
+    }
+
+    // ── /api/admin/* ────────────────────────────────────────────
+    if (path.startsWith("/api/admin/")) {
+      return handleAdmin(path, request, env);
     }
 
     // ── GET /api/screener ───────────────────────────────────────
