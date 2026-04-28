@@ -68,8 +68,6 @@ async function fetchKV() {
         _state.callWall = _calcCallWall(_state.strikes, _state.spot);
         _state.flipZone = _calcFlipZone(_state.strikes);
         _state.pcr      = _calcPCR(_state.strikes);
-
-         alert(`strikes:${_state.strikes.length} / putWall:${_state.putWall} / callWall:${_state.callWall} / flipZone:${_state.flipZone}`);
       }
     }
   } catch (e) {
