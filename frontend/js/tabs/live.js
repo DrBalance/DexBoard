@@ -403,6 +403,9 @@ function handleMarketState({ marketState }) {
 // initLive / refreshLive
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export function initLive() {
+
+  console.log('[debug] initLive 시작');
+  
   initNarrativePanel();
   fetchKV();
 
