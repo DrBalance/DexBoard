@@ -29,7 +29,8 @@
 
   /* 폰트 */
   --sans: 'DM Sans', system-ui, sans-serif;
-  --mono: 'JetBrains Mono', 'Fira Code', monospace;
+  /* --mono: 'JetBrains Mono', 'Fira Code', monospace; */
+  --mono: 'Inter', sans-serif;
 
   /* 반경 */
   --r-sm: 4px;
@@ -45,6 +46,10 @@
   box-sizing: border-box;
   margin: 0;
   padding: 0;
+}
+
+* {
+  font-variant-numeric: tabular-nums;
 }
 
 html, body {
