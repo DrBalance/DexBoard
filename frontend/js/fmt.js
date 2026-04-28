@@ -84,6 +84,7 @@ export const fmt = {
   oi(v) {
     if (v == null || isNaN(v)) return '—';
     return _fmt(Number(v), v < 0 ? '-' : '');
+  },
 
   // Greeks (GEX / Vanna / Charm) — 값이 이미 M단위로 KV에 저장됨
   greek(v) {
