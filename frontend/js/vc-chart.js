@@ -59,9 +59,10 @@ export function setVixPrevClose(value) {
 
 export function pushVixPoint(ts, value) {
   if (value == null || isNaN(value)) return;
-  // 중복 ts 방지
-  if (_vixData.length && _vixData[_vixData.length - 1].ts === ts) {
-    _vixData[_vixData.length - 1].v = value;
+  // 중복 ts 방지 (전체 배열에서 검색)
+  const existing = _vixData.findIndex(d => d.ts === ts);
+  if (existing !== -1) {
+    _vixData[existing].v = value;  // 기존 포인트 업데이트
   } else {
     _vixData.push({ ts, v: value });
   }
@@ -236,8 +237,20 @@ function _renderPane(pane) {
     ? lastVal.toFixed(2)
     : _fmtVold(lastVal);
 
+  // ── 음영 path (라인 → 기준선으로 닫기) ───────────────
+  const firstX  = toX(visible[0].ts).toFixed(1);
+  const areaPath = `${linePath} L${lastX},${baseY} L${firstX},${baseY} Z`;
+  const gradId   = `vc-grad-${pane}`;
+
   // ── SVG 조립 ───────────────────────────────────────────
   chartSvg.innerHTML = `
+    <defs>
+      <linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0%"   stop-color="${lineColor}" stop-opacity="0.25"/>
+        <stop offset="100%" stop-color="${lineColor}" stop-opacity="0.02"/>
+      </linearGradient>
+    </defs>
+
     <!-- 배경 -->
     <rect width="${chartW}" height="${PANE_H}" fill="transparent"/>
 
@@ -245,6 +258,10 @@ function _renderPane(pane) {
     <line x1="0" y1="${baseY}" x2="${chartW}" y2="${baseY}"
           stroke="${pane === 'vix' ? '#f59e0b' : '#4b5563'}"
           stroke-width="1" stroke-dasharray="4,3" opacity="0.6"/>
+
+    <!-- 음영 영역 -->
+    <path d="${areaPath}"
+          fill="url(#${gradId})" stroke="none"/>
 
     <!-- 라인 -->
     <path d="${linePath}"
