@@ -217,7 +217,7 @@ ${JSON.stringify(compressedStrikes)}
       generationConfig: {
         temperature:      0.15,
         topP:             0.8,
-        maxOutputTokens:  2048,
+        maxOutputTokens:  8192,
         responseMimeType: "application/json",
       },
     }),
