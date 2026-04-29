@@ -76,18 +76,19 @@ export async function loadSnapshot() {
 }
 
 // ── 전체 데이터 로드 (15분 폴링 + 최초 1회) ──────────────
-// returns: { snap, snapPrev, dex0, dexOpen, weekly, monthly, quarterly }
+// returns: { snap, snapPrev, dex0, dexOpen, oiOpen, weekly, monthly, quarterly }
 export async function loadAll() {
-  const [snap, snapPrev, dex0, dexOpen, weekly, monthly, quarterly] =
+  const [snap, snapPrev, dex0, dexOpen, oiOpen, weekly, monthly, quarterly] =
     await Promise.all([
       _cfFetch('/api/snapshot'),
       _cfFetch('/api/snapshot/prev'),
       _cfFetch('/api/dex/0dte'),
       _cfFetch('/api/dex/open'),
+      _cfFetch('/api/oi/open'),
       _cfFetch('/api/dex/weekly'),
       _cfFetch('/api/dex/monthly'),
       _cfFetch('/api/dex/quarterly'),
     ]);
 
-  return { snap, snapPrev, dex0, dexOpen, weekly, monthly, quarterly };
+  return { snap, snapPrev, dex0, dexOpen, oiOpen, weekly, monthly, quarterly };
 }

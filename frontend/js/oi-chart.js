@@ -83,15 +83,22 @@ export function renderStrikeTable(tbodyId, strikes, opts = {}) {
     flipZone   = null,
     putWall    = null,
     callWall   = null,
+    openOI     = null,   // { [strike]: { c: callOI, p: putOI } } 장 시작 OI 맵
+    isRegular  = false,  // 정규장 여부 — false면 ΔOpen 표시 안 함
   } = opts;
+
+  const showDeltaOpen = isRegular && openOI != null;
 
   /* thead 갱신 */
   const theadId = tbodyId.replace('tbody', 'thead');
   const thead   = document.getElementById(theadId);
   if (thead) {
-    const dteCols = showDTE ? '<th>DTE</th>' : '';
+    const dteCols   = showDTE ? '<th>DTE</th>' : '';
     const deltaCols = showDelta
       ? '<th>Call Δ</th><th>Put Δ</th>'
+      : '';
+    const deltaOpenCols = showDeltaOpen
+      ? '<th title="장 시작 대비 Call OI 증감">ΔCall</th><th title="장 시작 대비 Put OI 증감">ΔPut</th>'
       : '';
     thead.innerHTML = `<tr>
       <th>Strike</th>
@@ -102,12 +109,13 @@ export function renderStrikeTable(tbodyId, strikes, opts = {}) {
       <th>GEX</th>
       <th>Vanna</th>
       <th>Charm</th>
+      ${deltaOpenCols}
       ${deltaCols}
     </tr>`;
   }
 
   if (!strikes || strikes.length === 0) {
-    const colCount = 6 + (showDTE ? 1 : 0) + (showDelta ? 2 : 0);
+    const colCount = 6 + (showDTE ? 1 : 0) + (showDelta ? 2 : 0) + (showDeltaOpen ? 2 : 0);
     tbody.innerHTML = `<tr><td colspan="${colCount}"><div class="empty">데이터 없음</div></td></tr>`;
     return;
   }
@@ -136,9 +144,27 @@ export function renderStrikeTable(tbodyId, strikes, opts = {}) {
       <td class="${row.putDelta  >= 0 ? 'up' : 'down'}">${fmt.delta(row.putDelta)}</td>
       ` : '';
 
+    /* ΔOpen 계산 */
+    let deltaOpenTd = '';
+    if (showDeltaOpen) {
+      const base = openOI[strike];
+      if (base != null) {
+        const dc = row.callOI - (base.c ?? 0);
+        const dp = row.putOI  - (base.p ?? 0);
+        const fmtDelta = v => {
+          const sign = v > 0 ? '+' : '';
+          return `${sign}${fmt.oi(v)}`;
+        };
+        deltaOpenTd = `
+          <td class="${dc >= 0 ? 'up' : 'down'}" style="font-size:11px">${fmtDelta(dc)}</td>
+          <td class="${dp >= 0 ? 'up' : 'down'}" style="font-size:11px">${fmtDelta(dp)}</td>`;
+      } else {
+        deltaOpenTd = `<td style="color:var(--text3)">—</td><td style="color:var(--text3)">—</td>`;
+      }
+    }
+
     return `<tr style="${rowBg}">
       <td>$${row.strike}${tags}</td>
-    
       ${dteTd}
       <td style="color:var(--green)">${fmt.oi(row.callOI)}</td>
       <td style="color:var(--red)">${fmt.oi(row.putOI)}</td>
@@ -146,6 +172,7 @@ export function renderStrikeTable(tbodyId, strikes, opts = {}) {
       <td>${fmt.greek(row.gex)}</td>
       <td style="color:var(--purple)">${fmt.greek(row.vanna)}</td>
       <td style="color:var(--teal)">${fmt.greek(row.charm)}</td>
+      ${deltaOpenTd}
       ${deltaTd}
     </tr>`;
   }).join('');

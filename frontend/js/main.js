@@ -32,6 +32,7 @@ async function fetchAndRender() {
   state.snapPrev         = data.snapPrev;
   state.dex0             = data.dex0;
   state.dexOpen          = data.dexOpen;
+  state.oiOpen           = data.oiOpen;       // 장 시작 OI 맵 { oiMap, saved_at }
   state.struct.weekly    = data.weekly;
   state.struct.monthly   = data.monthly;
   state.struct.quarterly = data.quarterly;
