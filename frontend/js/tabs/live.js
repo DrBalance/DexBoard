@@ -372,17 +372,17 @@ function initNarrativePanel() {
 
   container.innerHTML = `
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <span style="font-size:12px;font-weight:600;color:var(--text2,#8b949e)">실시간 판단</span>
+      <span style="font-size:13px;font-weight:600;color:var(--text2,#8b949e)">실시간 판단</span>
       <button id="ai-analyze-btn" style="
         padding:4px 12px;font-size:11px;border-radius:4px;
         border:1px solid #a78bfa;background:rgba(167,139,250,.12);
         color:#a78bfa;cursor:pointer;white-space:nowrap;
       ">🤖 AI 분석</button>
     </div>
-    <div id="live-narrative" style="display:flex;flex-direction:column;gap:6px;margin-bottom:10px"></div>
+    <div id="live-narrative" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px;font-size:14px;line-height:1.7"></div>
     <div id="ai-result-wrap" style="display:none">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-        <span style="font-size:11px;font-weight:600;color:#a78bfa">🤖 AI 분석 결과</span>
+        <span style="font-size:13px;font-weight:600;color:#a78bfa">🤖 AI 분석 결과</span>
         <div style="display:flex;gap:4px">
           <button id="ai-scroll-up" style="
             width:26px;height:20px;border-radius:3px;
@@ -399,10 +399,11 @@ function initNarrativePanel() {
         </div>
       </div>
       <div id="ai-result-scroll" style="
-        max-height:240px;overflow-y:scroll;
+        max-height:280px;overflow-y:scroll;
         overscroll-behavior:contain;
         border:1px solid #30363d;border-radius:6px;
-        padding:10px;background:rgba(13,17,23,.6);
+        padding:12px;background:rgba(13,17,23,.6);
+        font-size:13px;line-height:1.8;
       ">
         <div id="ai-analysis-result"></div>
       </div>
