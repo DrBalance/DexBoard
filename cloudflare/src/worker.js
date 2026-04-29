@@ -180,6 +180,36 @@ export default {
       return json({ ok: true, message: "스크리너 실행 시작" }, 200, corsHeaders);
     }
 
+  // ── GET /api/structure/:symbol ─────────────────────────────
+  const structMatch = path.match(/^\/api\/structure\/([A-Z0-9.\-]+)$/);
+  if (request.method === "GET" && structMatch) {
+    const symbol = structMatch[1].toUpperCase();
+ 
+    // 해당 종목의 최신 날짜 확인
+    const latestRow = await env.DB.prepare(`
+      SELECT MAX(date) as latest FROM options_flow WHERE symbol = ?
+    `).bind(symbol).first();
+ 
+    if (!latestRow?.latest) {
+      return json([], 200, corsHeaders);
+    }
+ 
+    const rows = await env.DB.prepare(`
+      SELECT
+        date, symbol, expiry_date, dte,
+        call_vol, put_vol, call_oi, put_oi,
+        pcr_vol, pcr_oi,
+        atm_iv, otm_call_iv, otm_put_iv,
+        atm_put_oi_ratio, iv_skew
+      FROM options_flow
+      WHERE symbol = ? AND date = ? AND dte BETWEEN 1 AND 65
+      ORDER BY dte ASC
+    `).bind(symbol, latestRow.latest).all();
+ 
+    return json(rows.results, 200, corsHeaders);
+  }
+
+    
     // ── Health check ────────────────────────────────────────────
     if (path === "/health") {
       return json({ status: "ok", ts: new Date().toISOString() }, 200, corsHeaders);
