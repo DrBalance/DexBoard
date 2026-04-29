@@ -4,7 +4,7 @@
 // ============================================
 
 import { state } from '../state.js';
-import { API } from '../config.js';
+import { CF_API } from '../config.js'
 import { fmt } from '../fmt.js';
 
 // ── 내부 상태
@@ -180,7 +180,7 @@ async function fetchSymbolSuggestions(q) {
   q = q.trim().toUpperCase();
   if (q.length < 1) { hideDd(); return; }
   try {
-    const res  = await fetch(`${API.BASE}/api/symbols?q=${q}`);
+    const res  = await fetch(`${CF_API}/api/symbols?q=${q}`);
     const data = await res.json();
     renderDd(data.symbols || []);
   } catch { hideDd(); }
@@ -224,8 +224,8 @@ async function loadStructure(symbol) {
   try {
     // D1 스크리너 데이터 + 옵션 플로우 조회
     const [screenerRes, flowRes] = await Promise.all([
-      fetch(`${API.BASE}/api/screener`),
-      fetch(`${API.BASE}/api/structure/${symbol}`),
+      fetch(`${CF_API}/api/screener`),
+      fetch(`${CF_API}/api/structure/${symbol}`),
     ]);
 
     const screenerAll = await screenerRes.json();
