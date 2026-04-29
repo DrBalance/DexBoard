@@ -366,8 +366,6 @@ function renderTable() {
 }
 
 // ── Screener → Structure 드릴다운
-import { goToTab } from '../tabs.js';
-
 function drillToStructure(symbol) {
   goToTab('structure');
   setTimeout(() => drillTo(symbol), 50);
