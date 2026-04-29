@@ -82,6 +82,13 @@ export default {
       return json(data, 200, corsHeaders);
     }
 
+    // ── GET /api/oi/open ────────────────────────────────────────
+    if (request.method === "GET" && path === "/api/oi/open") {
+      const data = await env.DEX_KV.get("oi:spy:open", { type: "json" });
+      if (!data) return json({ error: "No OI open snapshot" }, 200, corsHeaders);
+      return json(data, 200, corsHeaders);
+    }
+
     // ── GET /api/vix-tick ───────────────────────────────────────
     // VIX 1분봉 포인트 배열 반환 (vc-chart.js용)
     // { prevClose: number, points: [{ ts: ISOstring, v: number }] }
@@ -280,6 +287,21 @@ async function snapshotOpen(env) {
       saved_at: new Date().toISOString(),
     }));
     console.log("[snapshotOpen] saved opening snapshot");
+
+    // 장 시작 OI 스냅샷 저장 (OI 증감 계산용)
+    const dex0dte = await env.DEX_KV.get("dex:spy:0dte", { type: "json" });
+    if (dex0dte?.strikes?.length) {
+      const oiMap = Object.fromEntries(
+        dex0dte.strikes.map(s => [s.strike, { c: s.callOI, p: s.putOI }])
+      );
+      await env.DEX_KV.put("oi:spy:open", JSON.stringify({
+        oiMap,
+        saved_at: new Date().toISOString(),
+      }));
+      console.log(`[snapshotOpen] saved OI open map (${Object.keys(oiMap).length} strikes)`);
+    } else {
+      console.warn("[snapshotOpen] dex:spy:0dte 없음 — OI open map 저장 생략");
+    }
   } catch (e) {
     console.error("[snapshotOpen] error:", e.message);
   }
