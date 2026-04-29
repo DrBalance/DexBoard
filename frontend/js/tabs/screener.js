@@ -4,7 +4,7 @@
 // ============================================
 
 import { state } from '../state.js';
-import { API } from '../config.js';
+import { CF_API } from '../config.js';
 import { fmt } from '../fmt.js';
 import { drillTo } from './structure.js';
 import { goToTab } from '../tabs.js';
@@ -154,7 +154,7 @@ async function loadScreener() {
   showState('loading', '스크리너 데이터를 불러오는 중...');
 
   try {
-    const res  = await fetch(`${API.BASE}/api/screener`);
+    const res  = await fetch(`${CF_API}/api/screener`);
     const data = await res.json();
 
     if (!Array.isArray(data) || !data.length) {
