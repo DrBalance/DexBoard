@@ -1,0 +1,446 @@
+/* ============================================
+   structure.css — Structure & Screener 탭 스타일
+   기존 components.css에 병합 또는 별도 import
+   ============================================ */
+
+/* ── 공통 Pill */
+.pill {
+  padding: 4px 12px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text3);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+  white-space: nowrap;
+}
+.pill:hover { color: var(--text); border-color: var(--text3); }
+.pill.active { background: var(--blue-dim); color: var(--blue); border-color: var(--blue-dim); }
+
+/* ============================================
+   STRUCTURE TAB
+   ============================================ */
+
+.struct-container {
+  padding: 20px 0;
+  max-width: 1100px;
+}
+
+/* ── 검색 바 */
+.struct-search-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.sym-search-wrap {
+  position: relative;
+  flex-shrink: 0;
+}
+
+.sym-search-icon {
+  position: absolute;
+  left: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text3);
+  font-size: 16px;
+  pointer-events: none;
+}
+
+.struct-sym-input {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  color: var(--text);
+  padding: 8px 14px 8px 32px;
+  border-radius: 7px;
+  font-size: 14px;
+  font-family: var(--mono);
+  width: 200px;
+  text-transform: uppercase;
+  transition: border-color 0.15s;
+}
+.struct-sym-input:focus { outline: none; border-color: var(--blue); }
+
+.struct-sym-dd {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  width: 280px;
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  z-index: 200;
+  display: none;
+  max-height: 220px;
+  overflow-y: auto;
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+.struct-dd-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+}
+.struct-dd-item:last-child { border-bottom: none; }
+.struct-dd-item:hover { background: var(--bg3); }
+.dd-sym { font-size: 13px; font-weight: 700; font-family: var(--mono); color: var(--text); }
+.dd-name { font-size: 11px; color: var(--text3); flex: 1; }
+.dd-type { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; }
+.dd-type.etf   { background: rgba(88,166,255,0.15); color: var(--blue); }
+.dd-type.stock { background: rgba(63,185,80,0.12);  color: var(--green); }
+
+.struct-filter-pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+}
+
+.struct-refresh-btn {
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text3);
+  border-radius: 7px;
+  font-size: 14px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+.struct-refresh-btn:hover { color: var(--blue); border-color: var(--blue); }
+
+/* ── 상태 박스 */
+.struct-state-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 24px;
+  gap: 12px;
+  color: var(--text3);
+}
+.struct-state-icon { font-size: 28px; }
+.struct-state-msg  { font-size: 14px; }
+
+/* ── 심볼 헤더 */
+.struct-sym-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.struct-sym-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.struct-sym-ticker   { font-size: 22px; font-weight: 700; color: var(--text); font-family: var(--mono); }
+.struct-sym-fullname { font-size: 14px; color: var(--text3); }
+.struct-updated-ts   { font-size: 12px; color: var(--text3); }
+
+/* ── 메트릭 카드 행 */
+.struct-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.struct-metric-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.smc-label { font-size: 11px; color: var(--text3); font-weight: 600; text-transform: uppercase; margin-bottom: 4px; }
+.smc-value { font-size: 18px; font-weight: 700; font-family: var(--mono); line-height: 1.2; }
+.smc-sub   { font-size: 10px; color: var(--text3); margin-top: 3px; }
+
+/* ── 패널 */
+.struct-panel {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 16px 18px;
+  margin-bottom: 16px;
+}
+.struct-panel-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+  margin-bottom: 14px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.panel-icon { color: var(--blue); }
+.panel-sub  { font-size: 11px; color: var(--text3); font-weight: 400; margin-left: auto; }
+
+.struct-chart-wrap {
+  position: relative;
+  width: 100%;
+}
+
+/* ── ATM 풋 OI 바 */
+.struct-atm-bars { display: flex; flex-direction: column; gap: 8px; }
+.atm-bar-row {
+  display: grid;
+  grid-template-columns: 72px 1fr 44px 80px;
+  align-items: center;
+  gap: 10px;
+}
+.atm-bar-label   { font-size: 12px; font-family: var(--mono); color: var(--text); }
+.atm-expiry      { font-size: 10px; color: var(--text3); margin-left: 4px; }
+.atm-bar-track   { height: 8px; background: var(--bg3); border-radius: 4px; overflow: hidden; }
+.atm-bar-fill    { height: 100%; border-radius: 4px; transition: width 0.4s ease; }
+.atm-bar-val     { font-size: 12px; font-weight: 700; font-family: var(--mono); text-align: right; }
+.atm-bar-oi      { font-size: 11px; color: var(--text3); }
+
+/* ── 점수 분해 테이블 */
+.struct-score-table { overflow-x: auto; }
+.score-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.score-tbl th { text-align: left; padding: 8px 12px; color: var(--text3); font-size: 11px; font-weight: 600; text-transform: uppercase; border-bottom: 1px solid var(--border); }
+.score-tbl td { padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,0.04); color: var(--text2); }
+.score-tbl tr:last-child td { border-bottom: none; }
+.score-tbl tr:hover td { background: rgba(255,255,255,0.02); }
+.score-total-row td { border-top: 1px solid var(--border); padding-top: 12px; font-weight: 700; }
+.score-item-label  { color: var(--text); font-weight: 600; }
+.score-item-val    { font-family: var(--mono); font-weight: 700; }
+.score-item-detail { color: var(--text3); font-size: 12px; }
+.score-item-bar-cell { width: 100px; }
+.score-bar-track   { height: 6px; background: var(--bg3); border-radius: 3px; overflow: hidden; }
+.score-bar-fill    { height: 100%; border-radius: 3px; transition: width 0.4s ease; }
+.score-iv-note     { margin-top: 12px; padding: 10px 14px; background: var(--bg3); border-radius: 6px; font-size: 13px; color: var(--text3); }
+.no-data { padding: 24px; text-align: center; color: var(--text3); font-size: 13px; }
+
+/* ── 애니메이션 */
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ============================================
+   SCREENER TAB
+   ============================================ */
+
+.screener-container { padding: 20px 0; }
+
+/* ── 상단 바 */
+.screener-top-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+.screener-title-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+.screener-title { font-size: 16px; font-weight: 700; color: var(--text); }
+.screener-date  { font-size: 12px; color: var(--text3); }
+.screener-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.sc-sector-pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
+}
+.screener-run-btn {
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  background: var(--bg2);
+  color: var(--text3);
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+  flex-shrink: 0;
+}
+.screener-run-btn:hover { color: var(--blue); border-color: var(--blue); }
+
+/* ── 요약 카드 */
+.screener-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(110px, 1fr));
+  gap: 10px;
+  margin-bottom: 20px;
+}
+.sc-sum-card {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px 14px;
+}
+.sc-sum-num   { font-size: 22px; font-weight: 700; font-family: var(--mono); }
+.sc-sum-label { font-size: 11px; color: var(--text3); margin-top: 2px; }
+.sc-sum-num.green  { color: var(--green); }
+.sc-sum-num.amber  { color: var(--yellow); }
+.sc-sum-num.red    { color: var(--red); }
+.sc-sum-num.muted  { color: var(--text3); }
+
+/* ── 상태 박스 */
+.sc-state-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 24px;
+  gap: 12px;
+  color: var(--text3);
+}
+.sc-state-icon { font-size: 28px; }
+.sc-state-msg  { font-size: 14px; }
+
+/* ── 범례 */
+.sc-legend {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  font-size: 12px;
+  color: var(--text3);
+}
+.legend-item { display: flex; align-items: center; gap: 5px; }
+.legend-dot  {
+  width: 8px; height: 8px; border-radius: 50%;
+  flex-shrink: 0;
+}
+.legend-dot.green { background: var(--green); }
+.legend-dot.amber { background: var(--yellow); }
+.legend-dot.red   { background: var(--red); }
+.legend-dot.flash { background: var(--orange); }
+
+/* ── 테이블 */
+.sc-table-wrap { overflow-x: auto; }
+.sc-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  min-width: 800px;
+}
+.sc-th {
+  text-align: left;
+  padding: 9px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  color: var(--text3);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg3);
+  white-space: nowrap;
+  user-select: none;
+}
+.sc-th.sortable { cursor: pointer; }
+.sc-th.sortable:hover { color: var(--text); }
+.sc-th.sort-desc::after { content: ' ↓'; color: var(--blue); }
+.sc-th.sort-asc::after  { content: ' ↑'; color: var(--blue); }
+
+.sc-row { cursor: pointer; }
+.sc-row td { padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: middle; }
+.sc-row:hover td { background: rgba(255,255,255,0.025); }
+
+/* ── 종목 셀 */
+.sc-td-sym { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 12px; }
+.sc-sym  { font-size: 13px; font-weight: 700; font-family: var(--mono); color: var(--text); }
+.sc-name { font-size: 11px; color: var(--text3); }
+.sc-type { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; }
+.sc-type.etf   { background: rgba(88,166,255,0.15); color: var(--blue); }
+.sc-type.stock { background: rgba(63,185,80,0.12);  color: var(--green); }
+.bd-tag { font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 3px; background: rgba(240,136,62,0.2); color: var(--orange); }
+
+/* ── ETF 셀 */
+.sc-etf-tag {
+  font-size: 11px;
+  font-weight: 700;
+  font-family: var(--mono);
+  padding: 2px 7px;
+  border-radius: 3px;
+  background: rgba(88,166,255,0.1);
+  color: var(--blue);
+}
+
+/* ── 총점 배지 */
+.score-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  font-size: 13px;
+  font-weight: 700;
+  font-family: var(--mono);
+}
+.score-badge.green { background: rgba(34,197,94,0.15);  color: var(--green); }
+.score-badge.amber { background: rgba(210,153,34,0.15); color: var(--yellow); }
+.score-badge.red   { background: rgba(248,81,73,0.15);  color: var(--red); }
+
+.mini-score-bar { width: 40px; height: 3px; background: var(--bg3); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+.mini-score-fill { height: 100%; border-radius: 2px; }
+.mini-score-fill.green { background: var(--green); }
+.mini-score-fill.amber { background: var(--yellow); }
+.mini-score-fill.red   { background: var(--red); }
+
+/* ── 서브스코어 */
+.sc-td-sub { text-align: center; }
+.sc-sub-score { font-size: 12px; font-weight: 700; font-family: var(--mono); }
+.sc-sub-score.green { color: var(--green); }
+.sc-sub-score.amber { color: var(--yellow); }
+.sc-sub-score.muted { color: var(--text3); }
+
+/* ── BB 위치 바 */
+.sc-td-bb { min-width: 90px; }
+.bb-pos-wrap { display: flex; flex-direction: column; gap: 3px; }
+.bb-pos-track {
+  height: 4px;
+  background: var(--bg3);
+  border-radius: 2px;
+  position: relative;
+  overflow: visible;
+}
+.bb-pos-fill {
+  position: absolute;
+  top: -2px;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--blue);
+  transform: translateX(-50%);
+}
+.bb-pos-val { font-size: 11px; color: var(--text3); font-family: var(--mono); }
+
+/* ── 가격 셀 */
+.sc-td-price { font-family: var(--mono); font-size: 13px; color: var(--text); }
+
+/* ── 드릴다운 버튼 */
+.sc-drill-btn {
+  padding: 4px 10px;
+  border-radius: 5px;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+.sc-drill-btn:hover { background: var(--blue-dim); border-color: var(--blue-dim); }
+
+.sc-no-data { padding: 32px; text-align: center; color: var(--text3); font-size: 13px; }
+.sc-footer  { font-size: 12px; color: var(--text3); margin-top: 12px; padding: 0 4px; }
