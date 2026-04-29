@@ -1,18 +1,19 @@
 // DexBoard – Cloudflare Workers main
 // Routes:
-//   GET  /api/snapshot        → latest 1min snapshot from KV
+//   GET  /api/snapshot        → latest 1min snapshot from KV (VIX only)
 //   GET  /api/snapshot/prev   → previous snapshot from KV
 //   GET  /api/dex/:group      → DEX data (0dte | weekly | monthly | quarterly | structure)
 //   GET  /api/dex/open        → opening snapshot
+//   GET  /api/spy-price       → SPY 현재가 프록시 (Finnhub REST → CORS 우회)
 //   GET  /api/vix-tick        → VIX 1분봉 포인트 배열 (vc-chart.js용)
 //   GET  /api/screener        → 스크리너 점수 결과 (?date=YYYY-MM-DD)
 //   GET  /api/screener/sector → 섹터별 필터 (?sector=Technology&date=...)
 //   POST /api/screener/run    → 수동 스크리너 실행 (테스트용)
 //   POST /kv-write            → internal: Railway writes KV through here
 // Cron:
-//   */1  13-20 * * 1-5  → fetchSnapshot (정규장 1분)
-//   */3  4-13  * * 1-5  → fetchSnapshot (프리마켓 3분)
-//   */3  20-23 * * 1-5  → fetchSnapshot (애프터 3분)
+//   */1  13-20 * * 1-5  → fetchSnapshot (정규장 1분, VIX only)
+//   */3  4-13  * * 1-5  → fetchSnapshot (프리마켓 3분, VIX only)
+//   */3  20-23 * * 1-5  → fetchSnapshot (애프터 3분, VIX only)
 //   */15 13-20 * * 1-5  → triggerRailway (DEX 계산)
 //   0    13    * * 1-5  → snapshotOpen  (장 시작 스냅샷)
 //   30   20    * * 1-5  → runScreener   (장 마감 후 스크리너)
@@ -87,6 +88,42 @@ export default {
       const data = await env.DEX_KV.get("oi:spy:open", { type: "json" });
       if (!data) return json({ error: "No OI open snapshot" }, 200, corsHeaders);
       return json(data, 200, corsHeaders);
+    }
+
+    // ── GET /api/spy-price  (Finnhub REST 프록시) ────────────────
+    // 클라이언트가 직접 Finnhub에 접근할 수 없으므로 CF Worker가 중계
+    // ?ts=<lastFinnhubTs>  →  KV의 vix.ts > lastFinnhubTs 이면 KV 폴백도 포함
+    // Response: { price, change, changePct, source: 'finnhub'|'kv', ts }
+    if (request.method === "GET" && path === "/api/spy-price") {
+      try {
+        // 1) Finnhub REST 시도
+        const finnhubUrl =
+          `https://finnhub.io/api/v1/quote?symbol=SPY&token=${env.FINNHUB_KEY}`;
+        const fRes = await fetch(finnhubUrl, {
+          headers: { "User-Agent": "Mozilla/5.0" },
+          signal: AbortSignal.timeout(5000),
+        });
+        if (fRes.ok) {
+          const fd = await fRes.json();
+          // c=현재가, pc=전일종가, d=변화, dp=변화%
+          if (fd.c && !isNaN(fd.c)) {
+            return json({
+              price:     round2(fd.c),
+              change:    fd.d  != null ? round2(fd.d)  : null,
+              changePct: fd.dp != null ? round2(fd.dp) : null,
+              source:    "finnhub",
+              ts:        new Date().toISOString(),
+            }, 200, corsHeaders);
+          }
+        }
+      } catch (_) { /* Finnhub 실패 → KV 폴백 */ }
+
+      // 2) KV 폴백 (snapshot:1min에 vix만 있으므로 spy 없을 수 있음)
+      const snap = await env.DEX_KV.get("snapshot:1min", { type: "json" });
+      if (snap?.spy?.price) {
+        return json({ ...snap.spy, source: "kv", ts: snap.ts }, 200, corsHeaders);
+      }
+      return json({ error: "SPY 가격 없음" }, 503, corsHeaders);
     }
 
     // ── GET /api/vix-tick ───────────────────────────────────────
@@ -253,23 +290,27 @@ export default {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// fetchSnapshot – SPY (Twelve Data /quote) + VIX (Yahoo Finance)
+// fetchSnapshot – VIX만 KV 저장 (SPY는 /api/spy-price 프록시로 분리)
 // ─────────────────────────────────────────────────────────────────
 async function fetchSnapshot(env) {
   try {
-    const [spy, vix] = await Promise.all([
-      fetchSPYQuote(env),
-      fetchVIX(env),
-    ]);
+    const vix = await fetchVIX(env);
 
+    // 이전 snapshot 보존 (vix 포함)
     const current = await env.DEX_KV.get("snapshot:1min", { type: "json" });
     if (current) {
       await env.DEX_KV.put("snapshot:prev", JSON.stringify(current));
     }
 
-    const snapshot = { spy, vix, ts: new Date().toISOString() };
+    // spy 필드는 유지하되, KV에는 vix만 갱신
+    // (클라이언트가 snapshot.spy를 폴백으로 쓸 경우 대비해 기존 spy 값 보존)
+    const snapshot = {
+      spy: current?.spy ?? null,  // 이전 spy 값 보존 (없으면 null)
+      vix,
+      ts: new Date().toISOString(),
+    };
     await env.DEX_KV.put("snapshot:1min", JSON.stringify(snapshot));
-    console.log(`[snapshot] SPY=${spy.price} (${spy.changePct}%) VIX=${vix.price} (${vix.changePct}%)`);
+    console.log(`[snapshot] VIX=${vix.price} (${vix.changePct}%)`);
   } catch (e) {
     console.error("[snapshot] error:", e.message);
   }
@@ -312,8 +353,27 @@ async function snapshotOpen(env) {
 // ─────────────────────────────────────────────────────────────────
 async function triggerRailway(env) {
   try {
+    // SPY: Finnhub REST (snapshot에 spy가 없으므로 직접 조회)
+    let spyPrice = null;
+    try {
+      const fRes = await fetch(
+        `https://finnhub.io/api/v1/quote?symbol=SPY&token=${env.FINNHUB_KEY}`,
+        { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(5000) }
+      );
+      if (fRes.ok) {
+        const fd = await fRes.json();
+        if (fd.c && !isNaN(fd.c)) spyPrice = round2(fd.c);
+      }
+    } catch (_) {}
+
+    // VIX: KV snapshot에서 가져옴
     const snapshot = await env.DEX_KV.get("snapshot:1min", { type: "json" });
-    if (!snapshot) { console.warn("[railway] No snapshot yet, skipping trigger"); return; }
+    const vixPrice = snapshot?.vix?.price ?? null;
+
+    if (!spyPrice || !vixPrice) {
+      console.warn("[railway] SPY 또는 VIX 없음 → trigger 생략", { spyPrice, vixPrice });
+      return;
+    }
 
     const res = await fetch(`${env.RAILWAY_URL}/calculate`, {
       method: "POST",
@@ -322,8 +382,8 @@ async function triggerRailway(env) {
         "x-cron-secret": env.CRON_SECRET || "",
       },
       body: JSON.stringify({
-        spot: snapshot.spy.price,
-        vix:  snapshot.vix.price,
+        spot: spyPrice,
+        vix:  vixPrice,
       }),
     });
 
@@ -332,25 +392,6 @@ async function triggerRailway(env) {
   } catch (e) {
     console.error("[railway] error:", e.message);
   }
-}
-
-// ─────────────────────────────────────────────────────────────────
-// fetchSPYQuote – Twelve Data /quote
-// ─────────────────────────────────────────────────────────────────
-async function fetchSPYQuote(env) {
-  const url = `https://api.twelvedata.com/quote?symbol=SPY&apikey=${env.TWELVE_DATA_KEY}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Twelve Data /quote: ${res.status}`);
-
-  const data = await res.json();
-  if (data.status === "error") throw new Error(`Twelve Data: ${data.message}`);
-
-  const price     = parseFloat(data.close);
-  const change    = parseFloat(data.change);
-  const changePct = parseFloat(data.percent_change);
-  if (isNaN(price)) throw new Error("Twelve Data: invalid price");
-
-  return { price: round2(price), change: round2(change), changePct: round2(changePct) };
 }
 
 // ─────────────────────────────────────────────────────────────────
