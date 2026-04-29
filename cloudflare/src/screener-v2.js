@@ -336,9 +336,8 @@ export async function getScreenerResults(db, date = null) {
 // 8. Cron 진입점 (worker.js에서 호출)
 // ============================================
 export async function runScreener(env) {
-  const db      = env.DB;
-  const apiKey  = env.TWELVEDATA_KEY;
-  const today   = getToday();
+  const db    = env.DB;
+  const today = getToday();
 
   console.log(`[Screener] 시작: ${today}`);
 
@@ -350,8 +349,8 @@ export async function runScreener(env) {
   const results = [];
 
   for (const { symbol } of symbols.results) {
-    // 1. 가격 수집 + 볼린저 계산 (Twelve Data)
-    const priceResult = await collectPriceIndicators(db, symbol, apiKey);
+    // 1. 가격 수집 + 볼린저 계산 (Yahoo Finance)
+    const priceResult = await collectPriceIndicators(db, symbol);
 
     // 2. 현재가 (ATM 풋 집중도 계산용)
     const spotPrice = priceResult?.close ?? null;
@@ -369,8 +368,8 @@ export async function runScreener(env) {
     const score = await calcAndSaveScore(db, symbol, today);
     if (score) results.push(score);
 
-    // API 레이트 리밋 방지 (Twelve Data: 8req/min 무료)
-    await sleep(500);
+    // Yahoo Finance 레이트 리밋 방지 (너무 빠르면 429 가능)
+    await sleep(300);
   }
 
   // 결과 요약 로그
