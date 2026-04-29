@@ -33,6 +33,7 @@ const _state = {
   callWall: null,
   flipZone: null,
   pcr:      null,
+  oiOpen:   null,  // 장 시작 OI 맵 { oiMap: { [strike]: { c, p } }, saved_at }
 };
 
 // OI 차트 인스턴스 (탭 재방문 시 재생성 방지)
@@ -43,9 +44,10 @@ let _chartInst = null;
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async function fetchKV() {
   try {
-    const [snapRes, dexRes] = await Promise.all([
+    const [snapRes, dexRes, oiOpenRes] = await Promise.all([
       fetch(`${CF_API}/api/snapshot`),
       fetch(`${CF_API}/api/dex/0dte`),
+      fetch(`${CF_API}/api/oi/open`),
     ]);
 
     if (snapRes.ok) {
@@ -69,6 +71,13 @@ async function fetchKV() {
         _state.callWall = _calcCallWall(_state.strikes, _state.spot);
         _state.flipZone = _calcFlipZone(_state.strikes);
         _state.pcr      = _calcPCR(_state.strikes);
+      }
+    }
+
+    if (oiOpenRes.ok) {
+      const oiOpen = await oiOpenRes.json();
+      if (!oiOpen.error && oiOpen.oiMap) {
+        _state.oiOpen = oiOpen;
       }
     }
   } catch (e) {
@@ -100,14 +109,14 @@ async function fetchKV() {
     if (countEl) countEl.textContent = `${_state.strikes.length}건`;
     const sp = _state.spyLive ?? _state.spy.price ?? _state.spot;
 
-console.warn('[Live] renderStrikeTable opts:', { flipZone: _state.flipZone, putWall: _state.putWall, callWall: _state.callWall });
-    
     renderStrikeTable('strike-tbody', _state.strikes, {
-    mode:      '0dte',
-    spotPrice: sp,           // ← spotPrice → sp
-    flipZone:  _state.flipZone  ?? null,
-    putWall:   _state.putWall   ?? null,
-    callWall:  _state.callWall  ?? null,
+      mode:      '0dte',
+      spotPrice: sp,
+      flipZone:  _state.flipZone  ?? null,
+      putWall:   _state.putWall   ?? null,
+      callWall:  _state.callWall  ?? null,
+      openOI:    _state.oiOpen?.oiMap  ?? null,
+      isRegular: window._marketState === 'REGULAR',
     });
   }
 
