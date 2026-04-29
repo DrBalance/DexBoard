@@ -7,6 +7,7 @@ import { state } from '../state.js';
 import { API } from '../config.js';
 import { fmt } from '../fmt.js';
 import { drillTo } from './structure.js';
+import { goToTab } from '../tabs.js';
 
 // ── 내부 상태
 let allResults     = [];
@@ -365,14 +366,14 @@ function renderTable() {
 }
 
 // ── Screener → Structure 드릴다운
-function drillToStructure(symbol) {
-  // Structure 탭으로 전환
-  const structureTab = document.querySelector('[data-tab="structure"]');
-  if (structureTab) structureTab.click();
+import { goToTab } from '../tabs.js';
 
-  // drillTo 호출 (structure.js export)
+function drillToStructure(symbol) {
+  goToTab('structure');
   setTimeout(() => drillTo(symbol), 50);
 }
+
+
 
 // ── 점수 셀
 function scoreCell(score, max) {
