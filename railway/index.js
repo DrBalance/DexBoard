@@ -1,94 +1,19 @@
 // DexBoard – Railway entry point
 // CF Workers cron calls POST /calculate every 15 min during market hours
 // This service: fetches CBOE option chain → filters → calculates Greeks → writes to CF KV
-// WebSocket /ws → Finnhub WSS 중계 (SPY + RSP 틱)
 // POST /analyze  → Gemini API 호출 (키 보호)
+// (Finnhub WebSocket 중계 제거 — SPY는 CF Worker /api/spy-price 프록시로 분리)
 
 import http from "http";
-import { WebSocketServer, WebSocket } from "ws";
 import { calculateAndStore } from "./vanna_analyzer.js";
 
 const PORT        = process.env.PORT        || 3000;
 const CRON_SECRET = process.env.CRON_SECRET || "";
-const FINNHUB_KEY = process.env.FINNHUB_KEY || "";
 const GEMINI_KEY  = process.env.GEMINI_KEY  || "";
 const TWELVE_KEY  = process.env.TWELVE_KEY  || "";
 
 const GEMINI_URL =
   "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
-
-// ─────────────────────────────────────────────────────────────────
-// 장 상태 확인 (Twelve Data)
-// returns: 'REGULAR' | 'PRE' | 'AFTER' | 'CLOSED'
-// ─────────────────────────────────────────────────────────────────
-
-let _wasRegular = false;  // 한번이라도 REGULAR였던 적 있는지
-
-async function fetchMarketState() {
-  try {
-    const url = `https://api.twelvedata.com/market_state?exchange=NYSE&apikey=${TWELVE_KEY}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-    const json = await res.json();
-    const nyse = Array.isArray(json)
-      ? (json.find(e => e.code === "XNYS") ?? json[0])
-      : json;
-
-    if (!nyse) throw new Error("NYSE 데이터 없음");
-
-    if (nyse.is_market_open) {
-      _wasRegular = true;
-      return "REGULAR";
-    }
-
-    const afterSec = _parseHMS(nyse.time_after_open);
-    if (afterSec > 0) {
-      _wasRegular = false;
-      return "AFTER";
-    }
-
-    // Twelve Data가 CLOSED 반환 시 더블체크
-    if (_wasRegular) {
-      const etCheck = _etMarketStateFallback();
-      if (etCheck === "REGULAR" || etCheck === "PRE") {
-        console.warn("[MarketState] Twelve Data CLOSED 반환, ET 시각으로 오버라이드:", etCheck);
-        return etCheck;
-      }
-      _wasRegular = false;
-    }
-
-    // PRE 판단 (기존 로직 유지)
-    const nowET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
-    const etHour = nowET.getHours() + nowET.getMinutes() / 60;
-    if (etHour >= 4.0 && etHour < 9.5) return "PRE";
-
-    return "CLOSED";
-  } catch (e) {
-    console.warn("[MarketState] 조회 실패:", e.message, "→ ET 시각 기반 폴백");
-    return _etMarketStateFallback();
-  }
-}
-
-
-function _parseHMS(hms) {
-  if (!hms) return 0;
-  const parts = hms.split(":").map(Number);
-  if (parts.length !== 3 || parts.some(isNaN)) return 0;
-  return parts[0] * 3600 + parts[1] * 60 + parts[2];
-}
-
-function _etMarketStateFallback() {
-  const nowET  = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
-  const dow    = nowET.getDay();
-  const etHour = nowET.getHours() + nowET.getMinutes() / 60;
-
-  if (dow === 0 || dow === 6) return "CLOSED";
-  if (etHour >= 9.5  && etHour < 16.0) return "REGULAR";
-  if (etHour >= 4.0  && etHour < 9.5)  return "PRE";
-  if (etHour >= 16.0 && etHour < 20.0) return "AFTER";
-  return "CLOSED";
-}
 
 // ─────────────────────────────────────────────────────────────────
 // Rate Limiter
@@ -252,127 +177,6 @@ ${JSON.stringify(compressedStrikes)}
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Finnhub WebSocket 중계
-// ─────────────────────────────────────────────────────────────────
-const FINNHUB_WS_URL = `wss://ws.finnhub.io?token=${FINNHUB_KEY}`;
-const SYMBOLS        = ["SPY", "RSP"];
-
-let _finnhub        = null;
-let _finnhubReady   = false;
-let _reconnectTimer = null;
-let _marketCheckTimer = null;  // 장 상태 주기적 확인 타이머
-
-const _clients = new Set();
-
-// ── Finnhub 연결 ──────────────────────────────────────────────────
-export function connectFinnhub() {
-  if (!FINNHUB_KEY) {
-    console.warn("[Finnhub] FINNHUB_KEY 없음 — WS 비활성화");
-    return;
-  }
-  if (_finnhub && (
-    _finnhub.readyState === WebSocket.OPEN ||
-    _finnhub.readyState === WebSocket.CONNECTING
-  )) return;
-
-  console.log("[Finnhub] 연결 시도…");
-  _finnhub      = new WebSocket(FINNHUB_WS_URL);
-  _finnhubReady = false;
-
-  _finnhub.on("open", () => {
-    _finnhubReady = true;
-    console.log("[Finnhub] 연결됨 — 심볼 구독:", SYMBOLS.join(", "));
-    SYMBOLS.forEach((s) => {
-      _finnhub.send(JSON.stringify({ type: "subscribe", symbol: s }));
-    });
-    if (_reconnectTimer) {
-      clearTimeout(_reconnectTimer);
-      _reconnectTimer = null;
-    }
-  });
-
-  _finnhub.on("message", (raw) => {
-    try {
-      const msg = JSON.parse(raw);
-      if (msg.type !== "trade" || !Array.isArray(msg.data)) return;
-      const payload = JSON.stringify({ type: "tick", data: msg.data });
-      for (const client of _clients) {
-        if (client.readyState === WebSocket.OPEN) client.send(payload);
-      }
-    } catch (e) {
-      console.warn("[Finnhub] 메시지 파싱 오류:", e.message);
-    }
-  });
-
-  _finnhub.on("close", () => {
-    _finnhubReady = false;
-    console.warn("[Finnhub] 연결 종료");
-
-    // 재연결 전 장 상태 확인
-    if (_reconnectTimer) return;
-    _reconnectTimer = setTimeout(async () => {
-      _reconnectTimer = null;
-      const state = await fetchMarketState();
-      if (state === "REGULAR" || state === "PRE") {
-        console.log(`[Finnhub] 재연결 (장 상태: ${state})`);
-        connectFinnhub();
-      } else {
-        console.log(`[Finnhub] 재연결 취소 (장 상태: ${state})`);
-      }
-    }, 15_000);
-  });
-
-  _finnhub.on("error", (err) => {
-    console.error("[Finnhub] 오류:", err.message);
-    _finnhub.close();
-  });
-}
-
-// ── Finnhub 해제 ──────────────────────────────────────────────────
-function disconnectFinnhub() {
-  if (_reconnectTimer) {
-    clearTimeout(_reconnectTimer);
-    _reconnectTimer = null;
-  }
-  if (_finnhub) {
-    // onclose 핸들러가 재연결 시도 안 하도록 플래그
-    _finnhub.removeAllListeners("close");
-    _finnhub.close();
-    _finnhub      = null;
-    _finnhubReady = false;
-    console.log("[Finnhub] 연결 해제");
-  }
-}
-
-// ── 장 상태 주기적 감시 (5분) ────────────────────────────────────
-// PRE/REGULAR → connectFinnhub()
-// AFTER/CLOSED → disconnectFinnhub()
-async function startMarketWatch() {
-  const check = async () => {
-    const state = await fetchMarketState();
-    console.log(`[MarketWatch] 장 상태: ${state}`);
-
-    if (state === "REGULAR" || state === "PRE") {
-      if (!_finnhubReady) {
-        console.log(`[MarketWatch] 장 열림 (${state}) → Finnhub 연결`);
-        connectFinnhub();
-      }
-    } else {
-      if (_finnhubReady || _finnhub) {
-        console.log(`[MarketWatch] 장 마감 (${state}) → Finnhub 해제`);
-        disconnectFinnhub();
-      }
-    }
-  };
-
-  // 즉시 1회 실행
-  await check();
-
-  // 이후 5분마다 반복
-  _marketCheckTimer = setInterval(check, 5 * 60 * 1000);
-}
-
-// ─────────────────────────────────────────────────────────────────
 // HTTP 서버
 // ─────────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
@@ -380,10 +184,8 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && req.url === "/health") {
     res.writeHead(200, { "Content-Type": "application/json" });
     res.end(JSON.stringify({
-      status:   "ok",
-      ts:       new Date().toISOString(),
-      finnhub:  _finnhubReady ? "connected" : "disconnected",
-      clients:  _clients.size,
+      status: "ok",
+      ts:     new Date().toISOString(),
     }));
     return;
   }
@@ -484,34 +286,8 @@ const server = http.createServer(async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────
-// WebSocket 서버 (/ws)
-// ─────────────────────────────────────────────────────────────────
-const wss = new WebSocketServer({ server, path: "/ws" });
-
-wss.on("connection", (ws, req) => {
-  _clients.add(ws);
-  console.log(`[WS] 클라이언트 연결 (총 ${_clients.size}개) — ${req.socket.remoteAddress}`);
-
-  ws.send(JSON.stringify({
-    type:    "status",
-    finnhub: _finnhubReady ? "connected" : "disconnected",
-  }));
-
-  ws.on("close", () => {
-    _clients.delete(ws);
-    console.log(`[WS] 클라이언트 해제 (총 ${_clients.size}개)`);
-  });
-
-  ws.on("error", (err) => {
-    console.warn("[WS] 클라이언트 오류:", err.message);
-    _clients.delete(ws);
-  });
-});
-
-// ─────────────────────────────────────────────────────────────────
-// 시작 — connectFinnhub() 직접 호출 대신 startMarketWatch() 로 대체
+// 시작
 // ─────────────────────────────────────────────────────────────────
 server.listen(PORT, () => {
   console.log(`DexBoard Railway service listening on port ${PORT}`);
-  startMarketWatch();  // 장 상태 확인 후 조건부 연결
 });
