@@ -12,9 +12,10 @@ const CRON_SECRET = process.env.CRON_SECRET || "";
 const GEMINI_KEY  = process.env.GEMINI_KEY  || "";
 const TWELVE_KEY  = process.env.TWELVE_KEY  || "";
 
+//const GEMINI_URL =
+//  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
 const GEMINI_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent";
-
+  "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent"
 // ─────────────────────────────────────────────────────────────────
 // Rate Limiter
 // ─────────────────────────────────────────────────────────────────
