@@ -500,6 +500,36 @@ function renderAIResult(data) {
 
 let _aiLoading = false;
 
+// AI 분석 결과 렌더 + 안내문구
+function _renderAIWithNotice(analysis, noticeMsg = null, noticeColor = '#8b949e') {
+  const result   = document.getElementById('ai-analysis-result');
+  const scrollEl = document.getElementById('ai-result-scroll');
+  if (!result) return;
+
+  const noticeHTML = noticeMsg ? `
+    <div style="
+      font-size:11px;padding:6px 10px;margin-bottom:8px;border-radius:4px;
+      background:rgba(139,148,158,.1);border-left:3px solid ${noticeColor};
+      color:${noticeColor};
+    ">${noticeMsg}</div>` : '';
+
+  renderAIResult(analysis);
+
+  // 안내문구를 결과 위에 삽입
+  if (noticeMsg) {
+    result.insertAdjacentHTML('afterbegin', noticeHTML);
+  }
+  if (scrollEl) scrollEl.scrollTop = 0;
+}
+
+// N분 전 포맷
+function _minutesAgo(ts) {
+  const mins = Math.floor((Date.now() - new Date(ts).getTime()) / 60_000);
+  if (mins < 1)  return '방금 전';
+  if (mins < 60) return `${mins}분 전`;
+  return `${Math.floor(mins / 60)}시간 ${mins % 60}분 전`;
+}
+
 async function requestAIAnalysis(auto = false) {
   if (_aiLoading) return;
   _aiLoading = true;
@@ -510,11 +540,48 @@ async function requestAIAnalysis(auto = false) {
   const scrollEl = document.getElementById('ai-result-scroll');
   if (!result) { _aiLoading = false; return; }
 
+  if (wrap) wrap.style.display = 'block';
+
+  // ── 1. KV 캐시 확인 ──────────────────────────────────────────
+  let cached = null;
+  try {
+    const cacheRes = await fetch(`${CF_API}/api/ai-analysis`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (cacheRes.ok) {
+      const cacheData = await cacheRes.json();
+      if (!cacheData.error && cacheData.analysis && cacheData.ts) {
+        cached = cacheData;
+      }
+    }
+  } catch (_) {}
+
+  const cacheAgeMs  = cached ? Date.now() - new Date(cached.ts).getTime() : Infinity;
+  const cacheValid  = cacheAgeMs < 15 * 60_000;  // 15분 이내
+
+  // 수동 버튼 클릭 시 캐시가 15분 이내면 캐시 결과 표시 후 종료
+  if (!auto && cacheValid) {
+    _renderAIWithNotice(
+      cached.analysis,
+      `📋 ${_minutesAgo(cached.ts)} 분석 결과입니다 (자동갱신 15분)`,
+      '#8b949e'
+    );
+    _aiLoading = false;
+    return;
+  }
+
+  // 자동 분석이고 캐시가 유효하면 조용히 캐시 렌더 후 종료
+  if (auto && cacheValid) {
+    _renderAIWithNotice(cached.analysis);
+    _aiLoading = false;
+    return;
+  }
+
+  // ── 2. Railway 호출 (캐시 없거나 만료) ──────────────────────
   if (!auto && btn) {
     btn.disabled    = true;
     btn.textContent = '분석 중…';
   }
-  if (wrap) wrap.style.display = 'block';
   result.innerHTML = `
     <div style="text-align:center;padding:20px;color:#8b949e;font-size:12px">
       Gemini가 분석 중입니다…
@@ -526,19 +593,41 @@ async function requestAIAnalysis(auto = false) {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify(payload),
+      signal:  AbortSignal.timeout(35_000),
     });
     const data = await res.json();
 
     if (data.ok && typeof data.analysis === 'object') {
-      renderAIResult(data.analysis);
-      if (scrollEl) scrollEl.scrollTop = 0;
+      // 성공 — 안내문구 없이 렌더
+      _renderAIWithNotice(data.analysis);
     } else {
-      result.innerHTML = `<div style="color:#ef4444;font-size:12px;padding:8px">
-        분석 실패: ${data.error ?? '알 수 없는 오류'}</div>`;
+      // Railway 응답은 왔지만 분석 실패
+      throw new Error(data.error ?? '알 수 없는 오류');
     }
   } catch (e) {
-    result.innerHTML = `<div style="color:#ef4444;font-size:12px;padding:8px">
-      오류: ${e.message}</div>`;
+    // ── 3. 에러 시 캐시 폴백 ──────────────────────────────────
+    const is429 = e.message?.includes('429') || e.message?.includes('한도');
+    const isTimeout = e.name === 'TimeoutError' || e.message?.includes('timeout');
+
+    if (cached?.analysis) {
+      const noticeColor = is429 ? '#f59e0b' : '#ef4444';
+      let noticeMsg = '';
+      if (is429) {
+        noticeMsg = `⚠️ API 한도 초과 — ${_minutesAgo(cached.ts)} 결과를 표시합니다`;
+      } else if (isTimeout) {
+        noticeMsg = `⚠️ 응답 시간 초과 — ${_minutesAgo(cached.ts)} 결과를 표시합니다`;
+      } else {
+        noticeMsg = `⚠️ 분석 오류 — ${_minutesAgo(cached.ts)} 결과를 표시합니다`;
+      }
+      _renderAIWithNotice(cached.analysis, noticeMsg, noticeColor);
+    } else {
+      // 캐시도 없음
+      result.innerHTML = `
+        <div style="color:#ef4444;font-size:12px;padding:8px">
+          ⚠️ 분석 결과를 불러올 수 없습니다<br>
+          <span style="color:#8b949e;font-size:11px">${e.message}</span>
+        </div>`;
+    }
   } finally {
     _aiLoading = false;
     if (!auto && btn) {
