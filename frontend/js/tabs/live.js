@@ -50,9 +50,10 @@ let _kvPollTimer   = null;  // 프리/애프터용 KV 폴링
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async function fetchKV() {
   try {
-    const [snapRes, dexRes, oiOpenRes] = await Promise.all([
+    const [snapRes, dexRes, dexPrevRes, oiOpenRes] = await Promise.all([
       fetch(`${CF_API}/api/snapshot`),
       fetch(`${CF_API}/api/dex/0dte`),
+      fetch(`${CF_API}/api/dex/0dte/prev`),
       fetch(`${CF_API}/api/oi/open`),
     ]);
 
@@ -77,6 +78,22 @@ async function fetchKV() {
         _state.callWall = _calcCallWall(_state.strikes, _state.spot);
         _state.flipZone = _calcFlipZone(_state.strikes);
         _state.pcr      = _calcPCR(_state.strikes);
+      }
+    }
+
+    // delta15m 계산 — 15분 전 0dte 스냅샷과 비교
+    if (dexPrevRes.ok) {
+      const prev = await dexPrevRes.json();
+      if (!prev.error && prev.strikes?.length) {
+        const prevMap = Object.fromEntries(
+          prev.strikes.map(s => [s.strike, { callOI: s.callOI, putOI: s.putOI }])
+        );
+        for (const s of _state.strikes) {
+          const p = prevMap[s.strike];
+          s.delta15m = p != null
+            ? (s.callOI + s.putOI) - (p.callOI + p.putOI)
+            : null;
+        }
       }
     }
 
