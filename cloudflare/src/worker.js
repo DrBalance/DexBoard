@@ -4,6 +4,7 @@
 //   GET  /api/snapshot/prev   → previous snapshot from KV
 //   GET  /api/dex/:group      → DEX data (0dte | weekly | monthly | quarterly | structure)
 //   GET  /api/dex/open        → opening snapshot
+//   GET  /api/dex/0dte/prev   → 15분 전 0dte 스냅샷 (delta15m 계산용)
 //   GET  /api/spy-price       → SPY 현재가 프록시 (Finnhub REST → CORS 우회)
 //   GET  /api/vix-tick        → VIX 1분봉 포인트 배열 (vc-chart.js용)
 //   GET  /api/screener        → 스크리너 점수 결과 (?date=YYYY-MM-DD)
@@ -80,6 +81,14 @@ export default {
     if (request.method === "GET" && path === "/api/dex/open") {
       const data = await env.DEX_KV.get("options:spy:open", { type: "json" });
       if (!data) return json({ error: "No open snapshot" }, 200, corsHeaders);
+      return json(data, 200, corsHeaders);
+    }
+
+    // ── GET /api/dex/0dte/prev ──────────────────────────────────
+    // 15분 전 0dte 스냅샷 — delta15m 계산용
+    if (request.method === "GET" && path === "/api/dex/0dte/prev") {
+      const data = await env.DEX_KV.get("dex:spy:0dte:prev", { type: "json" });
+      if (!data) return json({ error: "No prev 0dte data" }, 200, corsHeaders);
       return json(data, 200, corsHeaders);
     }
 
@@ -358,6 +367,13 @@ async function triggerRailway(env) {
     if (!spyPrice || !vixPrice) {
       console.warn("[railway] SPY 또는 VIX 없음 → trigger 생략", { spyPrice, vixPrice });
       return;
+    }
+
+    // Railway 호출 전 현재 0dte를 prev로 저장 (delta15m 계산용)
+    const current0dte = await env.DEX_KV.get("dex:spy:0dte", { type: "json" });
+    if (current0dte) {
+      await env.DEX_KV.put("dex:spy:0dte:prev", JSON.stringify(current0dte));
+      console.log("[railway] dex:spy:0dte:prev 저장 완료");
     }
 
     const res = await fetch(`${env.RAILWAY_URL}/calculate`, {
