@@ -18,6 +18,7 @@ import { initVCChart, pushVixPoint, pushVoldPoint, setVixPrevClose } from '../vc
 const _state = {
   spy:     { price: null, change: null, changePct: null },
   vix:     { price: null, change: null, changePct: null },
+  dex:     null,
   gex:     null,
   vanna:   null,
   charm:   null,
@@ -50,10 +51,9 @@ let _kvPollTimer   = null;  // 프리/애프터용 KV 폴링
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 async function fetchKV() {
   try {
-    const [snapRes, dexRes, dexPrevRes, oiOpenRes] = await Promise.all([
+    const [snapRes, dexRes, oiOpenRes] = await Promise.all([
       fetch(`${CF_API}/api/snapshot`),
       fetch(`${CF_API}/api/dex/0dte`),
-      fetch(`${CF_API}/api/dex/0dte/prev`),
       fetch(`${CF_API}/api/oi/open`),
     ]);
 
@@ -68,6 +68,7 @@ async function fetchKV() {
     if (dexRes.ok) {
       const dex = await dexRes.json();
       if (!dex.error) {
+        _state.dex     = dex.dex_total   ?? null;
         _state.gex     = dex.gex_total   ?? null;
         _state.vanna   = dex.vanna_total ?? null;
         _state.charm   = dex.charm_total ?? null;
@@ -78,22 +79,6 @@ async function fetchKV() {
         _state.callWall = _calcCallWall(_state.strikes, _state.spot);
         _state.flipZone = _calcFlipZone(_state.strikes);
         _state.pcr      = _calcPCR(_state.strikes);
-      }
-    }
-
-    // delta15m 계산 — 15분 전 0dte 스냅샷과 비교
-    if (dexPrevRes.ok) {
-      const prev = await dexPrevRes.json();
-      if (!prev.error && prev.strikes?.length) {
-        const prevMap = Object.fromEntries(
-          prev.strikes.map(s => [s.strike, { callOI: s.callOI, putOI: s.putOI }])
-        );
-        for (const s of _state.strikes) {
-          const p = prevMap[s.strike];
-          s.delta15m = p != null
-            ? (s.callOI + s.putOI) - (p.callOI + p.putOI)
-            : null;
-        }
       }
     }
 
@@ -378,21 +363,27 @@ function renderPCR() {
   setEl('m-pcr', v != null ? v.toFixed(2) : '—', color);
 }
 
+function renderDEX() {
+  const v     = _state.dex;
+  const color = colorBySign(v);
+  setEl('m-dex0',     fmtM(v),        color);
+  setEl('m-dex0-sub', 'dealer delta', COLOR.muted);
+}
+
 function renderVOLD() {
   const color = colorBySign(_state.vold);
-  setEl('m-dex0',     fmtVold(_state.vold), color);
-  setEl('m-dex0-sub', 'RSP breadth',        COLOR.muted);
-  const labelEl = document.querySelector('[data-metric="dex0"] .metric-label');
-  if (labelEl) labelEl.textContent = 'VOLD';
+  setEl('m-vold',     fmtVold(_state.vold), color);
+  setEl('m-vold-sub', 'RSP breadth',        COLOR.muted);
 }
 
 function renderCards() {
   renderSPY();
   renderVIX();
+  renderVOLD();
+  renderDEX();
   renderGEX();
   renderVanna();
   renderCharm();
-  renderVOLD();
   renderPutWall();
   renderCallWall();
   renderFlipZone();
