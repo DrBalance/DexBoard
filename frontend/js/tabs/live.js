@@ -10,7 +10,7 @@ import {
 import { renderHeatmap, updateHeatmapSpot }           from '../heatmap.js';
 import { buildNarrative, buildAnalysisPayload }       from '../narrative.js';
 import { renderOIChart, updateOIChart, renderStrikeTable, renderTop5Panel } from '../oi-chart.js';
-import { initVCChart, pushVixPoint, setVoldSeries, setVixPrevClose } from '../vc-chart.js';
+import { initVCChart, pushVixPoint, setVoldSeries } from '../vc-chart.js';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 내부 상태
@@ -722,8 +722,8 @@ export function initLive() {
 
   initNarrativePanel();
 
-  // VC 차트 초기화
-  initVCChart('vc-chart-wrap');
+  // VC 차트 초기화 (CF_API 전달 → 내부에서 /api/vix-tick으로 당일 히스토리 복원)
+  initVCChart('vc-chart-wrap', CF_API);
 
   // KV 초기 로드 (GEX/Vanna/Charm/내러티브)
   fetchKV();
@@ -809,8 +809,8 @@ function _calcFlipZone(strikes) {
 // VIX 1분봉 폴링 (Yahoo Finance ^VIX)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 let _vixPollTimer = null;
-let _vixPrevCloseSet = false;
 
+// 1분 폴링: 최신 포인트 1개만 push (복원은 initVCChart가 담당)
 async function _fetchVixPoint() {
   try {
     const url = `${CF_API}/api/vix-tick`;
@@ -818,21 +818,14 @@ async function _fetchVixPoint() {
     if (!res.ok) return;
     const json = await res.json();
 
-    // { prevClose: number, points: [{ ts: ISOstring, v: number }] }
-    if (!_vixPrevCloseSet && json.prevClose != null) {
-      setVixPrevClose(json.prevClose);
-      _vixPrevCloseSet = true;
-    }
-
     const points = json.points ?? [];
     if (!points.length) return;
 
-    for (const pt of points) {
-      pushVixPoint(pt.ts, pt.v);
-    }
-
-    // VIX 메트릭 카드: 최신 포인트로 업데이트
+    // 최신 포인트만 차트에 추가
     const latest = points[points.length - 1];
+    if (latest) pushVixPoint(latest.ts, latest.v);
+
+    // VIX 메트릭 카드 업데이트
     if (latest?.v != null) {
       _state.vix.price = latest.v;
       renderVIX();
