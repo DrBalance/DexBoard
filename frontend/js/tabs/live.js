@@ -7,7 +7,7 @@ import {
   fmtM, fmtVold,
   colorBySign, colorVix, COLOR,
 } from '../fmt.js';
-import { renderHeatmap }                              from '../heatmap.js';
+import { renderHeatmap, updateHeatmapSpot }           from '../heatmap.js';
 import { buildNarrative, buildAnalysisPayload }       from '../narrative.js';
 import { renderOIChart, updateOIChart, renderStrikeTable, renderTop5Panel } from '../oi-chart.js';
 import { initVCChart, pushVixPoint, pushVoldPoint, setVixPrevClose } from '../vc-chart.js';
@@ -93,7 +93,14 @@ async function fetchKV() {
   }
 
   renderCards();
-  _onSpotUpdated();   // GEX/히트맵/OI 차트 재계산
+
+  // 옵션체인 갱신(15분): 히트맵 전체 재렌더 (스크롤 위치 복원)
+  const spotForHeatmap = _state.spyLive ?? _state.spy.price ?? _state.spot;
+  if (_state.strikes.length > 0 && spotForHeatmap) {
+    renderHeatmap('heatmap-canvas', _state.strikes, spotForHeatmap);
+  }
+
+  _onSpotUpdated();   // GEX/OI 차트 등 나머지 업데이트
 
   // 급등 OI 패널
   if (_state.strikes.length > 0) {
@@ -127,10 +134,9 @@ function _onSpotUpdated() {
     renderCallWall();
   }
 
-  // 히트맵
-  if (_state.strikes.length > 0) {
-    renderHeatmap('heatmap-canvas', _state.strikes, spotPrice);
-  }
+  // 히트맵 — 가격 갱신 시에는 spot 강조만 업데이트 (DOM 교체 없음)
+  // 옵션체인 갱신(15분) 시에는 fetchKV()에서 renderHeatmap() 호출
+  updateHeatmapSpot('heatmap-canvas', spotPrice);
 
   // OI 차트
   if (_state.strikes.length > 0) {
@@ -794,7 +800,6 @@ function _calcFlipZone(strikes) {
   }
   return null;
 }
-
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // VIX 1분봉 폴링 (Yahoo Finance ^VIX)
