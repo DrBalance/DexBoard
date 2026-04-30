@@ -144,7 +144,7 @@ ${JSON.stringify(compressedStrikes)}
         temperature:      0.15,
         topP:             0.8,
         maxOutputTokens:  8192,
-        responseMimeType: "application/json",
+        // responseMimeType: "application/json",
       },
     }),
     signal: AbortSignal.timeout(30_000),
