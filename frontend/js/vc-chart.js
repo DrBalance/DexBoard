@@ -1,125 +1,169 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// vc-chart.js — VIX + VOLD 듀얼 페인 SVG 차트
+// vc-chart.js — VIX + VOLD 듀얼 페인 SVG 차트 v2
 //
 // 구조:
-//   상단 페인: VIX 1분봉 (Yahoo Finance)
+//   상단 페인: VIX 1분봉 (Yahoo Finance via /api/vix-tick)
 //   하단 페인: VOLD 누적 (RSP WebSocket 틱)
 //
-// 특징:
-//   - SVG 방식 (Canvas 크기 버그 없음)
-//   - y축 별도 고정 SVG (스크롤 무관)
-//   - 가로 스크롤 + 줌 버튼 (1h / 2h / 4h / All)
-//   - 현재값 라벨 (마지막 포인트)
-//   - 전일 종가 기준선 (VIX) / 0 기준선 (VOLD)
-//   - VIX 조회 실패 시 VIX 페인 유지, VOLD만 독립 업데이트
+// 레이아웃:
+//   [y축 고정 컬럼] | [공통 스크롤 컨테이너]
+//                       ├─ vc-chart-vix SVG
+//                       └─ vc-chart-vold SVG
+//   → 스크롤 컨테이너가 1개이므로 VIX/VOLD 완전 동기화
+//
+// 시간축:
+//   ET 04:00 ~ 17:00 고정 (780분), 미리 그려놓음
+//   줌 버튼 = SVG width 배율만 변경 (재렌더 없음)
+//   x축 레이블: KST HH:MM 표시
+//
+// 복원:
+//   페이지 로드 시 /api/vix-tick → 당일 전체 1분봉 일괄 push
 //
 // 외부 호출:
-//   initVCChart(containerId)   → 차트 초기화
-//   pushVixPoint(ts, value)    → VIX 1분봉 포인트 추가 (ts: UTC ISO)
-//   setVoldSeries(series)      → VOLD 시리즈 전체 교체 (ts: "YYYY-MM-DD HH:mm:ss" ET)
-//   setVixPrevClose(value)     → 전일 종가 기준선 설정
-//
-// 시간 기준:
-//   모든 ts는 내부적으로 ms(정수)로 변환하여 사용
-//   VIX: UTC ISO → _tsToMs()
-//   VOLD: ET 문자열 → clock.js의 window._kstStr / window._etHour 역산으로 KST ms 변환
-//   x축 레이블: KST HH:MM 표시
+//   initVCChart(containerId, cfApiBase)  → 초기화 + 복원
+//   pushVixPoint(ts, value)              → VIX 포인트 추가 (ts: UTC ISO)
+//   setVoldSeries(series)                → VOLD 전체 교체
+//   pushVoldPoint(ts, value)             → VOLD 단일 추가
+//   setVixPrevClose(value)               → 전일 종가 기준선
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 // ── 레이아웃 상수 ─────────────────────────────────────────
-const Y_W       = 38;    // y축 SVG 너비 (px) — 모바일 최소화
-const PANE_H    = 180;   // 각 페인 높이 (px)
-const PAD_T     = 8;     // 상단 여백
-const PAD_B     = 8;     // 하단 여백
-const PX_PER_MIN_BASE = 4; // 기본 분당 픽셀 (1h 줌 기준)
+const Y_W    = 38;   // y축 SVG 고정 너비 (px)
+const PANE_H = 180;  // 각 페인 높이 (px)
+const PAD_T  = 8;    // 상단 여백
+const PAD_B  = 18;   // 하단 여백 (x축 레이블 공간)
 
-// 줌 레벨 정의 (표시할 시간 범위 분)
+// ── 고정 시간축 ───────────────────────────────────────────
+// ET 04:00 ~ 17:00 = 780분
+const AXIS_START_ET_H = 4;   // 04:00 ET (프리마켓 시작)
+const AXIS_END_ET_H   = 17;  // 17:00 ET (정규장 16:00 + 여백 1시간)
+const AXIS_MINS       = (AXIS_END_ET_H - AXIS_START_ET_H) * 60; // 780분
+
+// VOLD는 정규장(09:30 ET)부터만 그림
+const VOLD_START_ET_H = 9;
+const VOLD_START_ET_M = 30;
+
+// 줌 레벨: 컨테이너 너비 대비 배율
 const ZOOM_LEVELS = [
   { label: '1h',  mins: 60  },
   { label: '2h',  mins: 120 },
   { label: '4h',  mins: 240 },
-  { label: 'All', mins: 480 },  // 정규장 전체 (4:00~20:00 ET = 최대 960분)
+  { label: 'All', mins: AXIS_MINS },
 ];
 
+// ── 기본 px/분 (All 기준 = 컨테이너 너비에 맞춤) ─────────
+const PX_PER_MIN_BASE = 3; // 최소값
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 시간 변환 유틸 — 페이지 시계(window._kstStr) 기준
+// ET 오프셋 계산 (window._etHour 기반, clock.js와 연동)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-// KST 오프셋 ms: 현재 UTC와 window._kstStr 비교로 역산
-// window._kstStr = "HH:MM:SS" (clock.js tick()에서 매초 갱신)
-function _getKstOffsetMs() {
-  const now = new Date();
-  const kstStr = window._kstStr;   // "HH:MM:SS"
-  if (!kstStr) return 9 * 3600_000; // fallback: KST = UTC+9
-
-  const [hh, mm, ss] = kstStr.split(':').map(Number);
-  // 오늘 날짜 기준 KST ms 재구성
-  const utcMidnight = new Date(Date.UTC(
-    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()
-  )).getTime();
-  const kstMs = utcMidnight + (hh * 3600 + mm * 60 + ss) * 1000;
-  // KST가 UTC보다 얼마나 앞서는지 (보통 +9h = 32400000ms)
-  const offset = kstMs - now.getTime();
-  // 자정 경계 처리 (±12h 이내로 클램프)
-  if (offset > 43200_000)  return offset - 86400_000;
-  if (offset < -43200_000) return offset + 86400_000;
-  return offset;
-}
-
-// ET 오프셋 ms: window._etHour(소수시간)와 현재 UTC 비교로 역산
-// window._etHour = clock.js가 매초 갱신하는 ET 소수 시각
-function _getEtOffsetMs() {
-  const now = new Date();
+// ET UTC 오프셋(ms): EDT=-4h, EST=-5h
+function _etOffsetMs() {
   const etHour = window._etHour;
-  if (etHour == null) return -4 * 3600_000; // fallback: EDT
-
-  const utcH = now.getUTCHours() + now.getUTCMinutes() / 60 + now.getUTCSeconds() / 3600;
-  let diff = etHour - utcH;
-  if (diff > 12)  diff -= 24;
-  if (diff < -12) diff += 24;
-  return Math.round(diff * 3600_000);
+  if (etHour != null) {
+    const now  = new Date();
+    const utcH = now.getUTCHours() + now.getUTCMinutes() / 60 + now.getUTCSeconds() / 3600;
+    let diff   = etHour - utcH;
+    if (diff > 12)  diff -= 24;
+    if (diff < -12) diff += 24;
+    return Math.round(diff * 3600_000);
+  }
+  // fallback: toLocaleString으로 EDT/EST 판별
+  const s = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', timeZoneName: 'short' });
+  return s.includes('EDT') ? -4 * 3600_000 : -5 * 3600_000;
 }
 
-// UTC ISO → KST ms
-function _utcToKstMs(utcIso) {
-  return new Date(utcIso).getTime() + _getKstOffsetMs();
+// KST UTC 오프셋(ms): 항상 +9h
+function _kstOffsetMs() {
+  return 9 * 3600_000;
 }
 
-// ET 문자열 "YYYY-MM-DD HH:mm:ss" → KST ms
-function _etStrToKstMs(etStr) {
-  // ET 문자열을 UTC ms로 먼저 변환 후 KST로
-  const etOffsetMs = _getEtOffsetMs();
-  const kstOffsetMs = _getKstOffsetMs();
-  // "YYYY-MM-DD HH:mm:ss" → 가상 UTC로 파싱
+// 오늘 ET 날짜 문자열 "YYYY-MM-DD"
+function _todayET() {
+  return new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+}
+
+// ET HH:MM → UTC ms (오늘 기준)
+function _etHMtoUtcMs(h, m) {
+  const etOff = _etOffsetMs(); // 음수: ET는 UTC보다 뒤
+  const todayET = _todayET();
+  // 오늘 날짜의 UTC 자정
+  const utcMidnightMs = new Date(`${todayET}T00:00:00Z`).getTime();
+  // ET 오프셋 역산: ET시각 - etOff = UTC시각
+  // etOff = ET - UTC → UTC = ET - etOff (etOff가 음수이므로 실제로는 더함)
+  return utcMidnightMs + (h * 60 + m) * 60_000 - etOff;
+}
+
+// UTC ISO → 차트 x좌표 ms (고정 시간축 기준)
+// 고정 시간축 시작점 = ET 04:00의 UTC ms
+let _axisStartMs = null;
+let _axisEndMs   = null;
+
+function _initAxisMs() {
+  _axisStartMs = _etHMtoUtcMs(AXIS_START_ET_H, 0);
+  _axisEndMs   = _axisStartMs + AXIS_MINS * 60_000;
+}
+
+// UTC ms → 차트 픽셀 x (SVG 내부 좌표)
+function _toX(utcMs, svgW) {
+  const ratio = (utcMs - _axisStartMs) / (AXIS_MINS * 60_000);
+  return ratio * svgW;
+}
+
+// UTC ms → KST "HH:MM" 문자열
+function _toKstHHMM(utcMs) {
+  const kstMs = utcMs + _kstOffsetMs();
+  const d     = new Date(kstMs);
+  const h     = d.getUTCHours();
+  const m     = d.getUTCMinutes();
+  return `${String(h).padStart(2,'0')}:${String(m).padStart(2,'0')}`;
+}
+
+// UTC ISO 문자열 → UTC ms
+function _isoToMs(iso) {
+  return new Date(iso).getTime();
+}
+
+// ET "YYYY-MM-DD HH:mm:ss" → UTC ms
+function _etStrToMs(etStr) {
+  const etOff = _etOffsetMs();
   const asUtc = new Date(etStr.replace(' ', 'T') + 'Z').getTime();
-  // ET → UTC: asUtc - etOffsetMs (etOffset은 음수이므로 빼면 UTC가 됨)
-  const utcMs = asUtc - etOffsetMs;
-  return utcMs + kstOffsetMs;
+  return asUtc - etOff; // ET → UTC
 }
 
-// KST ms → "HH:MM" 문자열
-function _kstMsToHHMM(ms) {
-  const d = new Date(ms - _getKstOffsetMs()); // KST ms → UTC Date
-  const kstH = (d.getUTCHours() + Math.round(_getKstOffsetMs() / 3600_000)) % 24;
-  const kstM = d.getUTCMinutes();
-  return `${String(kstH).padStart(2,'0')}:${String(kstM).padStart(2,'0')}`;
-}
-
-// ── 내부 상태 ─────────────────────────────────────────────
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 내부 상태
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 let _containerId  = null;
-let _zoomIdx      = 0;         // 현재 줌 레벨 인덱스
-let _vixData      = [];        // [{ ms: number, v: number }]  — UTC ms
-let _voldData     = [];        // [{ ms: number, v: number }]  — KST ms (표시용)
-let _vixPrevClose = null;      // VIX 전일 종가
+let _cfApiBase    = '';
+let _zoomIdx      = 0;       // 기본: '1h'
+
+let _vixData      = [];      // [{ ms: UTC ms, v: number }] 정렬됨
+let _voldData     = [];      // [{ ms: UTC ms, v: number }] 정렬됨
+let _vixPrevClose = null;
+
+// SVG 너비 (현재 줌 기준)
+let _svgW = 0;
+
+// VIX y축 — baseline 기준 ±10%, 한 방향만 확장
+let _vixYMaxRatio = 1.1;
+let _vixYMinRatio = 0.9;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 공개 API
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-export function initVCChart(containerId) {
+
+export async function initVCChart(containerId, cfApiBase) {
   _containerId = containerId;
+  _cfApiBase   = cfApiBase || '';
+  _initAxisMs();
   _buildShell();
   _bindZoomButtons();
+  _updateSvgWidth();
   _render();
+  // 당일 VIX 히스토리 복원
+  await _restoreVixHistory();
 }
 
 export function setVixPrevClose(value) {
@@ -128,12 +172,13 @@ export function setVixPrevClose(value) {
 }
 
 export function pushVixPoint(ts, value) {
-  // ts: UTC ISO 문자열 → KST ms로 변환하여 저장
   if (value == null || isNaN(value)) return;
-  const ms = _utcToKstMs(ts);
-  const existing = _vixData.findIndex(d => d.ms === ms);
-  if (existing !== -1) {
-    _vixData[existing].v = value;
+  const ms = _isoToMs(ts);
+  // 고정 시간축 범위 밖은 무시
+  if (ms < _axisStartMs || ms > _axisEndMs) return;
+  const idx = _vixData.findIndex(d => d.ms === ms);
+  if (idx !== -1) {
+    _vixData[idx].v = value;
   } else {
     _vixData.push({ ms, v: value });
     _vixData.sort((a, b) => a.ms - b.ms);
@@ -141,21 +186,20 @@ export function pushVixPoint(ts, value) {
   _renderPane('vix');
 }
 
-// VOLD 시리즈 전체 교체 (1분 폴링 시)
-// series: [{ ts: "YYYY-MM-DD HH:mm:ss" ET, v: number }, ...] 오래된 순
 export function setVoldSeries(series) {
   if (!Array.isArray(series) || !series.length) return;
   _voldData = series
     .filter(d => d.v != null && !isNaN(d.v))
-    .map(d => ({ ms: _etStrToKstMs(d.ts), v: d.v }))
+    .map(d => ({ ms: _etStrToMs(d.ts), v: d.v }))
+    .filter(d => d.ms >= _axisStartMs && d.ms <= _axisEndMs)
     .sort((a, b) => a.ms - b.ms);
   _renderPane('vold');
 }
 
-// 단일 포인트 추가 (하위 호환용)
 export function pushVoldPoint(ts, value) {
   if (value == null || isNaN(value)) return;
-  const ms = _etStrToKstMs(ts);
+  const ms = _etStrToMs(ts);
+  if (ms < _axisStartMs || ms > _axisEndMs) return;
   const idx = _voldData.findIndex(d => d.ms === ms);
   if (idx !== -1) {
     _voldData[idx].v = value;
@@ -167,13 +211,54 @@ export function pushVoldPoint(ts, value) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 당일 VIX 히스토리 복원 (/api/vix-tick)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+async function _restoreVixHistory() {
+  if (!_cfApiBase) return;
+  try {
+    const res  = await fetch(`${_cfApiBase}/api/vix-tick`);
+    if (!res.ok) return;
+    const data = await res.json();
+
+    if (data.prevClose != null) {
+      _vixPrevClose = data.prevClose;
+    }
+
+    if (Array.isArray(data.points) && data.points.length) {
+      // 일괄 삽입 (정렬 1회만)
+      _vixData = [];
+      for (const p of data.points) {
+        if (p.v == null || isNaN(p.v)) continue;
+        const ms = _isoToMs(p.ts);
+        if (ms < _axisStartMs || ms > _axisEndMs) continue;
+        _vixData.push({ ms, v: p.v });
+      }
+      _vixData.sort((a, b) => a.ms - b.ms);
+    }
+
+    _renderPane('vix');
+  } catch (e) {
+    console.warn('[vc-chart] VIX 히스토리 복원 실패:', e.message);
+  }
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // HTML 뼈대 생성
+//
+// [flex row]
+//   ├─ [y축 고정 컬럼 Y_W px]
+//   │    ├─ svg#vc-yaxis-vix   (PANE_H)
+//   │    └─ svg#vc-yaxis-vold  (PANE_H)
+//   └─ [div#vc-scroll  flex:1  overflow-x:auto] ← 스크롤 1개
+//        ├─ svg#vc-chart-vix   (동적 너비)
+//        └─ svg#vc-chart-vold  (동적 너비)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function _buildShell() {
   const el = document.getElementById(_containerId);
   if (!el) return;
 
   el.innerHTML = `
+    <!-- 줌 버튼 -->
     <div style="display:flex;align-items:center;gap:6px;padding:6px 0 4px;flex-wrap:wrap">
       ${ZOOM_LEVELS.map((z, i) => `
         <button class="vc-zoom-btn${i === _zoomIdx ? ' active' : ''}"
@@ -183,42 +268,88 @@ function _buildShell() {
                   border:1px solid var(--border,#30363d);
                   background:${i === _zoomIdx ? 'var(--accent,#238636)' : 'transparent'};
                   color:${i === _zoomIdx ? '#fff' : 'var(--text2,#8b949e)'};
-                  cursor:pointer;
+                  cursor:pointer;transition:all .15s;
                 ">${z.label}</button>
       `).join('')}
     </div>
 
-    <!-- VIX 페인 -->
-    <div id="vc-pane-vix" style="position:relative;display:flex;height:${PANE_H}px;margin-bottom:2px">
-      <svg id="vc-yaxis-vix" width="${Y_W}" height="${PANE_H}"
-           style="flex-shrink:0;overflow:visible"></svg>
-      <div id="vc-scroll-vix"
-           style="flex:1;overflow-x:auto;overflow-y:hidden;position:relative;scrollbar-width:thin">
-        <svg id="vc-chart-vix" height="${PANE_H}"
-             style="display:block;min-width:100%"></svg>
-      </div>
-      <span style="
-        position:absolute;left:${Y_W + 4}px;top:4px;
-        font-size:10px;font-weight:600;color:#8b949e;
-        pointer-events:none;z-index:1;
-      ">VIX</span>
-    </div>
+    <!-- 듀얼 페인 레이아웃 -->
+    <div style="display:flex;align-items:stretch">
 
-    <!-- VOLD 페인 -->
-    <div id="vc-pane-vold" style="position:relative;display:flex;height:${PANE_H}px">
-      <svg id="vc-yaxis-vold" width="${Y_W}" height="${PANE_H}"
-           style="flex-shrink:0;overflow:visible"></svg>
-      <div id="vc-scroll-vold"
-           style="flex:1;overflow-x:auto;overflow-y:hidden;position:relative;scrollbar-width:thin">
-        <svg id="vc-chart-vold" height="${PANE_H}"
-             style="display:block;min-width:100%"></svg>
+      <!-- y축 고정 컬럼 -->
+      <div style="flex-shrink:0;width:${Y_W}px;display:flex;flex-direction:column">
+        <!-- VIX 페인 레이블 -->
+        <div style="position:relative;height:${PANE_H}px">
+          <svg id="vc-yaxis-vix" width="${Y_W}" height="${PANE_H}"
+               style="display:block;overflow:visible"></svg>
+          <span style="
+            position:absolute;left:2px;top:4px;
+            font-size:9px;font-weight:700;color:#8b949e;
+            pointer-events:none;letter-spacing:.5px;
+          ">VIX</span>
+        </div>
+        <!-- VOLD 페인 레이블 -->
+        <div style="position:relative;height:${PANE_H}px">
+          <svg id="vc-yaxis-vold" width="${Y_W}" height="${PANE_H}"
+               style="display:block;overflow:visible"></svg>
+          <span style="
+            position:absolute;left:2px;top:4px;
+            font-size:9px;font-weight:700;color:#8b949e;
+            pointer-events:none;letter-spacing:.5px;
+          ">VOLD</span>
+        </div>
       </div>
-      <span style="
-        position:absolute;left:${Y_W + 4}px;top:4px;
-        font-size:10px;font-weight:600;color:#8b949e;
-        pointer-events:none;z-index:1;
-      ">VOLD</span>
+
+      <!-- 공통 스크롤 컨테이너 (VIX + VOLD 동시 스크롤) -->
+      <div id="vc-scroll"
+           style="flex:1;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin">
+        <div id="vc-inner" style="display:flex;flex-direction:column">
+          <svg id="vc-chart-vix"  height="${PANE_H}" style="display:block"></svg>
+          <svg id="vc-chart-vold" height="${PANE_H}" style="display:block"></svg>
+        </div>
+      </div>
+
     </div>`;
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// SVG 너비 계산 및 적용 (줌 변경 시)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function _updateSvgWidth() {
+  const scrollEl = document.getElementById('vc-scroll');
+  const inner    = document.getElementById('vc-inner');
+  if (!scrollEl || !inner) return;
+
+  const viewW    = scrollEl.clientWidth || (window.innerWidth - Y_W - 28);
+  const zoomMins = ZOOM_LEVELS[_zoomIdx].mins;
+
+  // All 기준 pxPerMin: 뷰포트에 전체가 딱 맞도록
+  const pxPerMinAll = viewW / AXIS_MINS;
+  // 현재 줌의 pxPerMin: 뷰포트를 zoomMins로 채우도록
+  const pxPerMin    = Math.max(viewW / zoomMins, pxPerMinAll, PX_PER_MIN_BASE);
+
+  _svgW = Math.round(AXIS_MINS * pxPerMin);
+
+  // SVG 두 개 너비 동시 변경 (재렌더 없음)
+  ['vc-chart-vix', 'vc-chart-vold'].forEach(id => {
+    const svg = document.getElementById(id);
+    if (svg) svg.setAttribute('width', _svgW);
+  });
+
+  // inner div 너비도 맞춰줌 (스크롤 범위 확보)
+  inner.style.width = _svgW + 'px';
+}
+
+// 현재 시각 위치로 스크롤
+function _scrollToNow() {
+  const scrollEl = document.getElementById('vc-scroll');
+  if (!scrollEl) return;
+  const nowMs   = Date.now();
+  const ratio   = Math.max(0, Math.min(1, (nowMs - _axisStartMs) / (AXIS_MINS * 60_000)));
+  const nowPx   = _svgW * ratio;
+  const viewW   = scrollEl.clientWidth;
+  const target  = Math.max(0, nowPx - viewW * 0.75);
+  scrollEl.scrollLeft = target;
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -227,26 +358,25 @@ function _buildShell() {
 function _bindZoomButtons() {
   const el = document.getElementById(_containerId);
   if (!el) return;
-  el.addEventListener('click', (e) => {
+  el.addEventListener('click', e => {
     const btn = e.target.closest('.vc-zoom-btn');
     if (!btn) return;
     _zoomIdx = parseInt(btn.dataset.idx, 10);
 
-    // 버튼 스타일 갱신
     el.querySelectorAll('.vc-zoom-btn').forEach((b, i) => {
-      const active = i === _zoomIdx;
-      b.style.background = active ? 'var(--accent,#238636)' : 'transparent';
-      b.style.color       = active ? '#fff' : 'var(--text2,#8b949e)';
+      const on = i === _zoomIdx;
+      b.style.background = on ? 'var(--accent,#238636)' : 'transparent';
+      b.style.color      = on ? '#fff' : 'var(--text2,#8b949e)';
     });
 
-    // 줌 변경 시 스크롤 위치 초기화
-    _resetScroll();
-    _render();
+    // SVG 너비만 변경 → 스크롤 위치 이동 (재렌더 없음)
+    _updateSvgWidth();
+    requestAnimationFrame(() => _scrollToNow());
   });
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 전체 렌더 (줌 변경 시)
+// 전체 렌더 (초기화 시 1회, 데이터 업데이트마다 페인별)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function _render() {
   _renderPane('vix');
@@ -254,99 +384,149 @@ function _render() {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 페인별 렌더
+// 페인 렌더
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function _renderPane(pane) {
-  const data     = pane === 'vix' ? _vixData : _voldData;
   const chartSvg = document.getElementById(`vc-chart-${pane}`);
   const yaxisSvg = document.getElementById(`vc-yaxis-${pane}`);
-  const scrollEl = document.getElementById(`vc-scroll-${pane}`);
-  if (!chartSvg || !yaxisSvg || !scrollEl) return;
+  if (!chartSvg || !yaxisSvg || !_svgW) return;
 
-  const zoomMins = ZOOM_LEVELS[_zoomIdx].mins;
+  const W = _svgW;
+  const data = pane === 'vix' ? _vixData : _voldData;
 
-  // 표시할 데이터 슬라이싱 (줌 범위 내, ms 기준)
-  const visible = _sliceByZoom(data, zoomMins);
+  // ── y 범위 계산 ────────────────────────────────────────
+  const baseline = pane === 'vix' ? (_vixPrevClose ?? null) : 0;
 
-  // 차트 너비 계산
-  const scrollW  = scrollEl.clientWidth || 200;
-  const pxPerMin = Math.max(scrollW / zoomMins, PX_PER_MIN_BASE);
-  const chartW   = Math.max(zoomMins * pxPerMin, scrollW);
-
-  chartSvg.setAttribute('width', chartW);
-
-  if (visible.length < 2) {
-    chartSvg.innerHTML = _emptyMsg(chartW, pane === 'vix' ? 'VIX 데이터 없음' : 'VOLD 데이터 없음');
-    yaxisSvg.innerHTML = '';
+  let yMin, yMax;
+  if (!data.length || (pane === 'vix' && baseline == null)) {
+    // 데이터 없음: 빈 배경 + x축만 그림
+    chartSvg.innerHTML = _emptyPane(W, pane);
+    _renderYAxis(yaxisSvg, 0, 1, 0, pane);
+    if (pane === 'vix') _renderXAxis(chartSvg, W);
     return;
   }
 
-  // y 범위
-  const vals    = visible.map(d => d.v);
-  const rawMin  = Math.min(...vals);
-  const rawMax  = Math.max(...vals);
+  const vals   = data.map(d => d.v);
+  const rawMin = Math.min(...vals);
+  const rawMax = Math.max(...vals);
 
-  const baseline = pane === 'vix' ? (_vixPrevClose ?? rawMin) : 0;
-  const yMin     = Math.min(rawMin, baseline) * (rawMin < 0 ? 1.05 : 0.98);
-  const yMax     = Math.max(rawMax, baseline) * (rawMax > 0 ? 1.05 : 0.98);
-  const yRange   = yMax - yMin || 1;
+  if (pane === 'vix') {
+    const base = baseline;
+    const maxR = rawMax / base;
+    const minR = rawMin / base;
+    if (maxR > _vixYMaxRatio) _vixYMaxRatio = Math.ceil(maxR * 10) / 10;
+    if (minR < _vixYMinRatio) _vixYMinRatio = Math.floor(minR * 10) / 10;
+    yMax = base * _vixYMaxRatio;
+    yMin = base * _vixYMinRatio;
+  } else {
+    // VOLD: 0 기준 ±여유
+    yMin = Math.min(rawMin, 0) * 1.05;
+    yMax = Math.max(rawMax, 0) * 1.05;
+    if (yMin === yMax) { yMin -= 1; yMax += 1; }
+  }
+  const yRange = yMax - yMin || 1;
 
-  // 좌표 변환 (ms 기준)
-  const firstMs = visible[0].ms;
-  const lastMs  = visible[visible.length - 1].ms;
-  const spanMs  = lastMs - firstMs || 1;
+  const toY = v => PAD_T + ((yMax - v) / yRange) * (PANE_H - PAD_T - PAD_B);
 
-  const toX = (ms) => ((ms - firstMs) / spanMs) * (chartW - 8) + 4;
-  const toY = (v)  => PAD_T + ((yMax - v) / yRange) * (PANE_H - PAD_T - PAD_B);
+  // ── VOLD: 정규장 시작(09:30 ET) ms ─────────────────────
+  const voldStartMs = pane === 'vold'
+    ? _etHMtoUtcMs(VOLD_START_ET_H, VOLD_START_ET_M)
+    : null;
 
   // ── 라인 path ──────────────────────────────────────────
-  const linePath = visible.map((d, i) =>
-    `${i === 0 ? 'M' : 'L'}${toX(d.ms).toFixed(1)},${toY(d.v).toFixed(1)}`
-  ).join(' ');
+  let linePath = '';
+  let first    = true;
+  for (const d of data) {
+    // VOLD: 09:30 이전은 건너뜀
+    if (pane === 'vold' && d.ms < voldStartMs) continue;
+    const x = _toX(d.ms, W).toFixed(1);
+    const y = toY(d.v).toFixed(1);
+    linePath += `${first ? 'M' : 'L'}${x},${y} `;
+    first = false;
+  }
+  if (!linePath) {
+    // 데이터는 있지만 정규장 전 (VOLD 케이스)
+    chartSvg.innerHTML = _emptyPane(W, pane);
+    _renderYAxis(yaxisSvg, yMin, yMax, baseline, pane);
+    return;
+  }
 
-  // ── 색상 결정 ──────────────────────────────────────────
-  const lastVal   = visible[visible.length - 1].v;
+  // ── 색상 ───────────────────────────────────────────────
+  const lastVal   = data[data.length - 1].v;
   const lineColor = pane === 'vix'
-    ? (lastVal > (baseline ?? lastVal) ? '#ef4444' : '#22c55e')
-    : (lastVal >= 0 ? '#22c55e' : '#ef4444');
+    ? (lastVal >= baseline ? '#22c55e' : '#ef4444')
+    : (lastVal >= 0       ? '#22c55e' : '#ef4444');
 
-  // ── 기준선 y좌표 ───────────────────────────────────────
-  const baseY  = toY(baseline).toFixed(1);
-  const lastX  = toX(lastMs).toFixed(1);
-  const lastY  = toY(lastVal).toFixed(1);
-  const firstX = toX(firstMs).toFixed(1);
+  // ── 기준선 y ───────────────────────────────────────────
+  const baseY = toY(baseline ?? 0).toFixed(1);
 
-  const lastLabel = pane === 'vix' ? lastVal.toFixed(2) : _fmtVold(lastVal);
-  const areaPath  = `${linePath} L${lastX},${baseY} L${firstX},${baseY} Z`;
-  const gradId    = `vc-grad-${pane}`;
+  // ── 면적 path (라인→baseline 닫기) ────────────────────
+  // 시작점과 끝점의 x를 라인에서 추출
+  const linePoints = data.filter(d => pane !== 'vold' || d.ms >= voldStartMs);
+  const firstX     = _toX(linePoints[0].ms,                    W).toFixed(1);
+  const lastX      = _toX(linePoints[linePoints.length-1].ms,  W).toFixed(1);
+  const lastY      = toY(lastVal).toFixed(1);
+  const areaPath   = `${linePath.trim()} L${lastX},${baseY} L${firstX},${baseY} Z`;
 
-  // ── x축 레이블 (KST HH:MM, 30분 단위) ─────────────────
-  const xTickSvg = _buildXTicks(visible, toX, chartW);
+  const gradId        = `vc-grad-${pane}`;
+  const lineAboveBase = lastVal >= (baseline ?? 0);
+  const gradY1        = lineAboveBase ? '0' : '1';
+  const gradY2        = lineAboveBase ? '1' : '0';
+
+  // ── x축 레이블 (VIX 페인에만, 1시간 단위 KST) ─────────
+  const xTickSvg = pane === 'vix' ? _buildXTicks(W) : '';
+
+  // ── 현재 시각 수직선 ───────────────────────────────────
+  const nowMs  = Date.now();
+  const nowX   = _toX(nowMs, W).toFixed(1);
+  const nowLine = (nowMs >= _axisStartMs && nowMs <= _axisEndMs)
+    ? `<line x1="${nowX}" y1="${PAD_T}" x2="${nowX}" y2="${PANE_H - PAD_B}"
+             stroke="#4b5563" stroke-width="1" stroke-dasharray="2,3" opacity="0.5"/>`
+    : '';
+
+  // ── VOLD: 09:30 구분선 ─────────────────────────────────
+  const voldDivider = (pane === 'vold')
+    ? (() => {
+        const ox = _toX(voldStartMs, W).toFixed(1);
+        return `<line x1="${ox}" y1="${PAD_T}" x2="${ox}" y2="${PANE_H - PAD_B}"
+                      stroke="#374151" stroke-width="1" stroke-dasharray="3,3" opacity="0.6"/>
+                <text x="${ox}" y="${PAD_T + 10}"
+                      font-size="8" font-family="monospace" fill="#6b7280"
+                      text-anchor="start" dx="2">09:30</text>`;
+      })()
+    : '';
 
   // ── SVG 조립 ───────────────────────────────────────────
+  chartSvg.setAttribute('width', W);
   chartSvg.innerHTML = `
     <defs>
-      <linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0%"   stop-color="${lineColor}" stop-opacity="0.25"/>
+      <linearGradient id="${gradId}" x1="0" y1="${gradY1}" x2="0" y2="${gradY2}">
+        <stop offset="0%"   stop-color="${lineColor}" stop-opacity="0.22"/>
         <stop offset="100%" stop-color="${lineColor}" stop-opacity="0.02"/>
       </linearGradient>
     </defs>
 
-    <rect width="${chartW}" height="${PANE_H}" fill="transparent"/>
+    <rect width="${W}" height="${PANE_H}" fill="transparent"/>
 
     <!-- 기준선 -->
-    <line x1="0" y1="${baseY}" x2="${chartW}" y2="${baseY}"
-          stroke="${pane === 'vix' ? '#f59e0b' : '#4b5563'}"
-          stroke-width="1" stroke-dasharray="4,3" opacity="0.6"/>
+    <line x1="0" y1="${baseY}" x2="${W}" y2="${baseY}"
+          stroke="${pane === 'vix' ? '#f59e0b' : '#374151'}"
+          stroke-width="1" stroke-dasharray="4,3" opacity="0.55"/>
 
-    <!-- x축 눈금 -->
+    <!-- 현재 시각 수직선 -->
+    ${nowLine}
+
+    <!-- VOLD 09:30 구분선 -->
+    ${voldDivider}
+
+    <!-- x축 눈금 (VIX 페인) -->
     ${xTickSvg}
 
-    <!-- 음영 영역 -->
+    <!-- 면적 음영 -->
     <path d="${areaPath}" fill="url(#${gradId})" stroke="none"/>
 
     <!-- 라인 -->
-    <path d="${linePath}"
+    <path d="${linePath.trim()}"
           fill="none" stroke="${lineColor}" stroke-width="1.5"
           stroke-linejoin="round" stroke-linecap="round"/>
 
@@ -355,154 +535,131 @@ function _renderPane(pane) {
             fill="${lineColor}" stroke="#0d1117" stroke-width="1.5"/>
 
     <!-- 현재값 라벨 -->
-    ${_lastLabel(lastX, lastY, lastLabel, lineColor, chartW)}
+    ${_lastLabel(lastX, lastY, pane === 'vix' ? lastVal.toFixed(2) : _fmtVold(lastVal), lineColor, W)}
   `;
 
-  // ── y축 SVG ────────────────────────────────────────────
+  // ── y축 ────────────────────────────────────────────────
   _renderYAxis(yaxisSvg, yMin, yMax, baseline, pane);
 
-  // ── 현재 시각 위치로 스크롤 ────────────────────────────
-  _scrollToNow(scrollEl, chartW, visible);
+  // ── 초기 스크롤 (데이터 첫 렌더 시) ───────────────────
+  _maybeScrollToNow();
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// y축 SVG 렌더 (고정, 스크롤 무관)
+// 초기 스크롤 (1회만)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+let _didInitScroll = false;
+function _maybeScrollToNow() {
+  if (_didInitScroll) return;
+  if (!_vixData.length && !_voldData.length) return;
+  _didInitScroll = true;
+  requestAnimationFrame(() => _scrollToNow());
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// y축 SVG
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function _renderYAxis(svg, yMin, yMax, baseline, pane) {
   const ticks  = _niceTicks(yMin, yMax, 4);
   const yRange = yMax - yMin || 1;
-  const toY    = (v) =>
-    PAD_T + ((yMax - v) / yRange) * (PANE_H - PAD_T - PAD_B);
-
-  const color  = pane === 'vix' ? '#8b949e' : '#8b949e';
+  const toY    = v => PAD_T + ((yMax - v) / yRange) * (PANE_H - PAD_T - PAD_B);
   const fmtFn  = pane === 'vix'
-    ? (v) => v.toFixed(1)
-    : (v) => _fmtVoldShort(v);
+    ? v => v.toFixed(1)
+    : v => _fmtVoldShort(v);
 
   const lines = ticks.map(t => {
     const y = toY(t).toFixed(1);
     return `
       <text x="${Y_W - 3}" y="${y}"
             font-size="9" font-family="monospace"
-            fill="${color}" text-anchor="end"
+            fill="#8b949e" text-anchor="end"
             dominant-baseline="middle">${fmtFn(t)}</text>
       <line x1="${Y_W - 2}" y1="${y}" x2="${Y_W}" y2="${y}"
-            stroke="${color}" stroke-width="0.5" opacity="0.4"/>
+            stroke="#8b949e" stroke-width="0.5" opacity="0.3"/>
     `;
   }).join('');
 
-  // 기준선 표시 (VIX 전일종가 / VOLD 0)
-  const baseY = toY(baseline).toFixed(1);
-  const baseLabel = pane === 'vix'
-    ? `PC:${baseline?.toFixed(1) ?? ''}`
+  const baseY      = toY(baseline ?? 0).toFixed(1);
+  const baseLabel  = pane === 'vix'
+    ? `PC:${(baseline ?? 0).toFixed(1)}`
     : '0';
+  const baseColor  = pane === 'vix' ? '#f59e0b' : '#4b5563';
 
   svg.innerHTML = `
-    <!-- 세로 경계선 -->
     <line x1="${Y_W - 1}" y1="${PAD_T}" x2="${Y_W - 1}" y2="${PANE_H - PAD_B}"
           stroke="#30363d" stroke-width="1"/>
     ${lines}
-    <!-- 기준선 레이블 -->
     <text x="${Y_W - 3}" y="${baseY}"
           font-size="8" font-family="monospace"
-          fill="${pane === 'vix' ? '#f59e0b' : '#4b5563'}"
-          text-anchor="end" dominant-baseline="middle"
-          font-weight="600">${baseLabel}</text>
+          fill="${baseColor}" text-anchor="end"
+          dominant-baseline="middle" font-weight="600">${baseLabel}</text>
   `;
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 현재 시각으로 스크롤 (최초 1회 — 이미 스크롤됐으면 유지)
+// x축 눈금 (1시간 단위, KST 표시) — VIX 페인에만
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-const _scrolled = { vix: false, vold: false };
-
-function _scrollToNow(scrollEl, chartW, visible) {
-  if (_scrolled[scrollEl.id.replace('vc-scroll-', '')]) return;
-  requestAnimationFrame(() => {
-    const target = chartW - scrollEl.clientWidth * 0.75;
-    scrollEl.scrollLeft = Math.max(0, target);
-    _scrolled[scrollEl.id.replace('vc-scroll-', '')] = true;
-  });
-}
-
-// 줌 변경 시 스크롤 초기화
-function _resetScroll() {
-  _scrolled.vix  = false;
-  _scrolled.vold = false;
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 헬퍼
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-// 줌 범위에 맞게 데이터 슬라이싱 (ms 기준)
-function _sliceByZoom(data, mins) {
-  if (!data.length) return [];
-  const lastMs  = data[data.length - 1].ms;
-  const cutoff  = lastMs - mins * 60_000;
-  return data.filter(d => d.ms >= cutoff);
-}
-
-// x축 눈금 SVG 생성 (KST HH:MM, 30분 단위)
-function _buildXTicks(visible, toX, chartW) {
-  if (!visible.length) return '';
-
-  const firstMs = visible[0].ms;
-  const lastMs  = visible[visible.length - 1].ms;
-
-  // 30분 단위 경계 ms 목록 생성
-  const TICK_INTERVAL = 30 * 60_000;
-  const startTick = Math.ceil(firstMs / TICK_INTERVAL) * TICK_INTERVAL;
+function _buildXTicks(W) {
   const ticks = [];
-  for (let ms = startTick; ms <= lastMs; ms += TICK_INTERVAL) {
+  // ET 04:00 ~ 17:00, 1시간 단위
+  for (let h = AXIS_START_ET_H; h <= AXIS_END_ET_H; h++) {
+    const ms = _etHMtoUtcMs(h, 0);
     ticks.push(ms);
   }
 
   return ticks.map(ms => {
-    const x     = toX(ms).toFixed(1);
-    const label = _kstMsToHHMM(ms);
+    const x     = _toX(ms, W).toFixed(1);
+    const label = _toKstHHMM(ms);
     return `
-      <line x1="${x}" y1="${PANE_H - PAD_B - 12}" x2="${x}" y2="${PANE_H - PAD_B}"
-            stroke="#4b5563" stroke-width="0.5"/>
-      <text x="${x}" y="${PANE_H - 1}"
+      <line x1="${x}" y1="${PANE_H - PAD_B - 6}" x2="${x}" y2="${PANE_H - PAD_B}"
+            stroke="#374151" stroke-width="0.8"/>
+      <text x="${x}" y="${PANE_H - 3}"
             font-size="9" font-family="monospace" fill="#6b7280"
             text-anchor="middle">${label}</text>
     `;
   }).join('');
 }
 
-// 현재값 라벨 (차트 오른쪽 끝에 치우치면 왼쪽으로)
-function _lastLabel(x, y, label, color, chartW) {
-  const px    = parseFloat(x);
-  const py    = parseFloat(y);
-  const anchor = px > chartW - 50 ? 'end' : 'start';
-  const dx     = anchor === 'end' ? -6 : 6;
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 헬퍼
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+function _emptyPane(W, pane) {
+  const msg = pane === 'vix' ? 'VIX 데이터 없음' : '정규장 시작 후 표시';
   return `
-    <rect x="${px + dx - (anchor === 'end' ? 36 : 0)}" y="${py - 9}"
-          width="36" height="16" rx="3"
-          fill="#0d1117" opacity="0.8"/>
-    <text x="${px + dx + (anchor === 'end' ? -18 : 18)}" y="${py}"
+    <rect width="${W}" height="${PANE_H}" fill="transparent"/>
+    <!-- 기준선 -->
+    <line x1="0" y1="${((PANE_H - PAD_T - PAD_B) / 2 + PAD_T).toFixed(0)}"
+          x2="${W}" y2="${((PANE_H - PAD_T - PAD_B) / 2 + PAD_T).toFixed(0)}"
+          stroke="#30363d" stroke-width="1" stroke-dasharray="4,3" opacity="0.4"/>
+    ${pane === 'vix' ? _buildXTicks(W) : ''}
+    <text x="${W / 2}" y="${PANE_H / 2}"
+          font-size="11" fill="#4b5563"
+          text-anchor="middle" dominant-baseline="middle">${msg}</text>
+  `;
+}
+
+function _lastLabel(x, y, label, color, W) {
+  const px     = parseFloat(x);
+  const py     = parseFloat(y);
+  const anchor = px > W - 52 ? 'end' : 'start';
+  const dx     = anchor === 'end' ? -6 : 6;
+  const rectX  = anchor === 'end' ? px + dx - 38 : px + dx;
+  return `
+    <rect x="${rectX}" y="${py - 9}" width="38" height="16" rx="3"
+          fill="#0d1117" opacity="0.85"/>
+    <text x="${rectX + 19}" y="${py}"
           font-size="10" font-family="monospace" font-weight="600"
           fill="${color}" text-anchor="middle"
           dominant-baseline="middle">${label}</text>
   `;
 }
 
-// 빈 차트 메시지
-function _emptyMsg(w, msg) {
-  return `
-    <text x="${w / 2}" y="${PANE_H / 2}"
-          font-size="11" fill="#4b5563"
-          text-anchor="middle" dominant-baseline="middle">${msg}</text>
-  `;
-}
-
-// nice tick 생성 (최대 n개)
 function _niceTicks(min, max, n) {
-  const range  = max - min || 1;
-  const step   = _niceStep(range / n);
-  const start  = Math.ceil(min / step) * step;
-  const ticks  = [];
+  const range = max - min || 1;
+  const step  = _niceStep(range / n);
+  const start = Math.ceil(min / step) * step;
+  const ticks = [];
   for (let v = start; v <= max + step * 0.01; v += step) {
     ticks.push(parseFloat(v.toFixed(10)));
     if (ticks.length >= n + 1) break;
@@ -518,7 +675,6 @@ function _niceStep(rough) {
   return nice * pow;
 }
 
-// VOLD 현재값 라벨 (M단위, 소수1자리)
 function _fmtVold(v) {
   if (v == null || isNaN(v)) return '—';
   const n    = v / 1_000_000;
@@ -526,7 +682,6 @@ function _fmtVold(v) {
   return `${sign}${n.toFixed(1)}M`;
 }
 
-// VOLD y축 레이블 (짧게)
 function _fmtVoldShort(v) {
   const n = v / 1_000_000;
   if (Math.abs(n) >= 1) return (n >= 0 ? '+' : '') + n.toFixed(0) + 'M';
