@@ -234,9 +234,6 @@ async function _fetchKvPoll() {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // VOLD — Twelve Data OBV (RSP, 1min, 정규장 1분 폴링)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-let _voldPollTimer   = null;
-let _prevObvSeries   = null;   // 이전 OBV 시리즈 (변화량 누적용)
-
 async function _fetchVold() {
   try {
     if (!TWELVE_KEY) return;
@@ -278,10 +275,10 @@ async function _fetchVold() {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function _startRegularPolling() {
   _stopAllPolling();
-  _fetchSpyFinnhub();                                              // 즉시 1회
-  _fetchVold();                                                    // VOLD 즉시 1회
-  _spyPollTimer  = setInterval(_fetchSpyFinnhub, 20_000);         // 20초
-  _voldPollTimer = setInterval(_fetchVold,        60_000);        // 1분
+  _fetchSpyFinnhub();                                       // 즉시 1회
+  _fetchVixAndVold();                                       // 즉시 1회
+  _spyPollTimer = setInterval(_fetchSpyFinnhub, 20_000);   // 20초
+  _vixPollTimer = setInterval(_fetchVixAndVold, 60_000);   // 1분
 }
 
 function _startExtendedPolling() {
@@ -292,9 +289,9 @@ function _startExtendedPolling() {
 }
 
 function _stopAllPolling() {
-  if (_spyPollTimer)  { clearInterval(_spyPollTimer);  _spyPollTimer  = null; }
-  if (_kvPollTimer)   { clearInterval(_kvPollTimer);   _kvPollTimer   = null; }
-  if (_voldPollTimer) { clearInterval(_voldPollTimer); _voldPollTimer = null; }
+  if (_spyPollTimer) { clearInterval(_spyPollTimer); _spyPollTimer = null; }
+  if (_kvPollTimer)  { clearInterval(_kvPollTimer);  _kvPollTimer  = null; }
+  if (_vixPollTimer) { clearInterval(_vixPollTimer); _vixPollTimer = null; }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -602,8 +599,7 @@ function initNarrativePanel() {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function handleMarketState({ marketState }) {
   if (marketState === 'REGULAR') {
-    _state.vold          = 0;
-    _prevObvSeries       = null;
+    _state.vold = 0;
     _startRegularPolling();
   } else if (marketState === 'PRE' || marketState === 'AFTER') {
     _startExtendedPolling();
@@ -626,10 +622,7 @@ export function initLive() {
   // KV 초기 로드 (GEX/Vanna/Charm/내러티브)
   fetchKV();
 
-  // VIX 1분봉 폴링 (차트용)
-  _startVixPolling();
-
-  // 장 상태에 따라 SPY/VOLD 폴링 시작
+  // 장 상태에 따라 폴링 시작
   const ms = window._marketState;
   if (ms === 'REGULAR') {
     _startRegularPolling();
@@ -746,10 +739,12 @@ async function _fetchVixPoint() {
   }
 }
 
-function _startVixPolling() {
-  if (_vixPollTimer) return;
-  _fetchVixPoint();                             // 즉시 1회
-  _vixPollTimer = setInterval(_fetchVixPoint, 60_000);  // 이후 1분마다
+// VIX + VOLD 1분 통합 폴링
+async function _fetchVixAndVold() {
+  await Promise.all([
+    _fetchVixPoint(),
+    _fetchVold(),
+  ]);
 }
 
 function _calcPCR(strikes) {
