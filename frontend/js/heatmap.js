@@ -18,6 +18,9 @@
 // ── 스크롤 초기화 플래그 (containerId별 관리) ─────────────
 const _scrollInitialized = {};
 
+// ── GEX / Vanna / Charm 글씨 투명도 (0.0 ~ 1.0) ──────────
+const SECONDARY_OPACITY = 0.6;
+
 // ── DEX 값 → 배경색 ──────────────────────────────────────
 // 양수: 녹색 (딜러 매수 헤지), 음수: 빨간색 (딜러 매도 헤지)
 function _dexColor(value, maxAbs) {
@@ -144,7 +147,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
   // GEX 행
   const gexRow = filtered.map((s, i) => {
     const isSpot = i === spotIdx;
-    const color  = s.gex > 0 ? '#22c55e' : s.gex < 0 ? '#ef4444' : 'var(--text3)';
+    const color  = s.gex > 0 ? `rgba(34,197,94,${SECONDARY_OPACITY})` : s.gex < 0 ? `rgba(239,68,68,${SECONDARY_OPACITY})` : 'var(--text3)';
     return `<td style="
       min-width:${COL_W}px;max-width:${COL_W}px;height:${ROW_H_SM}px;
       text-align:center;font-size:13px;font-family:var(--mono);
@@ -161,7 +164,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     return `<td style="
       min-width:${COL_W}px;max-width:${COL_W}px;height:${ROW_H_SM}px;
       text-align:center;font-size:13px;font-family:var(--mono);
-      color:#a78bfa;
+      color:rgba(167,139,250,${SECONDARY_OPACITY});
       background:${isSpot ? 'rgba(255,255,255,.08)' : 'transparent'};
       border-right:1px solid var(--border);
       ${isSpot ? spotBorder : ''}
@@ -174,7 +177,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     return `<td style="
       min-width:${COL_W}px;max-width:${COL_W}px;height:${ROW_H_SM}px;
       text-align:center;font-size:13px;font-family:var(--mono);
-      color:#2dd4bf;
+      color:rgba(45,212,191,${SECONDARY_OPACITY});
       background:${isSpot ? 'rgba(255,255,255,.08)' : 'transparent'};
       border-right:1px solid var(--border);
       ${isSpot ? spotBorder : ''}
