@@ -15,9 +15,15 @@
 //
 // 외부 호출:
 //   initVCChart(containerId)   → 차트 초기화
-//   pushVixPoint(ts, value)    → VIX 1분봉 포인트 추가
-//   pushVoldPoint(ts, value)   → VOLD 틱 누적값 추가
+//   pushVixPoint(ts, value)    → VIX 1분봉 포인트 추가 (ts: UTC ISO)
+//   setVoldSeries(series)      → VOLD 시리즈 전체 교체 (ts: "YYYY-MM-DD HH:mm:ss" ET)
 //   setVixPrevClose(value)     → 전일 종가 기준선 설정
+//
+// 시간 기준:
+//   모든 ts는 내부적으로 ms(정수)로 변환하여 사용
+//   VIX: UTC ISO → _tsToMs()
+//   VOLD: ET 문자열 → clock.js의 window._kstStr / window._etHour 역산으로 KST ms 변환
+//   x축 레이블: KST HH:MM 표시
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 // ── 레이아웃 상수 ─────────────────────────────────────────
@@ -35,11 +41,75 @@ const ZOOM_LEVELS = [
   { label: 'All', mins: 480 },  // 정규장 전체 (4:00~20:00 ET = 최대 960분)
 ];
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 시간 변환 유틸 — 페이지 시계(window._kstStr) 기준
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+// KST 오프셋 ms: 현재 UTC와 window._kstStr 비교로 역산
+// window._kstStr = "HH:MM:SS" (clock.js tick()에서 매초 갱신)
+function _getKstOffsetMs() {
+  const now = new Date();
+  const kstStr = window._kstStr;   // "HH:MM:SS"
+  if (!kstStr) return 9 * 3600_000; // fallback: KST = UTC+9
+
+  const [hh, mm, ss] = kstStr.split(':').map(Number);
+  // 오늘 날짜 기준 KST ms 재구성
+  const utcMidnight = new Date(Date.UTC(
+    now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()
+  )).getTime();
+  const kstMs = utcMidnight + (hh * 3600 + mm * 60 + ss) * 1000;
+  // KST가 UTC보다 얼마나 앞서는지 (보통 +9h = 32400000ms)
+  const offset = kstMs - now.getTime();
+  // 자정 경계 처리 (±12h 이내로 클램프)
+  if (offset > 43200_000)  return offset - 86400_000;
+  if (offset < -43200_000) return offset + 86400_000;
+  return offset;
+}
+
+// ET 오프셋 ms: window._etHour(소수시간)와 현재 UTC 비교로 역산
+// window._etHour = clock.js가 매초 갱신하는 ET 소수 시각
+function _getEtOffsetMs() {
+  const now = new Date();
+  const etHour = window._etHour;
+  if (etHour == null) return -4 * 3600_000; // fallback: EDT
+
+  const utcH = now.getUTCHours() + now.getUTCMinutes() / 60 + now.getUTCSeconds() / 3600;
+  let diff = etHour - utcH;
+  if (diff > 12)  diff -= 24;
+  if (diff < -12) diff += 24;
+  return Math.round(diff * 3600_000);
+}
+
+// UTC ISO → KST ms
+function _utcToKstMs(utcIso) {
+  return new Date(utcIso).getTime() + _getKstOffsetMs();
+}
+
+// ET 문자열 "YYYY-MM-DD HH:mm:ss" → KST ms
+function _etStrToKstMs(etStr) {
+  // ET 문자열을 UTC ms로 먼저 변환 후 KST로
+  const etOffsetMs = _getEtOffsetMs();
+  const kstOffsetMs = _getKstOffsetMs();
+  // "YYYY-MM-DD HH:mm:ss" → 가상 UTC로 파싱
+  const asUtc = new Date(etStr.replace(' ', 'T') + 'Z').getTime();
+  // ET → UTC: asUtc - etOffsetMs (etOffset은 음수이므로 빼면 UTC가 됨)
+  const utcMs = asUtc - etOffsetMs;
+  return utcMs + kstOffsetMs;
+}
+
+// KST ms → "HH:MM" 문자열
+function _kstMsToHHMM(ms) {
+  const d = new Date(ms - _getKstOffsetMs()); // KST ms → UTC Date
+  const kstH = (d.getUTCHours() + Math.round(_getKstOffsetMs() / 3600_000)) % 24;
+  const kstM = d.getUTCMinutes();
+  return `${String(kstH).padStart(2,'0')}:${String(kstM).padStart(2,'0')}`;
+}
+
 // ── 내부 상태 ─────────────────────────────────────────────
 let _containerId  = null;
 let _zoomIdx      = 0;         // 현재 줌 레벨 인덱스
-let _vixData      = [];        // [{ ts: ET ISO, v: number }]
-let _voldData     = [];        // [{ ts: ET ISO, v: number }]
+let _vixData      = [];        // [{ ms: number, v: number }]  — UTC ms
+let _voldData     = [];        // [{ ms: number, v: number }]  — KST ms (표시용)
 let _vixPrevClose = null;      // VIX 전일 종가
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -58,35 +128,40 @@ export function setVixPrevClose(value) {
 }
 
 export function pushVixPoint(ts, value) {
+  // ts: UTC ISO 문자열 → KST ms로 변환하여 저장
   if (value == null || isNaN(value)) return;
-  // 중복 ts 방지 (전체 배열에서 검색)
-  const existing = _vixData.findIndex(d => d.ts === ts);
+  const ms = _utcToKstMs(ts);
+  const existing = _vixData.findIndex(d => d.ms === ms);
   if (existing !== -1) {
-    _vixData[existing].v = value;  // 기존 포인트 업데이트
+    _vixData[existing].v = value;
   } else {
-    _vixData.push({ ts, v: value });
+    _vixData.push({ ms, v: value });
+    _vixData.sort((a, b) => a.ms - b.ms);
   }
   _renderPane('vix');
 }
 
-// 1분 폴링 시 시리즈 전체 교체 (매번 390개 재계산)
-// 렌더는 교체 후 1회만
+// VOLD 시리즈 전체 교체 (1분 폴링 시)
+// series: [{ ts: "YYYY-MM-DD HH:mm:ss" ET, v: number }, ...] 오래된 순
 export function setVoldSeries(series) {
-  // series: [{ ts: ISO, v: number }, ...] 오래된 순
   if (!Array.isArray(series) || !series.length) return;
-  _voldData = series.filter(d => d.v != null && !isNaN(d.v));
+  _voldData = series
+    .filter(d => d.v != null && !isNaN(d.v))
+    .map(d => ({ ms: _etStrToKstMs(d.ts), v: d.v }))
+    .sort((a, b) => a.ms - b.ms);
   _renderPane('vold');
 }
 
-// 단일 포인트 추가 (하위 호환용 — 현재 미사용)
+// 단일 포인트 추가 (하위 호환용)
 export function pushVoldPoint(ts, value) {
   if (value == null || isNaN(value)) return;
-  const idx = _voldData.findIndex(d => d.ts === ts);
+  const ms = _etStrToKstMs(ts);
+  const idx = _voldData.findIndex(d => d.ms === ms);
   if (idx !== -1) {
     _voldData[idx].v = value;
   } else {
-    _voldData.push({ ts, v: value });
-    _voldData.sort((a, b) => a.ts.localeCompare(b.ts));
+    _voldData.push({ ms, v: value });
+    _voldData.sort((a, b) => a.ms - b.ms);
   }
   _renderPane('vold');
 }
@@ -190,7 +265,7 @@ function _renderPane(pane) {
 
   const zoomMins = ZOOM_LEVELS[_zoomIdx].mins;
 
-  // 표시할 데이터 슬라이싱 (줌 범위 내)
+  // 표시할 데이터 슬라이싱 (줌 범위 내, ms 기준)
   const visible = _sliceByZoom(data, zoomMins);
 
   // 차트 너비 계산
@@ -201,7 +276,6 @@ function _renderPane(pane) {
   chartSvg.setAttribute('width', chartW);
 
   if (visible.length < 2) {
-    // 데이터 부족 — 빈 차트
     chartSvg.innerHTML = _emptyMsg(chartW, pane === 'vix' ? 'VIX 데이터 없음' : 'VOLD 데이터 없음');
     yaxisSvg.innerHTML = '';
     return;
@@ -212,25 +286,22 @@ function _renderPane(pane) {
   const rawMin  = Math.min(...vals);
   const rawMax  = Math.max(...vals);
 
-  // 기준선 포함
   const baseline = pane === 'vix' ? (_vixPrevClose ?? rawMin) : 0;
   const yMin     = Math.min(rawMin, baseline) * (rawMin < 0 ? 1.05 : 0.98);
   const yMax     = Math.max(rawMax, baseline) * (rawMax > 0 ? 1.05 : 0.98);
   const yRange   = yMax - yMin || 1;
 
-  // 좌표 변환 함수
-  const toX = (ts) => {
-    const first = new Date(visible[0].ts).getTime();
-    const last  = new Date(visible[visible.length - 1].ts).getTime();
-    const span  = last - first || 1;
-    return ((new Date(ts).getTime() - first) / span) * (chartW - 8) + 4;
-  };
-  const toY = (v) =>
-    PAD_T + ((yMax - v) / yRange) * (PANE_H - PAD_T - PAD_B);
+  // 좌표 변환 (ms 기준)
+  const firstMs = visible[0].ms;
+  const lastMs  = visible[visible.length - 1].ms;
+  const spanMs  = lastMs - firstMs || 1;
+
+  const toX = (ms) => ((ms - firstMs) / spanMs) * (chartW - 8) + 4;
+  const toY = (v)  => PAD_T + ((yMax - v) / yRange) * (PANE_H - PAD_T - PAD_B);
 
   // ── 라인 path ──────────────────────────────────────────
   const linePath = visible.map((d, i) =>
-    `${i === 0 ? 'M' : 'L'}${toX(d.ts).toFixed(1)},${toY(d.v).toFixed(1)}`
+    `${i === 0 ? 'M' : 'L'}${toX(d.ms).toFixed(1)},${toY(d.v).toFixed(1)}`
   ).join(' ');
 
   // ── 색상 결정 ──────────────────────────────────────────
@@ -240,19 +311,17 @@ function _renderPane(pane) {
     : (lastVal >= 0 ? '#22c55e' : '#ef4444');
 
   // ── 기준선 y좌표 ───────────────────────────────────────
-  const baseY = toY(baseline).toFixed(1);
+  const baseY  = toY(baseline).toFixed(1);
+  const lastX  = toX(lastMs).toFixed(1);
+  const lastY  = toY(lastVal).toFixed(1);
+  const firstX = toX(firstMs).toFixed(1);
 
-  // ── 현재값 라벨 ────────────────────────────────────────
-  const lastX    = toX(visible[visible.length - 1].ts).toFixed(1);
-  const lastY    = toY(lastVal).toFixed(1);
-  const lastLabel = pane === 'vix'
-    ? lastVal.toFixed(2)
-    : _fmtVold(lastVal);
+  const lastLabel = pane === 'vix' ? lastVal.toFixed(2) : _fmtVold(lastVal);
+  const areaPath  = `${linePath} L${lastX},${baseY} L${firstX},${baseY} Z`;
+  const gradId    = `vc-grad-${pane}`;
 
-  // ── 음영 path (라인 → 기준선으로 닫기) ───────────────
-  const firstX  = toX(visible[0].ts).toFixed(1);
-  const areaPath = `${linePath} L${lastX},${baseY} L${firstX},${baseY} Z`;
-  const gradId   = `vc-grad-${pane}`;
+  // ── x축 레이블 (KST HH:MM, 30분 단위) ─────────────────
+  const xTickSvg = _buildXTicks(visible, toX, chartW);
 
   // ── SVG 조립 ───────────────────────────────────────────
   chartSvg.innerHTML = `
@@ -263,7 +332,6 @@ function _renderPane(pane) {
       </linearGradient>
     </defs>
 
-    <!-- 배경 -->
     <rect width="${chartW}" height="${PANE_H}" fill="transparent"/>
 
     <!-- 기준선 -->
@@ -271,9 +339,11 @@ function _renderPane(pane) {
           stroke="${pane === 'vix' ? '#f59e0b' : '#4b5563'}"
           stroke-width="1" stroke-dasharray="4,3" opacity="0.6"/>
 
+    <!-- x축 눈금 -->
+    ${xTickSvg}
+
     <!-- 음영 영역 -->
-    <path d="${areaPath}"
-          fill="url(#${gradId})" stroke="none"/>
+    <path d="${areaPath}" fill="url(#${gradId})" stroke="none"/>
 
     <!-- 라인 -->
     <path d="${linePath}"
@@ -349,7 +419,6 @@ const _scrolled = { vix: false, vold: false };
 function _scrollToNow(scrollEl, chartW, visible) {
   if (_scrolled[scrollEl.id.replace('vc-scroll-', '')]) return;
   requestAnimationFrame(() => {
-    // 마지막 데이터 포인트가 화면 오른쪽에서 1/4 위치에 오도록
     const target = chartW - scrollEl.clientWidth * 0.75;
     scrollEl.scrollLeft = Math.max(0, target);
     _scrolled[scrollEl.id.replace('vc-scroll-', '')] = true;
@@ -366,12 +435,40 @@ function _resetScroll() {
 // 헬퍼
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-// 줌 범위에 맞게 데이터 슬라이싱
+// 줌 범위에 맞게 데이터 슬라이싱 (ms 기준)
 function _sliceByZoom(data, mins) {
   if (!data.length) return [];
-  const last  = new Date(data[data.length - 1].ts).getTime();
-  const cutoff = last - mins * 60 * 1000;
-  return data.filter(d => new Date(d.ts).getTime() >= cutoff);
+  const lastMs  = data[data.length - 1].ms;
+  const cutoff  = lastMs - mins * 60_000;
+  return data.filter(d => d.ms >= cutoff);
+}
+
+// x축 눈금 SVG 생성 (KST HH:MM, 30분 단위)
+function _buildXTicks(visible, toX, chartW) {
+  if (!visible.length) return '';
+
+  const firstMs = visible[0].ms;
+  const lastMs  = visible[visible.length - 1].ms;
+
+  // 30분 단위 경계 ms 목록 생성
+  const TICK_INTERVAL = 30 * 60_000;
+  const startTick = Math.ceil(firstMs / TICK_INTERVAL) * TICK_INTERVAL;
+  const ticks = [];
+  for (let ms = startTick; ms <= lastMs; ms += TICK_INTERVAL) {
+    ticks.push(ms);
+  }
+
+  return ticks.map(ms => {
+    const x     = toX(ms).toFixed(1);
+    const label = _kstMsToHHMM(ms);
+    return `
+      <line x1="${x}" y1="${PANE_H - PAD_B - 12}" x2="${x}" y2="${PANE_H - PAD_B}"
+            stroke="#4b5563" stroke-width="0.5"/>
+      <text x="${x}" y="${PANE_H - 1}"
+            font-size="9" font-family="monospace" fill="#6b7280"
+            text-anchor="middle">${label}</text>
+    `;
+  }).join('');
 }
 
 // 현재값 라벨 (차트 오른쪽 끝에 치우치면 왼쪽으로)
