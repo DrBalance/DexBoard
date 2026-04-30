@@ -11,9 +11,9 @@
 //   POST /api/screener/run    → 수동 스크리너 실행 (테스트용)
 //   POST /kv-write            → internal: Railway writes KV through here
 // Cron:
-//   */1  13-20 * * 1-5  → fetchSnapshot (정규장 1분, VIX only)
-//   */3  4-13  * * 1-5  → fetchSnapshot (프리마켓 3분, VIX only)
-//   */3  20-23 * * 1-5  → fetchSnapshot (애프터 3분, VIX only)
+//   */1  13-20 * * 1-5  → fetchSnapshot (정규장 1분, SPY+VIX → KV)
+//   */3  4-13  * * 1-5  → fetchSnapshot (프리마켓 3분, SPY+VIX → KV)
+//   */3  20-23 * * 1-5  → fetchSnapshot (애프터 3분, SPY+VIX → KV)
 //   */15 13-20 * * 1-5  → triggerRailway (DEX 계산)
 //   0    13    * * 1-5  → snapshotOpen  (장 시작 스냅샷)
 //   30   20    * * 1-5  → runScreener   (장 마감 후 스크리너)
@@ -290,27 +290,24 @@ export default {
 };
 
 // ─────────────────────────────────────────────────────────────────
-// fetchSnapshot – VIX만 KV 저장 (SPY는 /api/spy-price 프록시로 분리)
+// fetchSnapshot – SPY + VIX 모두 Yahoo Finance에서 가져와 KV 저장
+// 크론: 정규장 1분 / 프리·애프터 3분 / 마감 없음
 // ─────────────────────────────────────────────────────────────────
 async function fetchSnapshot(env) {
   try {
-    const vix = await fetchVIX(env);
+    const [spy, vix] = await Promise.all([
+      fetchSPY(env),
+      fetchVIX(env),
+    ]);
 
-    // 이전 snapshot 보존 (vix 포함)
     const current = await env.DEX_KV.get("snapshot:1min", { type: "json" });
     if (current) {
       await env.DEX_KV.put("snapshot:prev", JSON.stringify(current));
     }
 
-    // spy 필드는 유지하되, KV에는 vix만 갱신
-    // (클라이언트가 snapshot.spy를 폴백으로 쓸 경우 대비해 기존 spy 값 보존)
-    const snapshot = {
-      spy: current?.spy ?? null,  // 이전 spy 값 보존 (없으면 null)
-      vix,
-      ts: new Date().toISOString(),
-    };
+    const snapshot = { spy, vix, ts: new Date().toISOString() };
     await env.DEX_KV.put("snapshot:1min", JSON.stringify(snapshot));
-    console.log(`[snapshot] VIX=${vix.price} (${vix.changePct}%)`);
+    console.log(`[snapshot] SPY=${spy.price} (${spy.changePct}%) VIX=${vix.price} (${vix.changePct}%)`);
   } catch (e) {
     console.error("[snapshot] error:", e.message);
   }
@@ -353,21 +350,9 @@ async function snapshotOpen(env) {
 // ─────────────────────────────────────────────────────────────────
 async function triggerRailway(env) {
   try {
-    // SPY: Finnhub REST (snapshot에 spy가 없으므로 직접 조회)
-    let spyPrice = null;
-    try {
-      const fRes = await fetch(
-        `https://finnhub.io/api/v1/quote?symbol=SPY&token=${env.FINNHUB_KEY}`,
-        { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(5000) }
-      );
-      if (fRes.ok) {
-        const fd = await fRes.json();
-        if (fd.c && !isNaN(fd.c)) spyPrice = round2(fd.c);
-      }
-    } catch (_) {}
-
-    // VIX: KV snapshot에서 가져옴
+    // SPY + VIX 모두 KV snapshot에서 가져옴 (fetchSnapshot이 둘 다 저장)
     const snapshot = await env.DEX_KV.get("snapshot:1min", { type: "json" });
+    const spyPrice = snapshot?.spy?.price ?? null;
     const vixPrice = snapshot?.vix?.price ?? null;
 
     if (!spyPrice || !vixPrice) {
@@ -392,6 +377,30 @@ async function triggerRailway(env) {
   } catch (e) {
     console.error("[railway] error:", e.message);
   }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// fetchSPY – Yahoo Finance
+// ─────────────────────────────────────────────────────────────────
+async function fetchSPY(env) {
+  const url = `${env.YAHOO_BASE}/SPY?interval=1m&range=1d`;
+  const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
+  if (!res.ok) throw new Error(`Yahoo SPY: ${res.status}`);
+
+  const data   = await res.json();
+  const result = data?.chart?.result?.[0];
+  if (!result) throw new Error("Yahoo SPY: no result");
+
+  const meta      = result.meta;
+  const quotes    = result.indicators?.quote?.[0]?.close ?? [];
+  const price     = quotes.filter(Boolean).pop();
+  if (!price) throw new Error("Yahoo SPY: no close data");
+
+  const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? null;
+  const change    = prevClose != null ? round2(price - prevClose) : null;
+  const changePct = prevClose != null ? round2((price - prevClose) / prevClose * 100) : null;
+
+  return { price: round2(price), change, changePct };
 }
 
 // ─────────────────────────────────────────────────────────────────
