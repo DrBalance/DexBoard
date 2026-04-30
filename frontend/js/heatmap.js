@@ -19,7 +19,7 @@
 const _scrollInitialized = {};
 
 // ── GEX / Vanna / Charm 글씨 투명도 (0.0 ~ 1.0) ──────────
-const SECONDARY_OPACITY = 0.6;
+const SECONDARY_OPACITY = 0.4;
 
 // ── DEX 값 → 배경색 ──────────────────────────────────────
 // 양수: 녹색 (딜러 매수 헤지), 음수: 빨간색 (딜러 매도 헤지)
