@@ -229,6 +229,29 @@ const server = http.createServer(async (req, res) => {
 
         const analysis = await callGeminiWithRetry(payload);
 
+        // 분석 결과를 CF KV에 캐싱 (ai:analysis)
+        const CF_WORKER_URL = process.env.CF_WORKER_URL || "";
+        const CF_KV_SECRET  = process.env.CF_KV_SECRET  || "";
+        if (CF_WORKER_URL && CF_KV_SECRET) {
+          try {
+            await fetch(`${CF_WORKER_URL}/kv-write`, {
+              method:  "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "x-kv-secret":  CF_KV_SECRET,
+              },
+              body: JSON.stringify({
+                key:   "ai:analysis",
+                value: JSON.stringify({ analysis, ts: new Date().toISOString() }),
+              }),
+              signal: AbortSignal.timeout(5000),
+            });
+            console.log("[AI] KV 캐시 저장 완료");
+          } catch (kvErr) {
+            console.warn("[AI] KV 캐시 저장 실패:", kvErr.message);
+          }
+        }
+
         if (!res.writableEnded) {
           res.writeHead(200, corsHeaders);
           res.end(JSON.stringify({ ok: true, analysis }));
