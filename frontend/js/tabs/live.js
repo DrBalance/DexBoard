@@ -7,7 +7,7 @@ import {
   fmtM, fmtVold,
   colorBySign, colorVix, COLOR,
 } from '../fmt.js';
-import { renderHeatmap }                              from '../heatmap.js';
+import { renderHeatmap, updateHeatmapSpot }           from '../heatmap.js';
 import { buildNarrative, buildAnalysisPayload }       from '../narrative.js';
 import { renderOIChart, updateOIChart, renderStrikeTable, renderTop5Panel } from '../oi-chart.js';
 import { initVCChart, pushVixPoint, setVoldSeries, setVixPrevClose } from '../vc-chart.js';
@@ -93,7 +93,14 @@ async function fetchKV() {
   }
 
   renderCards();
-  _onSpotUpdated();   // GEX/히트맵/OI 차트 재계산
+
+  // 옵션체인 갱신(15분): 히트맵 전체 재렌더 (스크롤 위치 복원)
+  const spotForHeatmap = _state.spyLive ?? _state.spy.price ?? _state.spot;
+  if (_state.strikes.length > 0 && spotForHeatmap) {
+    renderHeatmap('heatmap-canvas', _state.strikes, spotForHeatmap);
+  }
+
+  _onSpotUpdated();   // GEX/OI 차트 등 나머지 업데이트
 
   // 급등 OI 패널
   if (_state.strikes.length > 0) {
@@ -127,10 +134,9 @@ function _onSpotUpdated() {
     renderCallWall();
   }
 
-  // 히트맵
-  if (_state.strikes.length > 0) {
-    renderHeatmap('heatmap-canvas', _state.strikes, spotPrice);
-  }
+  // 히트맵 — 가격 갱신 시에는 spot 강조만 업데이트 (DOM 교체 없음)
+  // 옵션체인 갱신(15분) 시에는 fetchKV()에서 renderHeatmap() 호출
+  updateHeatmapSpot('heatmap-canvas', spotPrice);
 
   // OI 차트
   if (_state.strikes.length > 0) {
@@ -259,13 +265,8 @@ async function _fetchVold() {
 
     for (let i = values.length - 1; i >= 0; i--) {
       cum += parseFloat(values[i].obv);
-
-      // ET datetime → UTC ISO (Twelve Data: "YYYY-MM-DD HH:mm:ss" ET 기준)
-      const dtStr  = values[i].datetime.replace(' ', 'T');
-      const etDate = new Date(dtStr + 'Z');
-      const utcTs  = new Date(etDate.getTime() - _getETOffsetMs(etDate)).toISOString();
-
-      series.push({ ts: utcTs, v: cum });
+      // ts는 ET 문자열 그대로 — 변환은 vc-chart.js의 _etStrToKstMs()가 담당
+      series.push({ ts: values[i].datetime, v: cum });
     }
 
     // ── 차트: 시리즈 전체 교체 (렌더 1회) ───────────────
@@ -278,17 +279,6 @@ async function _fetchVold() {
   } catch (e) {
     console.warn('[Live] VOLD OBV 폴링 실패:', e.message);
   }
-}
-
-// ET offset 계산 (서머타임 감지)
-// Twelve Data datetime은 ET 현지시각이므로 UTC 변환 시 필요
-function _getETOffsetMs(dateAssumedUTC) {
-  // America/New_York의 UTC 오프셋을 실제 Date 객체로 감지
-  const etStr = dateAssumedUTC.toLocaleString('en-US', { timeZone: 'America/New_York' });
-  const utcStr = dateAssumedUTC.toLocaleString('en-US', { timeZone: 'UTC' });
-  const etTime  = new Date(etStr).getTime();
-  const utcTime = new Date(utcStr).getTime();
-  return utcTime - etTime;  // EDT: +4h, EST: +5h (ms)
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
