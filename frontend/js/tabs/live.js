@@ -7,10 +7,10 @@ import {
   fmtM, fmtVold,
   colorBySign, colorVix, COLOR,
 } from '../fmt.js';
-import { renderHeatmap, updateHeatmapSpot }           from '../heatmap.js';
+import { renderHeatmap }                              from '../heatmap.js';
 import { buildNarrative, buildAnalysisPayload }       from '../narrative.js';
 import { renderOIChart, updateOIChart, renderStrikeTable, renderTop5Panel } from '../oi-chart.js';
-import { initVCChart, pushVixPoint, pushVoldPoint, setVixPrevClose } from '../vc-chart.js';
+import { initVCChart, pushVixPoint, setVoldSeries, setVixPrevClose } from '../vc-chart.js';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 내부 상태
@@ -93,14 +93,7 @@ async function fetchKV() {
   }
 
   renderCards();
-
-  // 옵션체인 갱신(15분): 히트맵 전체 재렌더 (스크롤 위치 복원)
-  const spotForHeatmap = _state.spyLive ?? _state.spy.price ?? _state.spot;
-  if (_state.strikes.length > 0 && spotForHeatmap) {
-    renderHeatmap('heatmap-canvas', _state.strikes, spotForHeatmap);
-  }
-
-  _onSpotUpdated();   // GEX/OI 차트 등 나머지 업데이트
+  _onSpotUpdated();   // GEX/히트맵/OI 차트 재계산
 
   // 급등 OI 패널
   if (_state.strikes.length > 0) {
@@ -134,9 +127,10 @@ function _onSpotUpdated() {
     renderCallWall();
   }
 
-  // 히트맵 — 가격 갱신 시에는 spot 강조만 업데이트 (DOM 교체 없음)
-  // 옵션체인 갱신(15분) 시에는 fetchKV()에서 renderHeatmap() 호출
-  updateHeatmapSpot('heatmap-canvas', spotPrice);
+  // 히트맵
+  if (_state.strikes.length > 0) {
+    renderHeatmap('heatmap-canvas', _state.strikes, spotPrice);
+  }
 
   // OI 차트
   if (_state.strikes.length > 0) {
@@ -253,29 +247,50 @@ async function _fetchVold() {
     const data = await res.json();
     if (data.status === 'error' || !Array.isArray(data.values)) return;
 
-    // values: [{ datetime, obv }, ...] (최신이 앞)
+    // values: [{ datetime, obv }, ...] (최신이 앞 → 역순으로 오래된 것부터 처리)
     const values = data.values;
     if (!values.length) return;
 
-    // OBV 변화량 누적합 → VOLD
+    // ── 1분단위 누적 VOLD 시리즈 생성 ───────────────────
+    // 가장 오래된 봉 OBV 기준(0)으로 각 시점의 누적 변화량을 계산
+    const oldest = parseFloat(values[values.length - 1].obv);
     let cumDelta = 0;
+    const series = [];
+
     for (let i = values.length - 1; i >= 0; i--) {
       const cur  = parseFloat(values[i].obv);
-      const prev = i + 1 < values.length ? parseFloat(values[i + 1].obv) : cur;
+      const prev = i + 1 < values.length ? parseFloat(values[i + 1].obv) : oldest;
       cumDelta += (cur - prev);
+
+      // ET datetime → UTC ISO (Twelve Data: "YYYY-MM-DD HH:mm:ss" ET 기준)
+      const dtStr  = values[i].datetime.replace(' ', 'T');
+      const etDate = new Date(dtStr + 'Z');  // 일단 UTC로 읽기
+      const utcTs  = new Date(etDate.getTime() - _getETOffsetMs(etDate)).toISOString();
+
+      series.push({ ts: utcTs, v: cumDelta });
     }
+
+    // ── 차트: 시리즈 전체 교체 (렌더 1회) ───────────────
+    setVoldSeries(series);
+
+    // ── 최종 누적값 → 메트릭 카드 ───────────────────────
     _state.vold = cumDelta;
     renderVOLD();
 
-    // VOLD 차트: 최신 1포인트 push
-    const latest = values[0];
-    if (latest) {
-      const ts = new Date(latest.datetime + ' ET').toISOString();
-      pushVoldPoint(ts, _state.vold);
-    }
   } catch (e) {
     console.warn('[Live] VOLD OBV 폴링 실패:', e.message);
   }
+}
+
+// ET offset 계산 (서머타임 감지)
+// Twelve Data datetime은 ET 현지시각이므로 UTC 변환 시 필요
+function _getETOffsetMs(dateAssumedUTC) {
+  // America/New_York의 UTC 오프셋을 실제 Date 객체로 감지
+  const etStr = dateAssumedUTC.toLocaleString('en-US', { timeZone: 'America/New_York' });
+  const utcStr = dateAssumedUTC.toLocaleString('en-US', { timeZone: 'UTC' });
+  const etTime  = new Date(etStr).getTime();
+  const utcTime = new Date(utcStr).getTime();
+  return utcTime - etTime;  // EDT: +4h, EST: +5h (ms)
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -800,6 +815,7 @@ function _calcFlipZone(strikes) {
   }
   return null;
 }
+
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // VIX 1분봉 폴링 (Yahoo Finance ^VIX)
