@@ -9,7 +9,7 @@ import {
 } from '../fmt.js';
 import { renderHeatmap }                              from '../heatmap.js';
 import { buildNarrative, buildAnalysisPayload }       from '../narrative.js';
-import { renderOIChart, updateOIChart, renderStrikeTable } from '../oi-chart.js';
+import { renderOIChart, updateOIChart, renderStrikeTable, renderTop5Panel } from '../oi-chart.js';
 import { initVCChart, pushVixPoint, pushVoldPoint, setVixPrevClose } from '../vc-chart.js';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -93,7 +93,12 @@ async function fetchKV() {
   renderCards();
   _onSpotUpdated();   // GEX/히트맵/OI 차트 재계산
 
-  // 판단 패널
+  // 급등 OI 패널
+  if (_state.strikes.length > 0) {
+    renderTop5Panel('top5-panel', _state.strikes, 'delta15m');
+  }
+
+  // 판단 패널 (옵션체인 갱신 시 무조건 재렌더)
   renderNarrative();
 
   // 정규장일 때만 AI 자동 분석
@@ -148,6 +153,9 @@ function _onSpotUpdated() {
       isRegular: window._marketState === 'REGULAR',
     });
   }
+
+  // 내러티브 패널 (SPY 기반 조건 변화 시만)
+  _renderNarrativeIfChanged();
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -386,6 +394,31 @@ const LEVEL_STYLE = {
   good:   { bg: 'rgba(34,197,94,.10)',   border: '#22c55e', icon: '🟢' },
   info:   { bg: 'rgba(107,114,128,.10)', border: '#6b7280', icon: '💬' },
 };
+
+// 내러티브 패널 — 내용이 바뀔 때만 DOM 업데이트
+let _lastNarrativeHtml = '';
+
+function _renderNarrativeIfChanged() {
+  const el = document.getElementById('live-narrative');
+  if (!el) return;
+  const events = buildNarrative({ ..._state, marketState: window._marketState });
+  const html = events.map(({ level, msg }) => {
+    const s = LEVEL_STYLE[level] ?? LEVEL_STYLE.info;
+    return `
+      <div style="
+        display:flex;align-items:flex-start;gap:8px;
+        padding:8px 10px;border-radius:6px;
+        background:${s.bg};border-left:3px solid ${s.border};
+        font-size:12px;line-height:1.5;color:var(--text1,#e6edf3);
+      ">
+        <span style="flex-shrink:0;margin-top:1px">${s.icon}</span>
+        <span>${msg}</span>
+      </div>`;
+  }).join('');
+  if (html === _lastNarrativeHtml) return;  // 변경 없으면 스킵
+  _lastNarrativeHtml = html;
+  el.innerHTML = html;
+}
 
 function renderNarrative() {
   const el = document.getElementById('live-narrative');
@@ -681,8 +714,7 @@ let _vixPrevCloseSet = false;
 
 async function _fetchVixPoint() {
   try {
-    // Yahoo Finance: 1분봉 최근 2개 (CORS 우회 위해 CF Worker 경유)
-    const url = `${CF_API}/api/vix-tick`;   // CF Worker에서 Yahoo proxying
+    const url = `${CF_API}/api/vix-tick`;
     const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) return;
     const json = await res.json();
@@ -692,9 +724,23 @@ async function _fetchVixPoint() {
       setVixPrevClose(json.prevClose);
       _vixPrevCloseSet = true;
     }
-    for (const pt of (json.points ?? [])) {
+
+    const points = json.points ?? [];
+    if (!points.length) return;
+
+    for (const pt of points) {
       pushVixPoint(pt.ts, pt.v);
     }
+
+    // VIX 메트릭 카드: 최신 포인트로 업데이트
+    const latest = points[points.length - 1];
+    if (latest?.v != null) {
+      _state.vix.price = latest.v;
+      renderVIX();
+    }
+
+    // 내러티브 패널 (VIX 기반 조건 변화 시만)
+    _renderNarrativeIfChanged();
   } catch (e) {
     console.warn('[Live] VIX 폴링 실패:', e.message);
   }
