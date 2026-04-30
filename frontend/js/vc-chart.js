@@ -69,12 +69,24 @@ export function pushVixPoint(ts, value) {
   _renderPane('vix');
 }
 
+// 1분 폴링 시 시리즈 전체 교체 (매번 390개 재계산)
+// 렌더는 교체 후 1회만
+export function setVoldSeries(series) {
+  // series: [{ ts: ISO, v: number }, ...] 오래된 순
+  if (!Array.isArray(series) || !series.length) return;
+  _voldData = series.filter(d => d.v != null && !isNaN(d.v));
+  _renderPane('vold');
+}
+
+// 단일 포인트 추가 (하위 호환용 — 현재 미사용)
 export function pushVoldPoint(ts, value) {
   if (value == null || isNaN(value)) return;
-  if (_voldData.length && _voldData[_voldData.length - 1].ts === ts) {
-    _voldData[_voldData.length - 1].v = value;
+  const idx = _voldData.findIndex(d => d.ts === ts);
+  if (idx !== -1) {
+    _voldData[idx].v = value;
   } else {
     _voldData.push({ ts, v: value });
+    _voldData.sort((a, b) => a.ts.localeCompare(b.ts));
   }
   _renderPane('vold');
 }
