@@ -1,12 +1,13 @@
 // ── API Endpoints ─────────────────────────────────
-export const CF_API   = 'https://drbalance-dex.weoncheonlee.workers.dev';
+export const CF_API         = 'https://drbalance-dex.weoncheonlee.workers.dev';
 export const RAILWAY_WS_URL = 'wss://dexboard-production.up.railway.app/ws';
-export const TWELVE_KEY    = '4fe9a71838f245e2957c0f41fdf213f8';  // market_state + OBV
+export const RAILWAY_URL    = 'https://dexboard-production.up.railway.app';
+export const TWELVE_KEY     = '4fe9a71838f245e2957c0f41fdf213f8';  // market_state + OBV
 
 // ── Polling intervals ─────────────────────────────
-export const INTERVAL_SNAP        = 60_000;       // 1분 (snapshot 갱신)
-export const INTERVAL_FULL        = 15 * 60_000;  // 15분 (전체 데이터)
-export const INTERVAL_MARKET_STATE = 5 * 60_000;  // 5분 (장 상태 체크)
+export const INTERVAL_SNAP         = 60_000;       // 1분 (snapshot 갱신)
+export const INTERVAL_FULL         = 15 * 60_000;  // 15분 (전체 데이터)
+export const INTERVAL_MARKET_STATE = 5 * 60_000;   // 5분 (장 상태 체크)
 
 // ── Market state styles ───────────────────────────
 export const MARKET_STYLE = {
