@@ -78,14 +78,14 @@ function updateSessionBanner(marketState) {
     do { next.setDate(next.getDate() + 1); }
     while (next.getDay() === 0 || next.getDay() === 6);
     dateStr  = next.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' });
-    stateStr = '다음 거래일 · 마감';
+    stateStr = '장 마감이므로 다음 거래일(';
   } else {
     dateStr  = etNow.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' });
     const STATE_LABEL = { PRE: '프리마켓', REGULAR: '정규장', AFTER: '애프터마켓' };
     stateStr = STATE_LABEL[marketState] ?? '';
   }
 
-  label.textContent = `${dateStr} · ${stateStr}`;
+  label.textContent = `${stateStr} ${dateStr} )의 옵션데이터를 표시합니다`;
   banner.style.color       = s.color;
   banner.style.borderColor = s.border;
   banner.style.background  = s.bg;
