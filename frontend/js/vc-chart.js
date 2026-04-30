@@ -22,7 +22,7 @@
 
 // ── 레이아웃 상수 ─────────────────────────────────────────
 const Y_W       = 38;    // y축 SVG 너비 (px) — 모바일 최소화
-const PANE_H    = 120;   // 각 페인 높이 (px)
+const PANE_H    = 180;   // 각 페인 높이 (px)
 const PAD_T     = 8;     // 상단 여백
 const PAD_B     = 8;     // 하단 여백
 const PX_PER_MIN_BASE = 4; // 기본 분당 픽셀 (1h 줌 기준)
