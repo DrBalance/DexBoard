@@ -51,10 +51,53 @@ async function refreshSnap() {
   window.dispatchEvent(new CustomEvent('snapUpdated', { detail: snap }));
 }
 
+// ── 세션 날짜·상태 배너 업데이트 ────────────────────────
+function updateSessionBanner(marketState) {
+  const banner = document.getElementById('session-date-banner');
+  const label  = document.getElementById('session-date-text');
+  if (!banner || !label) return;
+
+  const STYLE = {
+    PRE:     { color: '#d29922', border: 'rgba(210,153,34,.25)',  bg: 'rgba(210,153,34,.06)',  icon: '🌅' },
+    REGULAR: { color: '#3fb950', border: 'rgba(63,185,80,.25)',   bg: 'rgba(63,185,80,.06)',   icon: '📈' },
+    AFTER:   { color: '#f0883e', border: 'rgba(240,136,62,.25)',  bg: 'rgba(240,136,62,.06)',  icon: '🌆' },
+    CLOSED:  { color: '#f59e0b', border: 'rgba(245,158,11,.18)',  bg: 'rgba(245,158,11,.06)',  icon: '📅' },
+  };
+
+  const s = STYLE[marketState] ?? STYLE.CLOSED;
+
+  // ET 기준 오늘 날짜
+  const etNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+
+  let dateStr, stateStr;
+
+  if (marketState === 'CLOSED') {
+    // 다음 거래일 계산 (주말 스킵)
+    const next = new Date(etNow);
+    next.setHours(0, 0, 0, 0);
+    do { next.setDate(next.getDate() + 1); }
+    while (next.getDay() === 0 || next.getDay() === 6);
+    dateStr  = next.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' });
+    stateStr = '다음 거래일 · 마감';
+  } else {
+    dateStr  = etNow.toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' });
+    const STATE_LABEL = { PRE: '프리마켓', REGULAR: '정규장', AFTER: '애프터마켓' };
+    stateStr = STATE_LABEL[marketState] ?? '';
+  }
+
+  label.textContent = `${dateStr} · ${stateStr}`;
+  banner.style.color       = s.color;
+  banner.style.borderColor = s.border;
+  banner.style.background  = s.bg;
+  banner.style.display     = 'block';
+  document.getElementById('session-date-icon').textContent = s.icon;
+}
+
 // ── 장 상태 이벤트 처리 ───────────────────────────────────
 window.addEventListener('marketStateChanged', ({ detail }) => {
   const { marketState, prevState } = detail;
   state.marketState = marketState;
+  updateSessionBanner(marketState);
 
   const isOpen  = ['PRE', 'REGULAR', 'AFTER'].includes(marketState);
   const wasOpen = ['PRE', 'REGULAR', 'AFTER'].includes(prevState);
