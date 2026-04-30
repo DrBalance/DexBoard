@@ -45,7 +45,7 @@ export function renderOIChart(containerId, strikes, spotPrice, opts = {}) {
   }
 
   const chartData = _buildChartData(strikes, spotPrice);
-  const inst = new Chart(canvas, _buildConfig(chartData, spotPrice, opts));
+  const inst = new Chart(canvas, _buildConfig(chartData, spotPrice, opts, container));
   _attachScrollHandler(container, inst);
   return inst;
 }
@@ -262,7 +262,7 @@ function _buildChartData(strikes, spotPrice) {
   };
 }
 
-function _buildConfig(chartData, spotPrice, opts) {
+function _buildConfig(chartData, spotPrice, opts, container) {
   return {
     data: {
       labels: chartData.labels,
@@ -351,6 +351,7 @@ function _buildConfig(chartData, spotPrice, opts) {
     plugins: [
       _spotLinePlugin(chartData.raw, spotPrice),
       _hoverDotPlugin(),
+      _stickyYPlugin(container),
     ],
   };
 }
@@ -410,11 +411,75 @@ function _hoverDotPlugin() {
   };
 }
 
+function _stickyYPlugin(container) {
+  return {
+    id: 'stickyY',
+    afterDraw(chart) {
+      const wrap = container?.parentElement;
+      if (!wrap) return;
+      const scrollX = wrap.scrollLeft;
+      const wrapW   = wrap.clientWidth;
+      const yScale  = chart.scales['y'];
+      const y2Scale = chart.scales['y2'];
+      const { ctx, chartArea, height, width } = chart;
+
+      ctx.save();
+
+      // ── 왼쪽 y축 — 스크롤 시에만 표시 ──
+      if (scrollX > 0 && yScale) {
+        const axisW = yScale.right;
+        ctx.fillStyle = '#181c24';
+        ctx.fillRect(scrollX, 0, axisW, height);
+        ctx.textAlign    = 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle    = '#9ca3af';
+        ctx.font         = '10px monospace';
+        yScale.ticks.forEach((tick, i) => {
+          const y = yScale.getPixelForTick(i);
+          ctx.fillText(_fmtAxis(tick.value), scrollX + axisW - 4, y);
+        });
+        ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+        ctx.lineWidth   = 1;
+        ctx.beginPath();
+        ctx.moveTo(scrollX + axisW, chartArea.top);
+        ctx.lineTo(scrollX + axisW, chartArea.bottom);
+        ctx.stroke();
+      }
+
+      // ── 오른쪽 y2축 — 항상 표시 ──
+      if (y2Scale) {
+        const rAxisW  = width - y2Scale.left;
+        const fixedRX = scrollX + wrapW - rAxisW;
+        ctx.fillStyle = '#181c24';
+        ctx.fillRect(fixedRX, 0, rAxisW, height);
+        ctx.textAlign    = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillStyle    = '#f0883e';
+        ctx.font         = '10px monospace';
+        y2Scale.ticks.forEach((tick, i) => {
+          const y = y2Scale.getPixelForTick(i);
+          ctx.fillText(_fmtAxisM(tick.value), fixedRX + 4, y);
+        });
+        ctx.strokeStyle = 'rgba(255,255,255,0.07)';
+        ctx.lineWidth   = 1;
+        ctx.beginPath();
+        ctx.moveTo(fixedRX, chartArea.top);
+        ctx.lineTo(fixedRX, chartArea.bottom);
+        ctx.stroke();
+      }
+
+      ctx.restore();
+    },
+  };
+}
+
 function _attachScrollHandler(container, inst) {
   if (!container) return;
-  container._scrollHandler && container.removeEventListener('scroll', container._scrollHandler);
-  container._scrollHandler = () => inst?.draw?.();
-  container.addEventListener('scroll', container._scrollHandler, { passive: true });
+  // 실제 스크롤은 부모 컨테이너(live-chart-scroll 등)에서 발생
+  const scrollEl = container.parentElement ?? container;
+  scrollEl._scrollHandler && scrollEl.removeEventListener('scroll', scrollEl._scrollHandler);
+  scrollEl._scrollHandler = () => inst?.draw?.();
+  scrollEl.addEventListener('scroll', scrollEl._scrollHandler, { passive: true });
 }
 
 function _fmtAxis(v) {
