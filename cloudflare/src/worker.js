@@ -5,6 +5,7 @@
 //   GET  /api/dex/:group      → DEX data (0dte | weekly | monthly | quarterly | structure)
 //   GET  /api/dex/open        → opening snapshot
 //   GET  /api/dex/0dte/prev   → 15분 전 0dte 스냅샷 (delta15m 계산용)
+//   GET  /api/ai-analysis     → 최신 AI 분석 결과 KV 캐시 (ai:analysis)
 //   GET  /api/spy-price       → SPY 현재가 프록시 (Finnhub REST → CORS 우회)
 //   GET  /api/vix-tick        → VIX 1분봉 포인트 배열 (vc-chart.js용)
 //   GET  /api/screener        → 스크리너 점수 결과 (?date=YYYY-MM-DD)
@@ -96,6 +97,15 @@ export default {
     if (request.method === "GET" && path === "/api/oi/open") {
       const data = await env.DEX_KV.get("oi:spy:open", { type: "json" });
       if (!data) return json({ error: "No OI open snapshot" }, 200, corsHeaders);
+      return json(data, 200, corsHeaders);
+    }
+
+    // ── GET /api/ai-analysis ────────────────────────────────────
+    // KV에 캐싱된 최신 AI 분석 결과 반환
+    // { analysis, ts, error? }
+    if (request.method === "GET" && path === "/api/ai-analysis") {
+      const data = await env.DEX_KV.get("ai:analysis", { type: "json" });
+      if (!data) return json({ error: "No analysis yet" }, 200, corsHeaders);
       return json(data, 200, corsHeaders);
     }
 
