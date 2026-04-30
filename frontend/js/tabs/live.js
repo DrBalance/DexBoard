@@ -252,29 +252,27 @@ async function _fetchVold() {
     if (!values.length) return;
 
     // ── 1분단위 누적 VOLD 시리즈 생성 ───────────────────
-    // 가장 오래된 봉 OBV 기준(0)으로 각 시점의 누적 변화량을 계산
-    const oldest = parseFloat(values[values.length - 1].obv);
-    let cumDelta = 0;
+    // values[i].obv = 해당 봉의 OBV 델타값
+    // 오래된 봉부터 순서대로 누적 → [ts, cumValue] 시리즈
+    let cum = 0;
     const series = [];
 
     for (let i = values.length - 1; i >= 0; i--) {
-      const cur  = parseFloat(values[i].obv);
-      const prev = i + 1 < values.length ? parseFloat(values[i + 1].obv) : oldest;
-      cumDelta += (cur - prev);
+      cum += parseFloat(values[i].obv);
 
       // ET datetime → UTC ISO (Twelve Data: "YYYY-MM-DD HH:mm:ss" ET 기준)
       const dtStr  = values[i].datetime.replace(' ', 'T');
-      const etDate = new Date(dtStr + 'Z');  // 일단 UTC로 읽기
+      const etDate = new Date(dtStr + 'Z');
       const utcTs  = new Date(etDate.getTime() - _getETOffsetMs(etDate)).toISOString();
 
-      series.push({ ts: utcTs, v: cumDelta });
+      series.push({ ts: utcTs, v: cum });
     }
 
     // ── 차트: 시리즈 전체 교체 (렌더 1회) ───────────────
     setVoldSeries(series);
 
     // ── 최종 누적값 → 메트릭 카드 ───────────────────────
-    _state.vold = cumDelta;
+    _state.vold = cum;
     renderVOLD();
 
   } catch (e) {
