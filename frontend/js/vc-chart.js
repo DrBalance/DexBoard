@@ -402,7 +402,7 @@ function _renderPane(pane) {
     // 데이터 없음: 빈 배경 + x축만 그림
     chartSvg.innerHTML = _emptyPane(W, pane);
     _renderYAxis(yaxisSvg, 0, 1, 0, pane);
-    if (pane === 'vix') _renderXAxis(chartSvg, W);
+   // if (pane === 'vix') _renderXAxis(chartSvg, W);
     return;
   }
 
