@@ -7,7 +7,7 @@
 import http from "http";
 import { calculateAndStore, collectSymbol, calcScreenerScore, getTodayET } from "./vanna_analyzer.js";
 
-const PORT        = process.env.PORT        || 3000;
+const PORT        = process.env.PORT        || 8080;
 const CRON_SECRET = process.env.CRON_SECRET || "";
 const GEMINI_KEY  = process.env.GEMINI_KEY  || "";
 const CF_WORKER_URL = process.env.CF_WORKER_URL || "";
