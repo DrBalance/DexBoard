@@ -109,35 +109,37 @@ export default {
       return json(data, 200, corsHeaders);
     }
 
-    // ── GET /api/spy-price  (Finnhub REST 프록시) ────────────────
-    // 클라이언트가 직접 Finnhub에 접근할 수 없으므로 CF Worker가 중계
-    // ?ts=<lastFinnhubTs>  →  KV의 vix.ts > lastFinnhubTs 이면 KV 폴백도 포함
-    // Response: { price, change, changePct, source: 'finnhub'|'kv', ts }
+    // ── GET /api/spy-price  (Twelve Data REST 프록시) ───────────
+    // Response: { price, change, changePct, source: 'twelvedata'|'kv', ts }
     if (request.method === "GET" && path === "/api/spy-price") {
       try {
-        // 1) Finnhub REST 시도
-        const finnhubUrl =
-          `https://finnhub.io/api/v1/quote?symbol=SPY&token=${env.FINNHUB_KEY}`;
-        const fRes = await fetch(finnhubUrl, {
+        // 1) Twelve Data /quote 시도 (실시간 US ETF)
+        const tdUrl =
+          `https://api.twelvedata.com/quote?symbol=SPY&apikey=${env.TWELVE_KEY_SPY}`;
+        const tdRes = await fetch(tdUrl, {
           headers: { "User-Agent": "Mozilla/5.0" },
           signal: AbortSignal.timeout(5000),
         });
-        if (fRes.ok) {
-          const fd = await fRes.json();
-          // c=현재가, pc=전일종가, d=변화, dp=변화%
-          if (fd.c && !isNaN(fd.c)) {
+        if (tdRes.ok) {
+          const td = await tdRes.json();
+          // close=현재가, previous_close=전일종가
+          const price = parseFloat(td.close);
+          if (!isNaN(price) && price > 0) {
+            const prevClose = parseFloat(td.previous_close);
+            const change    = !isNaN(prevClose) ? round2(price - prevClose) : null;
+            const changePct = !isNaN(prevClose) ? round2((price - prevClose) / prevClose * 100) : null;
             return json({
-              price:     round2(fd.c),
-              change:    fd.d  != null ? round2(fd.d)  : null,
-              changePct: fd.dp != null ? round2(fd.dp) : null,
-              source:    "finnhub",
-              ts:        new Date().toISOString(),
+              price,
+              change,
+              changePct,
+              source: "twelvedata",
+              ts:     new Date().toISOString(),
             }, 200, corsHeaders);
           }
         }
-      } catch (_) { /* Finnhub 실패 → KV 폴백 */ }
+      } catch (_) { /* Twelve Data 실패 → KV 폴백 */ }
 
-      // 2) KV 폴백 (snapshot:1min에 vix만 있으므로 spy 없을 수 있음)
+      // 2) KV 폴백
       const snap = await env.DEX_KV.get("snapshot:1min", { type: "json" });
       if (snap?.spy?.price) {
         return json({ ...snap.spy, source: "kv", ts: snap.ts }, 200, corsHeaders);
