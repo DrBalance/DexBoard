@@ -148,8 +148,8 @@ let _vixPrevClose = null;
 let _svgW = 0;
 
 // VIX y축 — baseline 기준 ±10%, 한 방향만 확장
-let _vixYMaxRatio = 1.1;
-let _vixYMinRatio = 0.9;
+let _vixYMaxRatio = 1.03;
+let _vixYMinRatio = 0.97;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 공개 API
@@ -447,6 +447,20 @@ function _renderPane(pane) {
   let linePathsSvg = '';
 
   if (pane === 'vix') {
+    // ── 1분 단위 보간: 빈 구간은 직전값으로 채움 ──────────
+    const filledData = [];
+    let prevV = null;
+    for (let m = 0; m < AXIS_MINS; m++) {
+      const ms  = _axisStartMs + m * 60_000;
+      const hit = data.find(d => d.ms === ms);
+      if (hit) {
+        prevV = hit.v;
+        filledData.push({ ms, v: hit.v });
+      } else if (prevV !== null) {
+        filledData.push({ ms, v: prevV });
+      }
+    }
+
     // baseline 위/아래 바뀔 때마다 <path> 를 끊어서 색상 분리
     let seg = '';
     let segFirst = true;
@@ -460,13 +474,12 @@ function _renderPane(pane) {
       }
     };
 
-    for (const d of data) {
+    for (const d of filledData) {
       const x     = _toX(d.ms, W).toFixed(1);
       const y     = toY(d.v).toFixed(1);
       const above = d.v >= baseline;
 
       if (prevAbove !== null && above !== prevAbove) {
-        // baseline 교차 → 교차점 x 보간 후 현재 seg 닫기
         flushSeg(prevAbove);
         seg      = `M${x},${toY(baseline).toFixed(1)} L${x},${y} `;
         segFirst = false;
@@ -481,14 +494,14 @@ function _renderPane(pane) {
     // linePath 는 면적용으로도 필요 — 전체 경로를 단일 string으로 재구성
     let linePath = '';
     let first = true;
-    for (const d of data) {
+    for (const d of filledData) {
       const x = _toX(d.ms, W).toFixed(1);
       const y = toY(d.v).toFixed(1);
       linePath += `${first ? 'M' : 'L'}${x},${y} `;
       first = false;
     }
 
-    const linePoints = data;
+    const linePoints = filledData;
     const firstX   = _toX(linePoints[0].ms, W).toFixed(1);
     const lastX    = _toX(linePoints[linePoints.length - 1].ms, W).toFixed(1);
     const lastY    = toY(lastVal).toFixed(1);
@@ -502,16 +515,9 @@ function _renderPane(pane) {
     const nowMs  = Date.now();
     const nowX   = _toX(nowMs, W).toFixed(1);
     const nowLine = (nowMs >= _axisStartMs && nowMs <= _axisEndMs)
-      ? `<line x1="${nowX}" y1="${PAD_T}" x2="${nowX}" y2="${PANE_H - PAD_B}"
+      ? `<line x1="${nowX}" y1="0" x2="${nowX}" y2="${PANE_H}"
                stroke="#4b5563" stroke-width="1" stroke-dasharray="2,3" opacity="0.5"/>`
       : '';
-
-    // ── 개장(09:30 ET) 세로 점선 ─────────────────────────
-    const openMs  = _etHMtoUtcMs(9, 30);
-    const openX   = _toX(openMs, W).toFixed(1);
-    const openLine = `
-      <line x1="${openX}" y1="${PAD_T}" x2="${openX}" y2="${PANE_H - PAD_B}"
-            stroke="#6b7280" stroke-width="1" stroke-dasharray="3,4" opacity="0.7"/>`;
 
     chartSvg.setAttribute('width', W);
     chartSvg.innerHTML = `
@@ -523,10 +529,10 @@ function _renderPane(pane) {
         </linearGradient>
       </defs>
       <rect width="${W}" height="${PANE_H}" fill="transparent"/>
+      ${_buildVGridLines(W, PANE_H)}
       <line x1="0" y1="${baseY}" x2="${W}" y2="${baseY}"
             stroke="#f59e0b" stroke-width="1" stroke-dasharray="4,3" opacity="0.55"/>
       ${nowLine}
-      ${openLine}
       <path d="${areaPath}" fill="url(#${gradId})" stroke="none"/>
       ${linePathsSvg}
       <circle cx="${lastX}" cy="${lastY}" r="3"
@@ -576,16 +582,9 @@ function _renderPane(pane) {
   const nowMs  = Date.now();
   const nowX   = _toX(nowMs, W).toFixed(1);
   const nowLine = (nowMs >= _axisStartMs && nowMs <= _axisEndMs)
-    ? `<line x1="${nowX}" y1="${PAD_T}" x2="${nowX}" y2="${PANE_H - PAD_B}"
+    ? `<line x1="${nowX}" y1="0" x2="${nowX}" y2="${PANE_H}"
              stroke="#4b5563" stroke-width="1" stroke-dasharray="2,3" opacity="0.5"/>`
     : '';
-
-  // ── 개장(09:30 ET) 세로 점선 ───────────────────────────
-  const openMs  = _etHMtoUtcMs(9, 30);
-  const openX   = _toX(openMs, W).toFixed(1);
-  const openLine = `
-    <line x1="${openX}" y1="${PAD_T}" x2="${openX}" y2="${PANE_H - PAD_B}"
-          stroke="#6b7280" stroke-width="1" stroke-dasharray="3,4" opacity="0.7"/>`;
 
   // ── SVG 조립 ───────────────────────────────────────────
   chartSvg.setAttribute('width', W);
@@ -599,6 +598,7 @@ function _renderPane(pane) {
     </defs>
 
     <rect width="${W}" height="${PANE_H}" fill="transparent"/>
+    ${_buildVGridLines(W, PANE_H)}
 
     <!-- 기준선 -->
     <line x1="0" y1="${baseY}" x2="${W}" y2="${baseY}"
@@ -606,9 +606,6 @@ function _renderPane(pane) {
 
     <!-- 현재 시각 수직선 -->
     ${nowLine}
-
-    <!-- 개장 세로 점선 -->
-    ${openLine}
 
     <!-- 면적 음영 -->
     <path d="${areaPath}" fill="url(#${gradId})" stroke="none"/>
@@ -685,6 +682,25 @@ function _renderYAxis(svg, yMin, yMax, baseline, pane) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 세로선 헬퍼: 1시간 단위 흰색 얇은 선 + 개장시간 파란 점선
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function _buildVGridLines(W, h) {
+  const openMs  = _etHMtoUtcMs(9, 30);
+  let lines = '';
+  for (let hr = AXIS_START_ET_H; hr <= AXIS_END_ET_H; hr++) {
+    const ms = _etHMtoUtcMs(hr, 0);
+    const x  = _toX(ms, W).toFixed(1);
+    lines += `<line x1="${x}" y1="0" x2="${x}" y2="${h}"
+                    stroke="#ffffff" stroke-width="0.3" opacity="0.08"/>`;
+  }
+  // 개장시간 파란 점선
+  const ox = _toX(openMs, W).toFixed(1);
+  lines += `<line x1="${ox}" y1="0" x2="${ox}" y2="${h}"
+                  stroke="#3b82f6" stroke-width="1" stroke-dasharray="3,4" opacity="0.6"/>`;
+  return lines;
+}
+
 // x축 전용 페인 렌더 (항상 표시)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function _renderXAxis() {
@@ -692,36 +708,34 @@ function _renderXAxis() {
   if (!svg || !_svgW) return;
   const W = _svgW;
 
-  // 1시간 단위 눈금
-  let ticks = '';
+  // 1시간 단위 레이블
+  let labels = '';
   for (let h = AXIS_START_ET_H; h <= AXIS_END_ET_H; h++) {
     const ms    = _etHMtoUtcMs(h, 0);
     const x     = _toX(ms, W).toFixed(1);
     const label = _toKstHHMM(ms);
-    ticks += `
-      <line x1="${x}" y1="0" x2="${x}" y2="4"
-            stroke="#374151" stroke-width="0.8"/>
-      <text x="${x}" y="14"
+    labels += `
+      <text x="${x}" y="13"
             font-size="9" font-family="monospace" fill="#6b7280"
             text-anchor="middle">${label}</text>`;
   }
 
-  // 개장(09:30 ET) 표시
-  const openMs = _etHMtoUtcMs(9, 30);
-  const openX  = _toX(openMs, W).toFixed(1);
-  const openLabel = `
-    <line x1="${openX}" y1="0" x2="${openX}" y2="6"
-          stroke="#6b7280" stroke-width="1" stroke-dasharray="3,4" opacity="0.7"/>
-    <text x="${openX}" y="16"
-          font-size="8" font-family="monospace" fill="#6b7280"
-          text-anchor="start" dx="2">09:30</text>`;
+  // 개장(09:30 ET) KST 레이블
+  const openMs    = _etHMtoUtcMs(9, 30);
+  const openX     = _toX(openMs, W).toFixed(1);
+  const openLabel = _toKstHHMM(openMs);
+  const openText  = `
+    <text x="${openX}" y="13"
+          font-size="9" font-family="monospace" fill="#3b82f6"
+          text-anchor="middle" font-weight="600">${openLabel}</text>`;
 
   svg.setAttribute('width', W);
   svg.innerHTML = `
     <rect width="${W}" height="${XAXIS_H}" fill="transparent"/>
     <line x1="0" y1="0" x2="${W}" y2="0" stroke="#30363d" stroke-width="1"/>
-    ${ticks}
-    ${openLabel}
+    ${_buildVGridLines(W, XAXIS_H)}
+    ${labels}
+    ${openText}
   `;
 }
 
