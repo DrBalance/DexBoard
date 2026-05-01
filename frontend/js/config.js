@@ -3,6 +3,7 @@ export const CF_API         = 'https://drbalance-dex.weoncheonlee.workers.dev';
 export const RAILWAY_WS_URL = 'wss://dexboard-production.up.railway.app/ws';
 export const RAILWAY_URL    = 'https://dexboard-production.up.railway.app';
 export const TWELVE_KEY     = '4fe9a71838f245e2957c0f41fdf213f8';  // market_state + OBV
+export const CRON_SECRET    = "cron-secret-2026";
 
 // ── Polling intervals ─────────────────────────────
 export const INTERVAL_SNAP         = 60_000;       // 1분 (snapshot 갱신)
