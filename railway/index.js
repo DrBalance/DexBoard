@@ -16,11 +16,6 @@ const CF_KV_SECRET  = process.env.CF_KV_SECRET  || "";
 const GEMINI_URL =
   "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent";
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`DexBoard Railway service listening on port ${PORT}`);
-});
-
-
 
 // ─────────────────────────────────────────────────────────────────
 // Rate Limiter
@@ -541,6 +536,9 @@ const server = http.createServer(async (req, res) => {
 // ─────────────────────────────────────────────────────────────────
 // 시작
 // ─────────────────────────────────────────────────────────────────
-server.listen(PORT, () => {
+/* server.listen(PORT, () => {
+  console.log(`DexBoard Railway service listening on port ${PORT}`);
+}); */
+server.listen(PORT, '0.0.0.0', () => {
   console.log(`DexBoard Railway service listening on port ${PORT}`);
 });
