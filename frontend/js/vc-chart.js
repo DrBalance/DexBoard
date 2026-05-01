@@ -306,10 +306,13 @@ function _buildShell() {
       <!-- 공통 스크롤 컨테이너 (VIX + VOLD + x축 동시 스크롤) -->
       <div id="vc-scroll"
            style="flex:1;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin">
-        <div id="vc-inner" style="display:flex;flex-direction:column">
+        <div id="vc-inner" style="display:flex;flex-direction:column;position:relative">
           <svg id="vc-chart-vix"   height="${PANE_H}"  style="display:block"></svg>
           <svg id="vc-chart-vold"  height="${PANE_H}"  style="display:block"></svg>
           <svg id="vc-chart-xaxis" height="${XAXIS_H}" style="display:block"></svg>
+          <!-- 세로선 오버레이: VIX+VOLD+xaxis 전체 높이를 커버 -->
+          <svg id="vc-vgrid" height="${PANE_H * 2 + XAXIS_H}"
+               style="position:absolute;top:0;left:0;pointer-events:none"></svg>
         </div>
       </div>
 
@@ -338,7 +341,7 @@ function _updateSvgWidth() {
   // SVG 전체 너비 = 전체 시간축(780분) × pxPerMin
   _svgW = Math.round(AXIS_MINS * pxPerMin);
 
-  ['vc-chart-vix', 'vc-chart-vold', 'vc-chart-xaxis'].forEach(id => {
+  ['vc-chart-vix', 'vc-chart-vold', 'vc-chart-xaxis', 'vc-vgrid'].forEach(id => {
     const svg = document.getElementById(id);
     if (svg) svg.setAttribute('width', _svgW);
   });
@@ -388,6 +391,7 @@ function _render() {
   _renderPane('vix');
   _renderPane('vold');
   _renderXAxis();
+  _renderVGrid();
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -514,40 +518,49 @@ function _renderPane(pane) {
     let segAbove = null;
     let segPath  = '';
 
-    const flushArea = (above, endMs) => {
+    const flushArea = (above, endMs, segYExtreme) => {
       if (!segPath) return;
-      const ex  = _toX(endMs, W).toFixed(1);
-      const sx  = _toX(segStart, W).toFixed(1);
-      const col = above ? COLOR_GREEN : COLOR_RED;
-      const gid = `vc-ag-${above ? 'u' : 'd'}-${sx.replace('.', '_')}`;
-      // 면적 닫기: 끝→baseline→시작
+      const ex    = _toX(endMs, W).toFixed(1);
+      const sx    = _toX(segStart, W).toFixed(1);
+      const col   = above ? COLOR_GREEN : COLOR_RED;
+      const gid   = `vc-ag-${above ? 'u' : 'd'}-${sx.replace('.', '_')}`;
       const closed = `${segPath.trim()} L${ex},${baseY} L${sx},${baseY} Z`;
       areaSvg += `
         <defs>
-          <linearGradient id="${gid}" x1="0" y1="${above ? toY(lastVal > baseline ? lastVal : baseline).toFixed(1) : toY(lastVal < baseline ? lastVal : baseline).toFixed(1)}" x2="0" y2="${baseY}" gradientUnits="userSpaceOnUse">
-            <stop offset="0%"   stop-color="${col}" stop-opacity="0.25"/>
-            <stop offset="100%" stop-color="${col}" stop-opacity="0.02"/>
+          <linearGradient id="${gid}" x1="0" y1="${segYExtreme}" x2="0" y2="${baseY}"
+                          gradientUnits="userSpaceOnUse">
+            <stop offset="0%"   stop-color="${col}" stop-opacity="0.3"/>
+            <stop offset="100%" stop-color="${col}" stop-opacity="0.0"/>
           </linearGradient>
         </defs>
         <path d="${closed}" fill="url(#${gid})" stroke="none"/>`;
     };
 
+    let segYExtreme = null; // 위 구간=y최솟값(라인높음), 아래 구간=y최댓값(라인낮음)
+
     for (const d of filledData) {
       const above = d.v >= baseline;
+      const py    = toY(d.v);
       if (segAbove === null) {
-        segAbove = above;
-        segStart = d.ms;
-        segPath  = `M${_toX(d.ms, W).toFixed(1)},${toY(d.v).toFixed(1)} `;
+        segAbove   = above;
+        segStart   = d.ms;
+        segYExtreme = py;
+        segPath    = `M${_toX(d.ms, W).toFixed(1)},${py.toFixed(1)} `;
       } else if (above !== segAbove) {
-        flushArea(segAbove, d.ms);
-        segAbove = above;
-        segStart = d.ms;
-        segPath  = `M${_toX(d.ms, W).toFixed(1)},${toY(baseline).toFixed(1)} L${_toX(d.ms, W).toFixed(1)},${toY(d.v).toFixed(1)} `;
+        flushArea(segAbove, d.ms, segYExtreme.toFixed(1));
+        segAbove   = above;
+        segStart   = d.ms;
+        segYExtreme = py;
+        segPath    = `M${_toX(d.ms, W).toFixed(1)},${toY(baseline).toFixed(1)} L${_toX(d.ms, W).toFixed(1)},${py.toFixed(1)} `;
       } else {
-        segPath += `L${_toX(d.ms, W).toFixed(1)},${toY(d.v).toFixed(1)} `;
+        // 위 구간: y최솟값(라인이 가장 높은 점), 아래 구간: y최댓값(라인이 가장 낮은 점)
+        segYExtreme = above
+          ? Math.min(segYExtreme, py)
+          : Math.max(segYExtreme, py);
+        segPath += `L${_toX(d.ms, W).toFixed(1)},${py.toFixed(1)} `;
       }
     }
-    if (filledData.length) flushArea(segAbove, filledData[filledData.length - 1].ms);
+    if (filledData.length) flushArea(segAbove, filledData[filledData.length - 1].ms, segYExtreme.toFixed(1));
 
     // 마지막 구간 색상 = lastVal 기준
     const lineColor = lastVal >= baseline ? COLOR_GREEN : COLOR_RED;
@@ -562,7 +575,6 @@ function _renderPane(pane) {
     chartSvg.setAttribute('width', W);
     chartSvg.innerHTML = `
       <rect width="${W}" height="${PANE_H}" fill="transparent"/>
-      ${_buildVGridLines(W, PANE_H)}
       <line x1="0" y1="${baseY}" x2="${W}" y2="${baseY}"
             stroke="#f59e0b" stroke-width="1" stroke-dasharray="4,3" opacity="0.55"/>
       ${nowLine}
@@ -631,7 +643,6 @@ function _renderPane(pane) {
     </defs>
 
     <rect width="${W}" height="${PANE_H}" fill="transparent"/>
-    ${_buildVGridLines(W, PANE_H)}
 
     <!-- 기준선 -->
     <line x1="0" y1="${baseY}" x2="${W}" y2="${baseY}"
@@ -734,6 +745,32 @@ function _buildVGridLines(W, h) {
   return lines;
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 세로선 오버레이 — VIX + VOLD + x축 전체 높이를 한 번에 커버
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function _renderVGrid() {
+  const svg = document.getElementById('vc-vgrid');
+  if (!svg || !_svgW) return;
+  const W = _svgW;
+  const H = PANE_H * 2 + XAXIS_H;
+
+  let lines = '';
+  for (let hr = AXIS_START_ET_H; hr <= AXIS_END_ET_H; hr++) {
+    const ms = _etHMtoUtcMs(hr, 0);
+    const x  = _toX(ms, W).toFixed(1);
+    lines += `<line x1="${x}" y1="0" x2="${x}" y2="${H}"
+                    stroke="#ffffff" stroke-width="0.8" opacity="0.12"/>`;
+  }
+  // 개장(09:30 ET) 파란 점선
+  const openMs = _etHMtoUtcMs(9, 30);
+  const openX  = _toX(openMs, W).toFixed(1);
+  lines += `<line x1="${openX}" y1="0" x2="${openX}" y2="${H}"
+                  stroke="#3b82f6" stroke-width="1" stroke-dasharray="3,4" opacity="0.6"/>`;
+
+  svg.setAttribute('width', W);
+  svg.innerHTML = `<rect width="${W}" height="${H}" fill="none"/>${lines}`;
+}
+
 // x축 전용 페인 렌더 (항상 표시)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function _renderXAxis() {
@@ -766,7 +803,6 @@ function _renderXAxis() {
   svg.innerHTML = `
     <rect width="${W}" height="${XAXIS_H}" fill="transparent"/>
     <line x1="0" y1="0" x2="${W}" y2="0" stroke="#30363d" stroke-width="1"/>
-    ${_buildVGridLines(W, XAXIS_H)}
     ${labels}
     ${openText}
   `;
