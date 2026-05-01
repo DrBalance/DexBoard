@@ -230,11 +230,11 @@ export function buildAnalysisPayload(state) {
     spyChangePct:  spy?.changePct?.toFixed(2) ?? '—',
     vix:           vix?.price,
     vixChangePct:  vix?.changePct?.toFixed(2) ?? '—',
-    dex:           gex ?? 0,    // DEX 총합 (KV의 gex_total)
-    gex:           gex ?? 0,
-    vanna:         vanna ?? 0,
-    charm:         charm ?? 0,
-    vold:          vold ?? 0,
+    dex:           (gex   ?? 0) * 1e6,  // KV는 M단위, Gemini프롬프트에서 /1e6 처리
+    gex:           (gex   ?? 0) * 1e6,
+    vanna:         (vanna ?? 0) * 1e6,
+    charm:         (charm ?? 0) * 1e6,
+    vold:          (vold  ?? 0) * 1e6,
     strikes:       strikes ?? [],
   };
 }
