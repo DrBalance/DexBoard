@@ -161,6 +161,7 @@ export async function initVCChart(containerId, cfApiBase) {
   _buildShell();
   _bindZoomButtons();
   _updateSvgWidth();
+  _applyZoom();
   _render();
   // 당일 VIX 히스토리 복원
   await _restoreVixHistory();
@@ -313,31 +314,45 @@ function _buildShell() {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// SVG 너비 계산 및 적용 (줌 변경 시)
+// SVG 너비 계산 및 적용
+//
+// 설계:
+//   SVG는 항상 최대 크기(All 기준)로 한 번만 그림
+//   줌 버튼은 스크롤 컨테이너의 max-width를 조절해
+//   "몇 분치"를 뷰포트에 보여줄지만 결정 → 재렌더 불필요
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function _updateSvgWidth() {
   const scrollEl = document.getElementById('vc-scroll');
   const inner    = document.getElementById('vc-inner');
   if (!scrollEl || !inner) return;
 
-  const viewW    = scrollEl.clientWidth || (window.innerWidth - Y_W - 28);
-  const zoomMins = ZOOM_LEVELS[_zoomIdx].mins;
+  const containerW = (scrollEl.parentElement.clientWidth - Y_W)
+                     || (window.innerWidth - Y_W - 28);
 
-  // All 기준 pxPerMin: 뷰포트에 전체가 딱 맞도록
-  const pxPerMinAll = viewW / AXIS_MINS;
-  // 현재 줌의 pxPerMin: 뷰포트를 zoomMins로 채우도록
-  const pxPerMin    = Math.max(viewW / zoomMins, pxPerMinAll, PX_PER_MIN_BASE);
+  // pxPerMin: All 뷰 기준 (컨테이너에 전체가 딱 맞도록), 최소 PX_PER_MIN_BASE
+  const pxPerMin = Math.max(containerW / AXIS_MINS, PX_PER_MIN_BASE);
 
+  // SVG는 항상 전체 시간축 크기로 고정
   _svgW = Math.round(AXIS_MINS * pxPerMin);
 
-  // SVG 두 개 너비 동시 변경 (재렌더 없음)
   ['vc-chart-vix', 'vc-chart-vold'].forEach(id => {
     const svg = document.getElementById(id);
     if (svg) svg.setAttribute('width', _svgW);
   });
-
-  // inner div 너비도 맞춰줌 (스크롤 범위 확보)
   inner.style.width = _svgW + 'px';
+}
+
+// 줌 레벨에 따라 스크롤 컨테이너 max-width 조절 (재렌더 없음)
+function _applyZoom() {
+  const scrollEl = document.getElementById('vc-scroll');
+  if (!scrollEl) return;
+  const zoomMins = ZOOM_LEVELS[_zoomIdx].mins;
+  if (zoomMins >= AXIS_MINS) {
+    scrollEl.style.maxWidth = '';
+  } else {
+    const pxPerMin = _svgW / AXIS_MINS;
+    scrollEl.style.maxWidth = Math.round(zoomMins * pxPerMin) + 'px';
+  }
 }
 
 // 현재 시각 위치로 스크롤
@@ -369,8 +384,8 @@ function _bindZoomButtons() {
       b.style.color      = on ? '#fff' : 'var(--text2,#8b949e)';
     });
 
-    // SVG 너비만 변경 → 스크롤 위치 이동 (재렌더 없음)
-    _updateSvgWidth();
+    // SVG는 고정, 뷰포트 너비만 조절 후 현재 시각으로 스크롤
+    _applyZoom();
     requestAnimationFrame(() => _scrollToNow());
   });
 }
@@ -433,12 +448,103 @@ function _renderPane(pane) {
     ? _etHMtoUtcMs(VOLD_START_ET_H, VOLD_START_ET_M)
     : null;
 
-  // ── 라인 path ──────────────────────────────────────────
+  // ── 라인 path (VIX: baseline 기준 구간별 색상 / VOLD: 단색) ──
+  const COLOR_GREEN = '#22c55e';
+  const COLOR_RED   = '#ef4444';
+
+  const lastVal = data[data.length - 1].v;
+  let linePathsSvg = '';
+
+  if (pane === 'vix') {
+    // baseline 위/아래 바뀔 때마다 <path> 를 끊어서 색상 분리
+    let seg = '';
+    let segFirst = true;
+    let prevAbove = null;
+
+    const flushSeg = (above) => {
+      if (seg) {
+        linePathsSvg += `<path d="${seg.trim()}" fill="none"
+          stroke="${above ? COLOR_GREEN : COLOR_RED}" stroke-width="1.5"
+          stroke-linejoin="round" stroke-linecap="round"/>`;
+      }
+    };
+
+    for (const d of data) {
+      const x     = _toX(d.ms, W).toFixed(1);
+      const y     = toY(d.v).toFixed(1);
+      const above = d.v >= baseline;
+
+      if (prevAbove !== null && above !== prevAbove) {
+        // baseline 교차 → 교차점 x 보간 후 현재 seg 닫기
+        flushSeg(prevAbove);
+        seg      = `M${x},${toY(baseline).toFixed(1)} L${x},${y} `;
+        segFirst = false;
+      } else {
+        seg += `${segFirst ? 'M' : 'L'}${x},${y} `;
+        segFirst = false;
+      }
+      prevAbove = above;
+    }
+    flushSeg(prevAbove);
+
+    // linePath 는 면적용으로도 필요 — 전체 경로를 단일 string으로 재구성
+    let linePath = '';
+    let first = true;
+    for (const d of data) {
+      const x = _toX(d.ms, W).toFixed(1);
+      const y = toY(d.v).toFixed(1);
+      linePath += `${first ? 'M' : 'L'}${x},${y} `;
+      first = false;
+    }
+
+    const linePoints = data;
+    const firstX   = _toX(linePoints[0].ms, W).toFixed(1);
+    const lastX    = _toX(linePoints[linePoints.length - 1].ms, W).toFixed(1);
+    const lastY    = toY(lastVal).toFixed(1);
+    const baseY    = toY(baseline).toFixed(1);
+    const areaPath = `${linePath.trim()} L${lastX},${baseY} L${firstX},${baseY} Z`;
+    const lineAboveBase = lastVal >= baseline;
+    const lineColor     = lineAboveBase ? COLOR_GREEN : COLOR_RED;
+    const gradId        = `vc-grad-${pane}`;
+    const gradY1        = lineAboveBase ? '0' : '1';
+    const gradY2        = lineAboveBase ? '1' : '0';
+    const xTickSvg      = _buildXTicks(W);
+    const nowMs  = Date.now();
+    const nowX   = _toX(nowMs, W).toFixed(1);
+    const nowLine = (nowMs >= _axisStartMs && nowMs <= _axisEndMs)
+      ? `<line x1="${nowX}" y1="${PAD_T}" x2="${nowX}" y2="${PANE_H - PAD_B}"
+               stroke="#4b5563" stroke-width="1" stroke-dasharray="2,3" opacity="0.5"/>`
+      : '';
+
+    chartSvg.setAttribute('width', W);
+    chartSvg.innerHTML = `
+      <defs>
+        <linearGradient id="${gradId}" x1="0" y1="${gradY1}" x2="0" y2="${gradY2}">
+          <stop offset="0%"   stop-color="${lineColor}" stop-opacity="0.18"/>
+          <stop offset="100%" stop-color="${lineColor}" stop-opacity="0.02"/>
+        </linearGradient>
+      </defs>
+      <rect width="${W}" height="${PANE_H}" fill="transparent"/>
+      <line x1="0" y1="${baseY}" x2="${W}" y2="${baseY}"
+            stroke="#f59e0b" stroke-width="1" stroke-dasharray="4,3" opacity="0.55"/>
+      ${nowLine}
+      ${xTickSvg}
+      <path d="${areaPath}" fill="url(#${gradId})" stroke="none"/>
+      ${linePathsSvg}
+      <circle cx="${lastX}" cy="${lastY}" r="3"
+              fill="${lineColor}" stroke="#0d1117" stroke-width="1.5"/>
+      ${_lastLabel(lastX, lastY, lastVal.toFixed(2), lineColor, W)}
+    `;
+    _renderYAxis(yaxisSvg, yMin, yMax, baseline, pane);
+    _maybeScrollToNow();
+    return;
+  }
+
+  // ── VOLD: 단일 색상 (기존 로직 유지) ──────────────────
   let linePath = '';
   let first    = true;
   for (const d of data) {
-    // VOLD: 09:30 이전은 건너뜀
-    if (pane === 'vold' && d.ms < voldStartMs) continue;
+    if (d.ms < voldStartMs) continue;
     const x = _toX(d.ms, W).toFixed(1);
     const y = toY(d.v).toFixed(1);
     linePath += `${first ? 'M' : 'L'}${x},${y} `;
@@ -451,11 +557,8 @@ function _renderPane(pane) {
     return;
   }
 
-  // ── 색상 ───────────────────────────────────────────────
-  const lastVal   = data[data.length - 1].v;
-  const lineColor = pane === 'vix'
-    ? (lastVal >= baseline ? '#22c55e' : '#ef4444')
-    : (lastVal >= 0       ? '#22c55e' : '#ef4444');
+  // ── VOLD 색상 ──────────────────────────────────────────
+  const lineColor = lastVal >= 0 ? COLOR_GREEN : COLOR_RED;
 
   // ── 기준선 y ───────────────────────────────────────────
   const baseY = toY(baseline ?? 0).toFixed(1);
@@ -611,9 +714,9 @@ function _buildXTicks(W) {
     const x     = _toX(ms, W).toFixed(1);
     const label = _toKstHHMM(ms);
     return `
-      <line x1="${x}" y1="${PANE_H - PAD_B - 6}" x2="${x}" y2="${PANE_H - PAD_B}"
+      <line x1="${x}" y1="${PANE_H - PAD_B - 4}" x2="${x}" y2="${PANE_H - PAD_B}"
             stroke="#374151" stroke-width="0.8"/>
-      <text x="${x}" y="${PANE_H - 3}"
+      <text x="${x}" y="${PANE_H - PAD_B + 11}"
             font-size="9" font-family="monospace" fill="#6b7280"
             text-anchor="middle">${label}</text>
     `;
