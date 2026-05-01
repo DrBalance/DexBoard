@@ -20,7 +20,7 @@
 //   0    13    * * 1-5  → snapshotOpen  (장 시작 스냅샷)
 //   30   20    * * 1-5  → runScreener   (장 마감 후 스크리너)
 
-import { runScreener, getScreenerResults } from './screener-v2.js';
+// screener-v2.js 제거 — Railway 수집 엔진으로 대체
 import { handleAdmin } from './admin.js';
 
 export default {
@@ -213,63 +213,146 @@ export default {
 
     // ── GET /api/screener ───────────────────────────────────────
     if (request.method === "GET" && path === "/api/screener") {
-      const date = url.searchParams.get("date") || undefined;
-      const results = await getScreenerResults(env.DB, date);
-      return json(results, 200, corsHeaders);
+      let targetDate = url.searchParams.get("date");
+      if (!targetDate) {
+        const latest = await env.DB.prepare(
+          "SELECT MAX(date) as d FROM screener_scores"
+        ).first();
+        targetDate = latest?.d;
+      }
+      if (!targetDate) return json([], 200, corsHeaders);
+      const rows = await env.DB.prepare(`
+        SELECT * FROM screener_scores
+        WHERE date = ?
+        ORDER BY total_score DESC
+      `).bind(targetDate).all();
+      return json(rows.results ?? [], 200, corsHeaders);
     }
 
     // ── GET /api/screener/sector ────────────────────────────────
     if (request.method === "GET" && path === "/api/screener/sector") {
       const sector = url.searchParams.get("sector");
-      const date   = url.searchParams.get("date") || new Date().toISOString().split("T")[0];
-      if (!sector) return json({ error: "sector param required" }, 400, corsHeaders);
+      let targetDate = url.searchParams.get("date");
+      if (!targetDate) {
+        const latest = await env.DB.prepare(
+          "SELECT MAX(date) as d FROM screener_scores"
+        ).first();
+        targetDate = latest?.d;
+      }
+      if (!sector)     return json({ error: "sector param required" }, 400, corsHeaders);
+      if (!targetDate) return json([], 200, corsHeaders);
       const rows = await env.DB.prepare(`
-        SELECT sc.*, s.name
-        FROM screener_scores sc
-        JOIN symbols s USING (symbol)
-        WHERE sc.date = ? AND sc.sector = ?
-        ORDER BY sc.total_score DESC
-      `).bind(date, sector).all();
-      return json(rows.results, 200, corsHeaders);
+        SELECT * FROM screener_scores
+        WHERE date = ? AND sector = ?
+        ORDER BY total_score DESC
+      `).bind(targetDate, sector).all();
+      return json(rows.results ?? [], 200, corsHeaders);
     }
 
-    // ── POST /api/screener/run (수동 트리거) ────────────────────
-    if (request.method === "POST" && path === "/api/screener/run") {
-      const secret = request.headers.get("x-kv-secret");
-      if (secret !== env.CF_KV_SECRET) {
+    // ── POST /d1/options-dex (Railway → D1 저장) ────────────────
+    if (request.method === "POST" && path === "/d1/options-dex") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
-      ctx.waitUntil(runScreener(env));
-      return json({ ok: true, message: "스크리너 실행 시작" }, 200, corsHeaders);
+      const { rows } = await request.json();
+      if (!Array.isArray(rows) || !rows.length) {
+        return json({ ok: false, error: "rows 배열 필요" }, 400, corsHeaders);
+      }
+      const CHUNK = 50;
+      let inserted = 0;
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        const chunk = rows.slice(i, i + CHUNK);
+        const stmts = chunk.map(r =>
+          env.DB.prepare(`
+            INSERT OR REPLACE INTO options_dex (
+              date, symbol, expiry_date, dte,
+              call_oi, put_oi, call_vol, put_vol,
+              pcr_oi, pcr_vol, iv_skew, atm_iv, otm_call_iv, otm_put_iv,
+              dex, gex, vanna, charm,
+              atm_put_oi, atm_put_oi_ratio
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          `).bind(
+            r.date, r.symbol, r.expiry_date, r.dte,
+            r.call_oi ?? 0, r.put_oi ?? 0, r.call_vol ?? 0, r.put_vol ?? 0,
+            r.pcr_oi ?? null, r.pcr_vol ?? null,
+            r.iv_skew ?? null, r.atm_iv ?? null,
+            r.otm_call_iv ?? null, r.otm_put_iv ?? null,
+            r.dex ?? null, r.gex ?? null, r.vanna ?? null, r.charm ?? null,
+            r.atm_put_oi ?? null, r.atm_put_oi_ratio ?? null,
+          )
+        );
+        await env.DB.batch(stmts);
+        inserted += chunk.length;
+      }
+      return json({ ok: true, inserted }, 200, corsHeaders);
+    }
+
+    // ── POST /d1/screener-scores (Railway → D1 저장) ─────────────
+    if (request.method === "POST" && path === "/d1/screener-scores") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      const { rows } = await request.json();
+      if (!Array.isArray(rows) || !rows.length) {
+        return json({ ok: false, error: "rows 배열 필요" }, 400, corsHeaders);
+      }
+      const CHUNK = 50;
+      let inserted = 0;
+      for (let i = 0; i < rows.length; i += CHUNK) {
+        const chunk = rows.slice(i, i + CHUNK);
+        const stmts = chunk.map(r =>
+          env.DB.prepare(`
+            INSERT OR REPLACE INTO screener_scores (
+              date, symbol, name, type, sector, sector_etf,
+              close, bb_position, bb_flag, iv_skew, skew_weeks,
+              score_skew_weeks, score_bb, score_atm_put, score_vol_squeeze,
+              total_score, updated_at
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+          `).bind(
+            r.date, r.symbol, r.name ?? null, r.type ?? null,
+            r.sector ?? null, r.sector_etf ?? null,
+            r.close ?? null, r.bb_position ?? null,
+            r.bb_flag ?? null, r.iv_skew ?? null, r.skew_weeks ?? null,
+            r.score_skew_weeks ?? 0, r.score_bb ?? 0,
+            r.score_atm_put ?? 0, r.score_vol_squeeze ?? 0,
+            r.total_score ?? 0,
+          )
+        );
+        await env.DB.batch(stmts);
+        inserted += chunk.length;
+      }
+      return json({ ok: true, inserted }, 200, corsHeaders);
     }
 
   // ── GET /api/structure/:symbol ─────────────────────────────
   const structMatch = path.match(/^\/api\/structure\/([A-Z0-9.\-]+)$/);
   if (request.method === "GET" && structMatch) {
     const symbol = structMatch[1].toUpperCase();
- 
-    // 해당 종목의 최신 날짜 확인
+
     const latestRow = await env.DB.prepare(`
-      SELECT MAX(date) as latest FROM options_flow WHERE symbol = ?
+      SELECT MAX(date) as latest FROM options_dex WHERE symbol = ?
     `).bind(symbol).first();
- 
+
     if (!latestRow?.latest) {
       return json([], 200, corsHeaders);
     }
- 
+
     const rows = await env.DB.prepare(`
       SELECT
         date, symbol, expiry_date, dte,
         call_vol, put_vol, call_oi, put_oi,
         pcr_vol, pcr_oi,
         atm_iv, otm_call_iv, otm_put_iv,
-        atm_put_oi_ratio, iv_skew
-      FROM options_flow
-      WHERE symbol = ? AND date = ? AND dte BETWEEN 1 AND 65
+        atm_put_oi, atm_put_oi_ratio, iv_skew,
+        dex, gex, vanna, charm
+      FROM options_dex
+      WHERE symbol = ? AND date = ? AND dte BETWEEN 0 AND 65
       ORDER BY dte ASC
     `).bind(symbol, latestRow.latest).all();
- 
-    return json(rows.results, 200, corsHeaders);
+
+    return json(rows.results ?? [], 200, corsHeaders);
   }
 
     
@@ -298,9 +381,9 @@ export default {
       return;
     }
 
-    // 장 마감 후 스크리너 실행 (20:30 UTC = 16:30 ET)
+    // 장 마감 후 스크리너 수집 — Railway /collect-screener 트리거
     if (cron === "30 20 * * 1-5") {
-      ctx.waitUntil(runScreener(env));
+      ctx.waitUntil(triggerScreenerCollect(env));
       return;
     }
 
@@ -456,6 +539,60 @@ async function fetchVIX(env) {
 // ─────────────────────────────────────────────────────────────────
 // Helpers
 // ─────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// triggerScreenerCollect — 장 마감 후 Railway 스크리너 수집 트리거
+// ─────────────────────────────────────────────────────────────────
+async function triggerScreenerCollect(env) {
+  try {
+    const SYMBOL_LIST = [
+      { symbol: 'AAPL',  name: 'Apple',            type: 'stock', sector: 'technology',             sector_etf: 'XLK'  },
+      { symbol: 'MSFT',  name: 'Microsoft',         type: 'stock', sector: 'technology',             sector_etf: 'XLK'  },
+      { symbol: 'NVDA',  name: 'NVIDIA',            type: 'stock', sector: 'semiconductors',         sector_etf: 'SOXX' },
+      { symbol: 'AMZN',  name: 'Amazon',            type: 'stock', sector: 'consumer_discretionary', sector_etf: 'XLY'  },
+      { symbol: 'GOOGL', name: 'Alphabet',          type: 'stock', sector: 'communication_services', sector_etf: 'XLC'  },
+      { symbol: 'META',  name: 'Meta',              type: 'stock', sector: 'communication_services', sector_etf: 'XLC'  },
+      { symbol: 'TSLA',  name: 'Tesla',             type: 'stock', sector: 'consumer_discretionary', sector_etf: 'XLY'  },
+      { symbol: 'JPM',   name: 'JPMorgan',          type: 'stock', sector: 'financials',             sector_etf: 'XLF'  },
+      { symbol: 'V',     name: 'Visa',              type: 'stock', sector: 'financials',             sector_etf: 'XLF'  },
+      { symbol: 'UNH',   name: 'UnitedHealth',      type: 'stock', sector: 'health_care',            sector_etf: 'XLV'  },
+      { symbol: 'XOM',   name: 'Exxon',             type: 'stock', sector: 'energy',                 sector_etf: 'XLE'  },
+      { symbol: 'WMT',   name: 'Walmart',           type: 'stock', sector: 'consumer_staples',       sector_etf: 'XLP'  },
+      { symbol: 'MA',    name: 'Mastercard',        type: 'stock', sector: 'financials',             sector_etf: 'XLF'  },
+      { symbol: 'LLY',   name: 'Eli Lilly',         type: 'stock', sector: 'health_care',            sector_etf: 'XLV'  },
+      { symbol: 'AVGO',  name: 'Broadcom',          type: 'stock', sector: 'semiconductors',         sector_etf: 'SOXX' },
+      { symbol: 'AMD',   name: 'AMD',               type: 'stock', sector: 'semiconductors',         sector_etf: 'SOXX' },
+      { symbol: 'COST',  name: 'Costco',            type: 'stock', sector: 'consumer_staples',       sector_etf: 'XLP'  },
+      { symbol: 'NFLX',  name: 'Netflix',           type: 'stock', sector: 'communication_services', sector_etf: 'XLC'  },
+      { symbol: 'CRM',   name: 'Salesforce',        type: 'stock', sector: 'technology',             sector_etf: 'XLK'  },
+      { symbol: 'ORCL',  name: 'Oracle',            type: 'stock', sector: 'technology',             sector_etf: 'XLK'  },
+      { symbol: 'SPY',   name: 'S&P 500 ETF',       type: 'etf',   sector: 'broad_market',           sector_etf: 'SPY'  },
+      { symbol: 'QQQ',   name: 'Nasdaq 100 ETF',    type: 'etf',   sector: 'broad_market',           sector_etf: 'QQQ'  },
+      { symbol: 'IWM',   name: 'Russell 2000 ETF',  type: 'etf',   sector: 'broad_market',           sector_etf: 'IWM'  },
+      { symbol: 'XLK',   name: 'Tech ETF',          type: 'etf',   sector: 'technology',             sector_etf: 'XLK'  },
+      { symbol: 'XLF',   name: 'Finance ETF',       type: 'etf',   sector: 'financials',             sector_etf: 'XLF'  },
+      { symbol: 'XLE',   name: 'Energy ETF',        type: 'etf',   sector: 'energy',                 sector_etf: 'XLE'  },
+      { symbol: 'XLV',   name: 'Health ETF',        type: 'etf',   sector: 'health_care',            sector_etf: 'XLV'  },
+      { symbol: 'SOXX',  name: 'Semi ETF',          type: 'etf',   sector: 'semiconductors',         sector_etf: 'SOXX' },
+      { symbol: 'GLD',   name: 'Gold ETF',          type: 'etf',   sector: 'broad_market',           sector_etf: 'GLD'  },
+      { symbol: 'TLT',   name: '20Y Bond ETF',      type: 'etf',   sector: 'broad_market',           sector_etf: 'TLT'  },
+    ];
+
+    const res = await fetch(`${env.RAILWAY_URL}/collect-screener`, {
+      method: "POST",
+      headers: {
+        "Content-Type":  "application/json",
+        "x-cron-secret": env.CRON_SECRET || "",
+      },
+      body: JSON.stringify({ symbols: SYMBOL_LIST, force: false }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    const text = await res.text();
+    console.log(`[screener-cron] ${res.status}: ${text.slice(0, 200)}`);
+  } catch (e) {
+    console.error("[screener-cron] error:", e.message);
+  }
+}
+
 function round2(n) {
   return Math.round(n * 100) / 100;
 }
