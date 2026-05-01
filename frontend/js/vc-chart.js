@@ -506,12 +506,52 @@ function _renderPane(pane) {
     const lastX    = _toX(linePoints[linePoints.length - 1].ms, W).toFixed(1);
     const lastY    = toY(lastVal).toFixed(1);
     const baseY    = toY(baseline).toFixed(1);
-    const areaPath = `${linePath.trim()} L${lastX},${baseY} L${firstX},${baseY} Z`;
-    // 마지막 구간 색상 = lastVal 기준 (라인색과 일치)
-    const lineColor     = lastVal >= baseline ? COLOR_GREEN : COLOR_RED;
-    const gradId        = `vc-grad-${pane}`;
-    // 그라데이션: 라인(lastY)에서 baseline(baseY) 방향으로 페이드
-    // userSpaceOnUse로 픽셀 좌표 직접 지정
+
+    // ── 구간별 면적 음영 (라인색과 일치) ─────────────────
+    // baseline 기준으로 위/아래 구간을 분리해서 각각 채움
+    let areaSvg = '';
+    let segStart = null;
+    let segAbove = null;
+    let segPath  = '';
+
+    const flushArea = (above, endMs) => {
+      if (!segPath) return;
+      const ex  = _toX(endMs, W).toFixed(1);
+      const sx  = _toX(segStart, W).toFixed(1);
+      const col = above ? COLOR_GREEN : COLOR_RED;
+      const gid = `vc-ag-${above ? 'u' : 'd'}-${sx.replace('.', '_')}`;
+      // 면적 닫기: 끝→baseline→시작
+      const closed = `${segPath.trim()} L${ex},${baseY} L${sx},${baseY} Z`;
+      areaSvg += `
+        <defs>
+          <linearGradient id="${gid}" x1="0" y1="${above ? toY(lastVal > baseline ? lastVal : baseline).toFixed(1) : toY(lastVal < baseline ? lastVal : baseline).toFixed(1)}" x2="0" y2="${baseY}" gradientUnits="userSpaceOnUse">
+            <stop offset="0%"   stop-color="${col}" stop-opacity="0.25"/>
+            <stop offset="100%" stop-color="${col}" stop-opacity="0.02"/>
+          </linearGradient>
+        </defs>
+        <path d="${closed}" fill="url(#${gid})" stroke="none"/>`;
+    };
+
+    for (const d of filledData) {
+      const above = d.v >= baseline;
+      if (segAbove === null) {
+        segAbove = above;
+        segStart = d.ms;
+        segPath  = `M${_toX(d.ms, W).toFixed(1)},${toY(d.v).toFixed(1)} `;
+      } else if (above !== segAbove) {
+        flushArea(segAbove, d.ms);
+        segAbove = above;
+        segStart = d.ms;
+        segPath  = `M${_toX(d.ms, W).toFixed(1)},${toY(baseline).toFixed(1)} L${_toX(d.ms, W).toFixed(1)},${toY(d.v).toFixed(1)} `;
+      } else {
+        segPath += `L${_toX(d.ms, W).toFixed(1)},${toY(d.v).toFixed(1)} `;
+      }
+    }
+    if (filledData.length) flushArea(segAbove, filledData[filledData.length - 1].ms);
+
+    // 마지막 구간 색상 = lastVal 기준
+    const lineColor = lastVal >= baseline ? COLOR_GREEN : COLOR_RED;
+    const gradId    = `vc-grad-${pane}`;
     const nowMs  = Date.now();
     const nowX   = _toX(nowMs, W).toFixed(1);
     const nowLine = (nowMs >= _axisStartMs && nowMs <= _axisEndMs)
@@ -521,19 +561,12 @@ function _renderPane(pane) {
 
     chartSvg.setAttribute('width', W);
     chartSvg.innerHTML = `
-      <defs>
-        <linearGradient id="${gradId}" x1="0" y1="${lastY}" x2="0" y2="${baseY}"
-                        gradientUnits="userSpaceOnUse">
-          <stop offset="0%"   stop-color="${lineColor}" stop-opacity="0.22"/>
-          <stop offset="100%" stop-color="${lineColor}" stop-opacity="0.02"/>
-        </linearGradient>
-      </defs>
       <rect width="${W}" height="${PANE_H}" fill="transparent"/>
       ${_buildVGridLines(W, PANE_H)}
       <line x1="0" y1="${baseY}" x2="${W}" y2="${baseY}"
             stroke="#f59e0b" stroke-width="1" stroke-dasharray="4,3" opacity="0.55"/>
       ${nowLine}
-      <path d="${areaPath}" fill="url(#${gradId})" stroke="none"/>
+      ${areaSvg}
       ${linePathsSvg}
       <circle cx="${lastX}" cy="${lastY}" r="3"
               fill="${lineColor}" stroke="#0d1117" stroke-width="1.5"/>
@@ -692,7 +725,7 @@ function _buildVGridLines(W, h) {
     const ms = _etHMtoUtcMs(hr, 0);
     const x  = _toX(ms, W).toFixed(1);
     lines += `<line x1="${x}" y1="0" x2="${x}" y2="${h}"
-                    stroke="#ffffff" stroke-width="0.3" opacity="0.08"/>`;
+                    stroke="#ffffff" stroke-width="0.8" opacity="0.15"/>`;
   }
   // 개장시간 파란 점선
   const ox = _toX(openMs, W).toFixed(1);
