@@ -15,12 +15,4 @@ database_id = "35b4574c-3e3e-4d85-b12d-7cf857414db7"
 RAILWAY_URL = "https://dexboard-production.up.railway.app"
 YAHOO_BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
 
-[triggers]
-crons = [
-  "0 13 * * 1-5",
-  "*/1 13-20 * * 1-5",
-  "*/15 13-20 * * 1-5",
-  "30 20 * * 1-5",
-  "*/3 20-23 * * 1-5",
-  "*/3 4-13 * * 1-5"
-]
+# 크론 트리거 제거 — Railway setInterval로 대체

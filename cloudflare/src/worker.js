@@ -364,61 +364,13 @@ export default {
     return json({ error: "Not found" }, 404, corsHeaders);
   },
 
-  // ─────────────────────────────────────────
-  // Scheduled cron handler
-  // ─────────────────────────────────────────
-  async scheduled(event, env, ctx) {
-    const cron = event.cron;
-    console.log(`[cron] ${cron} fired at ${new Date().toISOString()}`);
-
-    if (cron === "0 13 * * 1-5") {
-      ctx.waitUntil(snapshotOpen(env));
-      return;
-    }
-
-    if (cron === "*/15 13-20 * * 1-5") {
-      ctx.waitUntil(triggerRailway(env));
-      return;
-    }
-
-    // 장 마감 후 스크리너 수집 — Railway /collect-screener 트리거
-    if (cron === "30 20 * * 1-5") {
-      ctx.waitUntil(triggerScreenerCollect(env));
-      return;
-    }
-
-    ctx.waitUntil(fetchSnapshot(env));
-  },
 };
 
-// ─────────────────────────────────────────────────────────────────
-// fetchSnapshot – SPY + VIX 모두 Yahoo Finance에서 가져와 KV 저장
-// 크론: 정규장 1분 / 프리·애프터 3분 / 마감 없음
-// ─────────────────────────────────────────────────────────────────
-async function fetchSnapshot(env) {
-  try {
-    const [spy, vix] = await Promise.all([
-      fetchSPY(env),
-      fetchVIX(env),
-    ]);
+// fetchSnapshot → Railway setInterval로 이전됨
 
-    const current = await env.DEX_KV.get("snapshot:1min", { type: "json" });
-    if (current) {
-      await env.DEX_KV.put("snapshot:prev", JSON.stringify(current));
-    }
-
-    const snapshot = { spy, vix, ts: new Date().toISOString() };
-    await env.DEX_KV.put("snapshot:1min", JSON.stringify(snapshot));
-    console.log(`[snapshot] SPY=${spy.price} (${spy.changePct}%) VIX=${vix.price} (${vix.changePct}%)`);
-  } catch (e) {
-    console.error("[snapshot] error:", e.message);
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────
-// snapshotOpen
-// ─────────────────────────────────────────────────────────────────
-async function snapshotOpen(env) {
+/* snapshotOpen, triggerRailway, fetchSPY, fetchVIX, triggerScreenerCollect
+   → Railway setInterval로 이전됨 */
+async function snapshotOpen_UNUSED(env) {
   try {
     const snapshot = await env.DEX_KV.get("snapshot:1min", { type: "json" });
     if (!snapshot) { console.warn("[snapshotOpen] No snapshot:1min yet"); return; }
