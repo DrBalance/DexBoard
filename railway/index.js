@@ -16,14 +16,8 @@ const CF_KV_SECRET  = process.env.CF_KV_SECRET  || "";
 const GEMINI_URL =
   "https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent";
 
-
-process.on('uncaughtException', (err) => {
-  console.error('[CRASH]', err.stack || err.message);
-  process.exit(1);
-});
-process.on('unhandledRejection', (reason) => {
-  console.error('[CRASH]', reason?.stack || reason);
-  process.exit(1);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`DexBoard Railway service listening on port ${PORT}`);
 });
 
 
