@@ -2,8 +2,6 @@
 // Runs on Railway: fetch CBOE → filter → Black-Scholes → DEX/GEX/Vanna/Charm → CF KV
 // v2: 개별종목 스크리너 수집 엔진 추가
 
-import fetch from "node-fetch";
-
 // ─────────────────────────────────────────────────────────────────
 // Environment
 // ─────────────────────────────────────────────────────────────────
