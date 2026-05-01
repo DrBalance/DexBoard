@@ -1,5 +1,6 @@
 // DexBoard – vanna_analyzer.js
 // Runs on Railway: fetch CBOE → filter → Black-Scholes → DEX/GEX/Vanna/Charm → CF KV
+// v2: 개별종목 스크리너 수집 엔진 추가
 
 import fetch from "node-fetch";
 
@@ -76,6 +77,12 @@ function _etDateFallback() {
   return result;
 }
 
+// 오늘 ET 날짜 (UTC 기준 ET 변환)
+export function getTodayET() {
+  const nowET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+  return _formatDate(nowET);
+}
+
 // ─────────────────────────────────────────────────────────────────
 // Black-Scholes helpers
 // ─────────────────────────────────────────────────────────────────
@@ -107,9 +114,7 @@ export function calcGreeks(spot, strike, dte, iv, r = 0.05) {
 
   const delta = Nd1;
   const gamma = phi / (spot * iv * sqrtT);
-  // Vanna: 예전 공식과 동일 — nd1 * (d2/sigma), spot은 밖에서 곱함
   const vanna = phi * d2 / iv;
-  // Charm: 예전 공식과 동일
   const charmRaw = -phi * (r / (iv * sqrtT) - d2 / (2 * T));
   const charm = isFinite(charmRaw) ? charmRaw : 0;
 
@@ -134,7 +139,7 @@ export function parseOption(optionStr) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// classifyExpiry — nextTradingDate 날짜 직접 비교
+// classifyExpiry
 // ─────────────────────────────────────────────────────────────────
 export function classifyExpiry(dte, expiry, nextTradingDate) {
   if (expiry === nextTradingDate) return "0dte";
@@ -144,7 +149,7 @@ export function classifyExpiry(dte, expiry, nextTradingDate) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Filter options
+// Filter options (SPY 0DTE 포함 필터)
 // ─────────────────────────────────────────────────────────────────
 export function filterOptions(options, nextTradingDate) {
   return options.filter((o) => {
@@ -160,12 +165,28 @@ export function filterOptions(options, nextTradingDate) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Fetch CBOE option chain
+// Screener용 필터 (60DTE 이내, OI > 0)
 // ─────────────────────────────────────────────────────────────────
-async function fetchCBOE() {
-  const url = `${CBOE_BASE}/SPY.json`;
-  const res = await fetch(url, { headers: { "User-Agent": "DexBoard/1.0" } });
-  if (!res.ok) throw new Error(`CBOE fetch failed: ${res.status}`);
+export function filterOptionsScreener(options) {
+  return options.filter((o) => {
+    const parsed = parseOption(o.option);
+    if (!parsed) return false;
+    if (parsed.dte < 0 || parsed.dte > 60) return false;
+    if (o.open_interest <= 0) return false;
+    return true;
+  });
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Fetch CBOE option chain (단일 심볼)
+// ─────────────────────────────────────────────────────────────────
+export async function fetchCBOESymbol(symbol) {
+  const url = `${CBOE_BASE}/${symbol}.json`;
+  const res = await fetch(url, {
+    headers: { "User-Agent": "DexBoard/1.0" },
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!res.ok) throw new Error(`CBOE fetch failed for ${symbol}: ${res.status}`);
   return res.json();
 }
 
@@ -196,8 +217,230 @@ function sum(arr, field) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Main: calculateAndStore
+// 개별 종목 옵션 집계 — 만기일별 DEX/GEX/PCR/IV스큐
 // ─────────────────────────────────────────────────────────────────
+export function aggregateByExpiry(options, spot) {
+  // 필터: 60DTE 이내, OI > 0
+  const filtered = filterOptionsScreener(options);
+
+  // 만기별 strike 맵
+  const expiryMap = {};
+
+  for (const o of filtered) {
+    const parsed = parseOption(o.option);
+    if (!parsed) continue;
+    const { strike, dte, type, expiry } = parsed;
+
+    if (!expiryMap[expiry]) {
+      expiryMap[expiry] = { dte, expiry, strikes: {} };
+    }
+    if (!expiryMap[expiry].strikes[strike]) {
+      expiryMap[expiry].strikes[strike] = {
+        strike, dte, expiry,
+        callOI: 0, putOI: 0,
+        callVol: 0, putVol: 0,
+        callIV: 0, putIV: 0,
+        callIVCount: 0, putIVCount: 0,
+      };
+    }
+
+    const s = expiryMap[expiry].strikes[strike];
+    const oi  = o.open_interest || 0;
+    const vol = o.volume        || 0;
+
+    if (type === "C") {
+      s.callOI  += oi;
+      s.callVol += vol;
+      if (o.iv > 0) { s.callIV += o.iv; s.callIVCount++; }
+    } else {
+      s.putOI  += oi;
+      s.putVol += vol;
+      if (o.iv > 0) { s.putIV += o.iv; s.putIVCount++; }
+    }
+  }
+
+  // 만기별 집계
+  const results = [];
+
+  for (const [expiry, em] of Object.entries(expiryMap)) {
+    const strikes = Object.values(em.strikes);
+    const { dte } = em;
+
+    // ATM 스트라이크 결정
+    const atmStrike = strikes.reduce((best, s) => {
+      return Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best;
+    }, strikes[0]);
+    if (!atmStrike) continue;
+
+    const atmCallIV = atmStrike.callIVCount > 0 ? atmStrike.callIV / atmStrike.callIVCount : 0;
+    const atmPutIV  = atmStrike.putIVCount  > 0 ? atmStrike.putIV  / atmStrike.putIVCount  : 0;
+    const atmIV     = (atmCallIV + atmPutIV) / 2 || 0;
+    const ivSkew    = atmIV > 0 ? (atmCallIV - atmPutIV) / atmIV : 0;
+
+    // OTM IV (ATM±5%)
+    const otmRange = spot * 0.05;
+    const otmCallStrikes = strikes.filter(s => s.strike > spot && s.strike <= spot + otmRange);
+    const otmPutStrikes  = strikes.filter(s => s.strike < spot && s.strike >= spot - otmRange);
+
+    const avgOTMCallIV = _avgIV(otmCallStrikes, "call");
+    const avgOTMPutIV  = _avgIV(otmPutStrikes,  "put");
+
+    // OI/Volume 집계
+    const callOI  = strikes.reduce((s, r) => s + r.callOI,  0);
+    const putOI   = strikes.reduce((s, r) => s + r.putOI,   0);
+    const callVol = strikes.reduce((s, r) => s + r.callVol, 0);
+    const putVol  = strikes.reduce((s, r) => s + r.putVol,  0);
+
+    const pcrOI  = callOI  > 0 ? putOI  / callOI  : null;
+    const pcrVol = callVol > 0 ? putVol / callVol : null;
+
+    // ATM±5% 풋 OI 집중도
+    const atmPutRange  = spot * 0.05;
+    const atmPutOI     = strikes
+      .filter(s => Math.abs(s.strike - spot) <= atmPutRange)
+      .reduce((acc, s) => acc + s.putOI, 0);
+    const atmPutRatio  = putOI > 0 ? atmPutOI / putOI : 0;
+
+    // Greeks 합산 (DEX/GEX/Vanna/Charm)
+    let dex = 0, gex = 0, vanna = 0, charm = 0;
+
+    for (const s of strikes) {
+      const iv = _strikeAvgIV(s);
+      if (iv <= 0) continue;
+      const dteForGreeks = dte === 0 ? 0.001 : dte;
+      const g = calcGreeks(spot, s.strike, dteForGreeks, iv);
+      if (!g) continue;
+
+      const netOI = s.callOI - s.putOI;
+      dex   += (g.delta * s.callOI * 100 - g.delta * s.putOI * 100) / 1e6;
+      gex   += netOI * g.gamma * 100 * spot / 1e6;
+      vanna += g.vanna * netOI * 100 * spot / 1e6;
+      charm += g.charm * netOI * 100 / 1e6;
+    }
+
+    results.push({
+      expiry_date:      expiry,
+      dte,
+      call_oi:          callOI,
+      put_oi:           putOI,
+      call_vol:         callVol,
+      put_vol:          putVol,
+      pcr_oi:           pcrOI  != null ? +pcrOI.toFixed(4)  : null,
+      pcr_vol:          pcrVol != null ? +pcrVol.toFixed(4) : null,
+      iv_skew:          +ivSkew.toFixed(4),
+      atm_iv:           atmIV > 0 ? +atmIV.toFixed(4) : null,
+      otm_call_iv:      avgOTMCallIV > 0 ? +avgOTMCallIV.toFixed(4) : null,
+      otm_put_iv:       avgOTMPutIV  > 0 ? +avgOTMPutIV.toFixed(4)  : null,
+      dex:              +dex.toFixed(6),
+      gex:              +gex.toFixed(6),
+      vanna:            +vanna.toFixed(6),
+      charm:            +charm.toFixed(6),
+      atm_put_oi:       atmPutOI,
+      atm_put_oi_ratio: +atmPutRatio.toFixed(4),
+    });
+  }
+
+  return results.sort((a, b) => a.dte - b.dte);
+}
+
+function _avgIV(strikes, type) {
+  const vals = strikes
+    .map(s => type === "call"
+      ? (s.callIVCount > 0 ? s.callIV / s.callIVCount : 0)
+      : (s.putIVCount  > 0 ? s.putIV  / s.putIVCount  : 0))
+    .filter(v => v > 0);
+  return vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : 0;
+}
+
+function _strikeAvgIV(s) {
+  const cIV = s.callIVCount > 0 ? s.callIV / s.callIVCount : 0;
+  const pIV = s.putIVCount  > 0 ? s.putIV  / s.putIVCount  : 0;
+  if (cIV > 0 && pIV > 0) return (cIV + pIV) / 2;
+  return cIV || pIV;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// 스크리너 점수 계산
+// ─────────────────────────────────────────────────────────────────
+export function calcScreenerScore(rows, priceData = {}) {
+  // rows: aggregateByExpiry 결과 (만기별 집계)
+  if (!rows || !rows.length) return null;
+
+  // A. 콜 스큐 지속 (최대 3점)
+  //    이번 수집 기준: iv_skew > 0 (콜 프리미엄) 만기가 몇 개인지
+  const callSkewCount = rows.filter(r => r.iv_skew > 0.01).length;
+  const score_skew_weeks = Math.min(callSkewCount, 3);
+
+  // B. 볼린저 위치 (최대 3점) — priceData에서 bb_position 받음
+  const bb = priceData.bb_position ?? null;
+  const bb_flag = (bb != null && bb < 0) ? "BREAKDOWN" : null;
+  let score_bb = 0;
+  if (bb != null) {
+    if (!bb_flag) {
+      if (bb >= 0.7) score_bb = 3;
+      else if (bb >= 0.4) score_bb = 2;
+      else if (bb >= 0.2) score_bb = 1;
+    }
+  }
+
+  // C. ATM 풋 집중도 (최대 2점)
+  //    가장 가까운 만기의 atm_put_oi_ratio
+  const nearRow = rows[0];  // dte 오름차순이므로 첫 번째가 최근
+  const atmRatio = nearRow?.atm_put_oi_ratio ?? 0;
+  let score_atm_put = 0;
+  if (atmRatio < 0.3) score_atm_put = 2;
+  else if (atmRatio < 0.5) score_atm_put = 1;
+
+  // D. 변동폭 수축 (최대 2점) — priceData에서 vol_squeeze 받음
+  const squeeze = priceData.vol_squeeze ?? null;
+  let score_vol_squeeze = 0;
+  if (squeeze != null) {
+    if (squeeze < 0.7) score_vol_squeeze = 2;
+    else if (squeeze < 0.9) score_vol_squeeze = 1;
+  }
+
+  const total_score = score_skew_weeks + score_bb + score_atm_put + score_vol_squeeze;
+
+  return {
+    score_skew_weeks,
+    score_bb,
+    score_atm_put,
+    score_vol_squeeze,
+    total_score,
+    bb_position: bb,
+    bb_flag,
+    skew_weeks:  callSkewCount,
+    iv_skew:     rows.length ? rows[0].iv_skew : null,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────
+// 단일 종목 수집 + D1 저장 (CF Worker D1 write 엔드포인트 활용)
+// ─────────────────────────────────────────────────────────────────
+export async function collectSymbol(symbol, date) {
+  const raw = await fetchCBOESymbol(symbol);
+  const all = raw?.data?.options ?? [];
+  if (!all.length) throw new Error(`CBOE: ${symbol} 옵션 데이터 없음`);
+
+  const spot = raw?.data?.current_price;
+  if (!spot) throw new Error(`CBOE: ${symbol} 현재가 없음`);
+
+  const rows = aggregateByExpiry(all, spot);
+  if (!rows.length) throw new Error(`${symbol}: 60DTE 이내 데이터 없음`);
+
+  return { symbol, spot, date, rows };
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Main: calculateAndStore (SPY DEX — 기존 로직 유지)
+// ─────────────────────────────────────────────────────────────────
+async function fetchCBOE() {
+  const url = `${CBOE_BASE}/SPY.json`;
+  const res = await fetch(url, { headers: { "User-Agent": "DexBoard/1.0" } });
+  if (!res.ok) throw new Error(`CBOE fetch failed: ${res.status}`);
+  return res.json();
+}
+
 export async function calculateAndStore(spot, vix) {
   // 1. 다음 거래일 날짜 조회
   const nextTradingDate = await getNextTradingDate();
@@ -218,7 +461,6 @@ export async function calculateAndStore(spot, vix) {
   console.log(`Filtered ${filtered.length} / ${all.length} options`);
 
   // 4. 만기별 strike 맵 구성
-  // 구조: expiryMap[expiry][strike] = { callOI, putOI, callVol, putVol, iv, dte, expiry }
   const expiryMap = {};
 
   for (const o of filtered) {
@@ -251,7 +493,7 @@ export async function calculateAndStore(spot, vix) {
     if (o.iv > 0) { s.iv += o.iv; s.ivCount++; }
   }
 
-  // 5. 그룹 분류 + Greeks 계산 (strike별 netOI 방식)
+  // 5. 그룹 분류 + Greeks 계산
   const groups = {
     "0dte":      [],
     "weekly":    [],
@@ -269,7 +511,7 @@ export async function calculateAndStore(spot, vix) {
       const greeks = calcGreeks(spot, strike, dteForGreeks, iv);
       if (!greeks) continue;
 
-      const netOI = callOI - putOI;  // 예전 방식: netOI = callOI - putOI
+      const netOI = callOI - putOI;
 
       groups[group].push({
         strike,
@@ -277,13 +519,9 @@ export async function calculateAndStore(spot, vix) {
         dte,
         callOI,
         putOI,
-        // DEX: Call Delta*OI - Put Delta*OI
         dex:   (greeks.delta * callOI * 100 - greeks.delta * putOI * 100) / 1e6,
-        // GEX: netOI 기반 (예전 방식)
         gex:   netOI * greeks.gamma * 100 * spot / 1e6,
-        // Vanna: 예전 공식 nd1*(d2/sigma)*netOI*100*spot
         vanna: greeks.vanna * netOI * 100 * spot / 1e6,
-        // Charm: 예전 공식 -nd1*(r/(sigma*sqrtT)-d2/(2*T))*netOI*100
         charm: greeks.charm * netOI * 100 / 1e6,
       });
     }
