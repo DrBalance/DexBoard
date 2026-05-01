@@ -28,10 +28,12 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 // ── 레이아웃 상수 ─────────────────────────────────────────
-const Y_W    = 38;   // y축 SVG 고정 너비 (px)
-const PANE_H = 180;  // 각 페인 높이 (px)
-const PAD_T  = 8;    // 상단 여백
-const PAD_B  = 18;   // 하단 여백 (x축 레이블 공간)
+const Y_W     = 38;   // y축 SVG 고정 너비 (px)
+const PANE_H  = 180;  // VIX 페인 높이 (px)
+const VOLD_H  = 200;  // VOLD 페인 높이 (x축 레이블 공간 포함)
+const PAD_T   = 8;    // 상단 여백
+const PAD_B   = 4;    // VIX 하단 여백 (x축 없음)
+const XAXIS_H = 20;   // x축 레이블 영역 높이 (VOLD 페인 하단)
 
 // ── 고정 시간축 ───────────────────────────────────────────
 // ET 04:00 ~ 17:00 = 780분
@@ -161,7 +163,6 @@ export async function initVCChart(containerId, cfApiBase) {
   _buildShell();
   _bindZoomButtons();
   _updateSvgWidth();
-  _applyZoom();
   _render();
   // 당일 VIX 히스토리 복원
   await _restoreVixHistory();
@@ -290,8 +291,8 @@ function _buildShell() {
           ">VIX</span>
         </div>
         <!-- VOLD 페인 레이블 -->
-        <div style="position:relative;height:${PANE_H}px">
-          <svg id="vc-yaxis-vold" width="${Y_W}" height="${PANE_H}"
+        <div style="position:relative;height:${VOLD_H}px">
+          <svg id="vc-yaxis-vold" width="${Y_W}" height="${VOLD_H}"
                style="display:block;overflow:visible"></svg>
           <span style="
             position:absolute;left:2px;top:4px;
@@ -306,7 +307,7 @@ function _buildShell() {
            style="flex:1;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin">
         <div id="vc-inner" style="display:flex;flex-direction:column">
           <svg id="vc-chart-vix"  height="${PANE_H}" style="display:block"></svg>
-          <svg id="vc-chart-vold" height="${PANE_H}" style="display:block"></svg>
+          <svg id="vc-chart-vold" height="${VOLD_H}" style="display:block"></svg>
         </div>
       </div>
 
@@ -317,22 +318,22 @@ function _buildShell() {
 // SVG 너비 계산 및 적용
 //
 // 설계:
-//   SVG는 항상 최대 크기(All 기준)로 한 번만 그림
-//   줌 버튼은 스크롤 컨테이너의 max-width를 조절해
-//   "몇 분치"를 뷰포트에 보여줄지만 결정 → 재렌더 불필요
+//   컨테이너 너비를 zoomMins 분 치로 채우도록 pxPerMin 결정
+//   → SVG 너비 = AXIS_MINS × pxPerMin
+//   줌이 좁을수록 SVG가 커지고 스크롤 범위가 넓어짐
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function _updateSvgWidth() {
   const scrollEl = document.getElementById('vc-scroll');
   const inner    = document.getElementById('vc-inner');
   if (!scrollEl || !inner) return;
 
-  const containerW = (scrollEl.parentElement.clientWidth - Y_W)
-                     || (window.innerWidth - Y_W - 28);
+  const viewW    = scrollEl.clientWidth || (window.innerWidth - Y_W - 28);
+  const zoomMins = ZOOM_LEVELS[_zoomIdx].mins;
 
-  // pxPerMin: All 뷰 기준 (컨테이너에 전체가 딱 맞도록), 최소 PX_PER_MIN_BASE
-  const pxPerMin = Math.max(containerW / AXIS_MINS, PX_PER_MIN_BASE);
+  // 컨테이너 너비를 zoomMins 분으로 채우는 pxPerMin
+  const pxPerMin = Math.max(viewW / zoomMins, PX_PER_MIN_BASE);
 
-  // SVG는 항상 전체 시간축 크기로 고정
+  // SVG 전체 너비 = 전체 시간축(780분) × pxPerMin
   _svgW = Math.round(AXIS_MINS * pxPerMin);
 
   ['vc-chart-vix', 'vc-chart-vold'].forEach(id => {
@@ -340,19 +341,6 @@ function _updateSvgWidth() {
     if (svg) svg.setAttribute('width', _svgW);
   });
   inner.style.width = _svgW + 'px';
-}
-
-// 줌 레벨에 따라 스크롤 컨테이너 max-width 조절 (재렌더 없음)
-function _applyZoom() {
-  const scrollEl = document.getElementById('vc-scroll');
-  if (!scrollEl) return;
-  const zoomMins = ZOOM_LEVELS[_zoomIdx].mins;
-  if (zoomMins >= AXIS_MINS) {
-    scrollEl.style.maxWidth = '';
-  } else {
-    const pxPerMin = _svgW / AXIS_MINS;
-    scrollEl.style.maxWidth = Math.round(zoomMins * pxPerMin) + 'px';
-  }
 }
 
 // 현재 시각 위치로 스크롤
@@ -384,8 +372,9 @@ function _bindZoomButtons() {
       b.style.color      = on ? '#fff' : 'var(--text2,#8b949e)';
     });
 
-    // SVG는 고정, 뷰포트 너비만 조절 후 현재 시각으로 스크롤
-    _applyZoom();
+    // SVG 너비 재계산 → 재렌더 → 현재 시각으로 스크롤
+    _updateSvgWidth();
+    _render();
     requestAnimationFrame(() => _scrollToNow());
   });
 }
@@ -440,8 +429,9 @@ function _renderPane(pane) {
     if (yMin === yMax) { yMin -= 1; yMax += 1; }
   }
   const yRange = yMax - yMin || 1;
-
-  const toY = v => PAD_T + ((yMax - v) / yRange) * (PANE_H - PAD_T - PAD_B);
+  const _pH   = pane === 'vold' ? VOLD_H : PANE_H;
+  const _padB = pane === 'vold' ? XAXIS_H : PAD_B;
+  const toY = v => PAD_T + ((yMax - v) / yRange) * (_pH - PAD_T - _padB);
 
   // ── VOLD: 정규장 시작(09:30 ET) ms ─────────────────────
   const voldStartMs = pane === 'vold'
@@ -508,7 +498,6 @@ function _renderPane(pane) {
     const gradId        = `vc-grad-${pane}`;
     const gradY1        = lineAboveBase ? '0' : '1';
     const gradY2        = lineAboveBase ? '1' : '0';
-    const xTickSvg      = _buildXTicks(W);
     const nowMs  = Date.now();
     const nowX   = _toX(nowMs, W).toFixed(1);
     const nowLine = (nowMs >= _axisStartMs && nowMs <= _axisEndMs)
@@ -528,7 +517,6 @@ function _renderPane(pane) {
       <line x1="0" y1="${baseY}" x2="${W}" y2="${baseY}"
             stroke="#f59e0b" stroke-width="1" stroke-dasharray="4,3" opacity="0.55"/>
       ${nowLine}
-      ${xTickSvg}
       <path d="${areaPath}" fill="url(#${gradId})" stroke="none"/>
       ${linePathsSvg}
       <circle cx="${lastX}" cy="${lastY}" r="3"
@@ -576,28 +564,25 @@ function _renderPane(pane) {
   const gradY1        = lineAboveBase ? '0' : '1';
   const gradY2        = lineAboveBase ? '1' : '0';
 
-  // ── x축 레이블 (VIX 페인에만, 1시간 단위 KST) ─────────
-  const xTickSvg = pane === 'vix' ? _buildXTicks(W) : '';
+  // ── x축 (VOLD 페인 맨 아래) ────────────────────────────
+  const xTickSvg = _buildXTicks(W);
 
   // ── 현재 시각 수직선 ───────────────────────────────────
   const nowMs  = Date.now();
   const nowX   = _toX(nowMs, W).toFixed(1);
   const nowLine = (nowMs >= _axisStartMs && nowMs <= _axisEndMs)
-    ? `<line x1="${nowX}" y1="${PAD_T}" x2="${nowX}" y2="${PANE_H - PAD_B}"
+    ? `<line x1="${nowX}" y1="${PAD_T}" x2="${nowX}" y2="${VOLD_H - XAXIS_H}"
              stroke="#4b5563" stroke-width="1" stroke-dasharray="2,3" opacity="0.5"/>`
     : '';
 
   // ── VOLD: 09:30 구분선 ─────────────────────────────────
-  const voldDivider = (pane === 'vold')
-    ? (() => {
-        const ox = _toX(voldStartMs, W).toFixed(1);
-        return `<line x1="${ox}" y1="${PAD_T}" x2="${ox}" y2="${PANE_H - PAD_B}"
-                      stroke="#374151" stroke-width="1" stroke-dasharray="3,3" opacity="0.6"/>
-                <text x="${ox}" y="${PAD_T + 10}"
-                      font-size="8" font-family="monospace" fill="#6b7280"
-                      text-anchor="start" dx="2">09:30</text>`;
-      })()
-    : '';
+  const ox = _toX(voldStartMs, W).toFixed(1);
+  const voldDivider = `
+    <line x1="${ox}" y1="${PAD_T}" x2="${ox}" y2="${VOLD_H - XAXIS_H}"
+          stroke="#374151" stroke-width="1" stroke-dasharray="3,3" opacity="0.6"/>
+    <text x="${ox}" y="${PAD_T + 10}"
+          font-size="8" font-family="monospace" fill="#6b7280"
+          text-anchor="start" dx="2">09:30</text>`;
 
   // ── SVG 조립 ───────────────────────────────────────────
   chartSvg.setAttribute('width', W);
@@ -609,12 +594,11 @@ function _renderPane(pane) {
       </linearGradient>
     </defs>
 
-    <rect width="${W}" height="${PANE_H}" fill="transparent"/>
+    <rect width="${W}" height="${VOLD_H}" fill="transparent"/>
 
     <!-- 기준선 -->
     <line x1="0" y1="${baseY}" x2="${W}" y2="${baseY}"
-          stroke="${pane === 'vix' ? '#f59e0b' : '#374151'}"
-          stroke-width="1" stroke-dasharray="4,3" opacity="0.55"/>
+          stroke="#374151" stroke-width="1" stroke-dasharray="4,3" opacity="0.55"/>
 
     <!-- 현재 시각 수직선 -->
     ${nowLine}
@@ -622,7 +606,7 @@ function _renderPane(pane) {
     <!-- VOLD 09:30 구분선 -->
     ${voldDivider}
 
-    <!-- x축 눈금 (VIX 페인) -->
+    <!-- x축 눈금 -->
     ${xTickSvg}
 
     <!-- 면적 음영 -->
@@ -638,7 +622,7 @@ function _renderPane(pane) {
             fill="${lineColor}" stroke="#0d1117" stroke-width="1.5"/>
 
     <!-- 현재값 라벨 -->
-    ${_lastLabel(lastX, lastY, pane === 'vix' ? lastVal.toFixed(2) : _fmtVold(lastVal), lineColor, W)}
+    ${_lastLabel(lastX, lastY, _fmtVold(lastVal), lineColor, W)}
   `;
 
   // ── y축 ────────────────────────────────────────────────
@@ -665,7 +649,9 @@ function _maybeScrollToNow() {
 function _renderYAxis(svg, yMin, yMax, baseline, pane) {
   const ticks  = _niceTicks(yMin, yMax, 4);
   const yRange = yMax - yMin || 1;
-  const toY    = v => PAD_T + ((yMax - v) / yRange) * (PANE_H - PAD_T - PAD_B);
+  const pH     = pane === 'vold' ? VOLD_H : PANE_H;
+  const padB   = pane === 'vold' ? XAXIS_H : PAD_B;
+  const toY    = v => PAD_T + ((yMax - v) / yRange) * (pH - PAD_T - padB);
   const fmtFn  = pane === 'vix'
     ? v => v.toFixed(1)
     : v => _fmtVoldShort(v);
@@ -689,7 +675,7 @@ function _renderYAxis(svg, yMin, yMax, baseline, pane) {
   const baseColor  = pane === 'vix' ? '#f59e0b' : '#4b5563';
 
   svg.innerHTML = `
-    <line x1="${Y_W - 1}" y1="${PAD_T}" x2="${Y_W - 1}" y2="${PANE_H - PAD_B}"
+    <line x1="${Y_W - 1}" y1="${PAD_T}" x2="${Y_W - 1}" y2="${pH - padB}"
           stroke="#30363d" stroke-width="1"/>
     ${lines}
     <text x="${Y_W - 3}" y="${baseY}"
@@ -700,23 +686,21 @@ function _renderYAxis(svg, yMin, yMax, baseline, pane) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// x축 눈금 (1시간 단위, KST 표시) — VIX 페인에만
+// x축 눈금 (1시간 단위, KST 표시) — VOLD 페인 맨 아래
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function _buildXTicks(W) {
   const ticks = [];
-  // ET 04:00 ~ 17:00, 1시간 단위
   for (let h = AXIS_START_ET_H; h <= AXIS_END_ET_H; h++) {
     const ms = _etHMtoUtcMs(h, 0);
     ticks.push(ms);
   }
-
   return ticks.map(ms => {
     const x     = _toX(ms, W).toFixed(1);
     const label = _toKstHHMM(ms);
     return `
-      <line x1="${x}" y1="${PANE_H - PAD_B - 4}" x2="${x}" y2="${PANE_H - PAD_B}"
+      <line x1="${x}" y1="${VOLD_H - XAXIS_H}" x2="${x}" y2="${VOLD_H - XAXIS_H + 4}"
             stroke="#374151" stroke-width="0.8"/>
-      <text x="${x}" y="${PANE_H - PAD_B + 11}"
+      <text x="${x}" y="${VOLD_H - XAXIS_H + 14}"
             font-size="9" font-family="monospace" fill="#6b7280"
             text-anchor="middle">${label}</text>
     `;
