@@ -1,8 +1,9 @@
-// DexBoard – Railway entry point v2
-// POST /calculate       → CF cron: CBOE SPY DEX 계산 → CF KV
-// POST /analyze         → Gemini API 분석
+// DexBoard – Railway entry point v3
+// POST /calculate        → CBOE SPY DEX 계산 → CF KV
+// POST /analyze          → Gemini API 분석
 // POST /collect-screener → 개별종목 스크리너 수집 → D1 저장
-// GET  /screener-status → 오늘 수집 여부 확인
+// GET  /screener-status  → 오늘 수집 여부 확인
+// setInterval 스케줄러   → fetchSnapshot (Yahoo→KV), snapshotOpen, triggerScreener
 
 import http from "http";
 import { calculateAndStore, collectSymbol, calcScreenerScore, getTodayET } from "./vanna_analyzer.js";
@@ -541,4 +542,216 @@ const server = http.createServer(async (req, res) => {
 }); */
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`DexBoard Railway service listening on port ${PORT}`);
+  startScheduler();
 });
+
+// ─────────────────────────────────────────────────────────────────
+// 시장 시간 유틸 (ET 기준)
+// ─────────────────────────────────────────────────────────────────
+function getETHour() {
+  const etStr = new Date().toLocaleString("en-US", { timeZone: "America/New_York" });
+  return new Date(etStr).getHours();
+}
+
+function getETDay() {
+  const etStr = new Date().toLocaleString("en-US", { timeZone: "America/New_York" });
+  return new Date(etStr).getDay(); // 0=일, 1=월 ... 5=금, 6=토
+}
+
+function isWeekday() {
+  const day = getETDay();
+  return day >= 1 && day <= 5;
+}
+
+function getMarketSession() {
+  if (!isWeekday()) return 'CLOSED';
+  const h = getETHour();
+  if (h >= 4  && h < 9)  return 'PRE';      // 04:00~08:59
+  if (h === 9)           return 'PRE';      // 09:00~09:29 (분 체크 생략)
+  if (h >= 9  && h < 16) return 'REGULAR';  // 09:30~15:59
+  if (h >= 16 && h < 20) return 'AFTER';    // 16:00~19:59
+  if (h >= 20 && h < 24) return 'AFTER';    // 20:00~23:59
+  return 'CLOSED';
+}
+
+// ─────────────────────────────────────────────────────────────────
+// Yahoo Finance → CF KV 스냅샷 저장
+// ─────────────────────────────────────────────────────────────────
+const YAHOO_BASE = process.env.YAHOO_BASE || 'https://query1.finance.yahoo.com/v8/finance/chart';
+
+async function fetchYahoo(symbol) {
+  const url = `${YAHOO_BASE}/${symbol}?interval=1m&range=1d`;
+  const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  if (!res.ok) throw new Error(`Yahoo ${symbol}: ${res.status}`);
+  const data = await res.json();
+  const result = data?.chart?.result?.[0];
+  if (!result) throw new Error(`Yahoo ${symbol}: no result`);
+  const meta = result.meta;
+  const quotes = result.indicators?.quote?.[0]?.close ?? [];
+  const price = quotes.filter(Boolean).pop();
+  if (!price) throw new Error(`Yahoo ${symbol}: no close data`);
+  const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? null;
+  const change    = prevClose != null ? Math.round((price - prevClose) * 100) / 100 : null;
+  const changePct = prevClose != null ? Math.round((price - prevClose) / prevClose * 10000) / 100 : null;
+  return { price: Math.round(price * 100) / 100, change, changePct };
+}
+
+async function fetchSnapshot() {
+  try {
+    const [spy, vix] = await Promise.all([
+      fetchYahoo('SPY'),
+      fetchYahoo('%5EVIX'),
+    ]);
+    const snapshot = { spy, vix, ts: new Date().toISOString() };
+
+    // CF KV에 저장
+    await fetch(`${CF_WORKER_URL}/kv-write`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-kv-secret': CF_KV_SECRET },
+      body: JSON.stringify({ key: 'snapshot:1min', value: JSON.stringify(snapshot) }),
+      signal: AbortSignal.timeout(5000),
+    });
+    console.log(`[snapshot] SPY=${spy.price} (${spy.changePct}%) VIX=${vix.price} (${vix.changePct}%)`);
+  } catch (e) {
+    console.error('[snapshot] error:', e.message);
+  }
+}
+
+async function saveSnapshotOpen() {
+  try {
+    // 현재 snapshot:1min을 options:spy:open으로 복사
+    const res = await fetch(`${CF_WORKER_URL}/api/snapshot`);
+    if (!res.ok) return;
+    const snap = await res.json();
+    if (!snap?.spy) return;
+    await fetch(`${CF_WORKER_URL}/kv-write`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-kv-secret': CF_KV_SECRET },
+      body: JSON.stringify({ key: 'options:spy:open', value: JSON.stringify({ ...snap, saved_at: new Date().toISOString() }) }),
+      signal: AbortSignal.timeout(5000),
+    });
+    console.log('[snapshotOpen] saved opening snapshot');
+  } catch (e) {
+    console.error('[snapshotOpen] error:', e.message);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// 스케줄러
+// ─────────────────────────────────────────────────────────────────
+function startScheduler() {
+  let lastSession  = null;
+  let lastDexHour  = null;   // 15분 DEX 계산 추적
+  let screenerDone = false;  // 당일 스크리너 수집 여부
+  let openDone     = false;  // 당일 장 시작 스냅샷 여부
+
+  // 매일 자정 플래그 초기화
+  setInterval(() => {
+    const h = getETHour();
+    if (h === 0) { screenerDone = false; openDone = false; }
+  }, 60_000);
+
+  // 1분마다 세션 체크 → 폴링 주기 동적 조정
+  let snapshotTimer = null;
+
+  function scheduleSnapshot() {
+    if (snapshotTimer) clearInterval(snapshotTimer);
+    const session = getMarketSession();
+
+    if (session === 'CLOSED') {
+      console.log('[scheduler] CLOSED — snapshot 중지');
+      snapshotTimer = null;
+      return;
+    }
+
+    const interval = session === 'REGULAR' ? 60_000 : 3 * 60_000;
+    console.log(`[scheduler] ${session} — snapshot ${interval / 1000}초 주기 시작`);
+    fetchSnapshot(); // 즉시 1회 실행
+    snapshotTimer = setInterval(fetchSnapshot, interval);
+  }
+
+  // 세션 변화 감지 (1분마다)
+  setInterval(() => {
+    const session = getMarketSession();
+    const h = getETHour();
+
+    if (session !== lastSession) {
+      console.log(`[scheduler] 세션 변경: ${lastSession} → ${session}`);
+      lastSession = session;
+      scheduleSnapshot();
+
+      // 장 시작(REGULAR 첫 진입) → snapshotOpen
+      if (session === 'REGULAR' && !openDone) {
+        openDone = true;
+        saveSnapshotOpen();
+      }
+
+      // 장 마감(AFTER 첫 진입) → 스크리너 수집
+      if (session === 'AFTER' && !screenerDone) {
+        screenerDone = true;
+        console.log('[scheduler] 장 마감 → 스크리너 수집 트리거');
+        // triggerScreenerCollect는 CF Worker 대신 Railway 직접 POST
+        fetch(`http://localhost:${PORT}/collect-screener`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
+          body: JSON.stringify({ symbols: SCREENER_SYMBOLS, force: false }),
+        }).catch(e => console.error('[scheduler] screener trigger error:', e.message));
+      }
+    }
+
+    // 정규장 중 15분마다 DEX 계산 트리거
+    if (session === 'REGULAR' && h !== lastDexHour && h % 1 === 0) {
+      const now = new Date();
+      const min = now.getMinutes();
+      if (min % 15 === 0) {
+        lastDexHour = h + '_' + min;
+        console.log('[scheduler] 15분 DEX 계산 트리거');
+        fetch(`http://localhost:${PORT}/calculate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
+          body: JSON.stringify({}),
+        }).catch(e => console.error('[scheduler] calculate trigger error:', e.message));
+      }
+    }
+  }, 60_000);
+
+  // 최초 실행
+  lastSession = getMarketSession();
+  scheduleSnapshot();
+}
+
+// ─────────────────────────────────────────────────────────────────
+// 스크리너 심볼 목록
+// ─────────────────────────────────────────────────────────────────
+const SCREENER_SYMBOLS = [
+  { symbol: 'AAPL',  name: 'Apple',            type: 'stock', sector: 'technology',             sector_etf: 'XLK'  },
+  { symbol: 'MSFT',  name: 'Microsoft',         type: 'stock', sector: 'technology',             sector_etf: 'XLK'  },
+  { symbol: 'NVDA',  name: 'NVIDIA',            type: 'stock', sector: 'semiconductors',         sector_etf: 'SOXX' },
+  { symbol: 'AMZN',  name: 'Amazon',            type: 'stock', sector: 'consumer_discretionary', sector_etf: 'XLY'  },
+  { symbol: 'GOOGL', name: 'Alphabet',          type: 'stock', sector: 'communication_services', sector_etf: 'XLC'  },
+  { symbol: 'META',  name: 'Meta',              type: 'stock', sector: 'communication_services', sector_etf: 'XLC'  },
+  { symbol: 'TSLA',  name: 'Tesla',             type: 'stock', sector: 'consumer_discretionary', sector_etf: 'XLY'  },
+  { symbol: 'JPM',   name: 'JPMorgan',          type: 'stock', sector: 'financials',             sector_etf: 'XLF'  },
+  { symbol: 'V',     name: 'Visa',              type: 'stock', sector: 'financials',             sector_etf: 'XLF'  },
+  { symbol: 'UNH',   name: 'UnitedHealth',      type: 'stock', sector: 'health_care',            sector_etf: 'XLV'  },
+  { symbol: 'XOM',   name: 'Exxon',             type: 'stock', sector: 'energy',                 sector_etf: 'XLE'  },
+  { symbol: 'WMT',   name: 'Walmart',           type: 'stock', sector: 'consumer_staples',       sector_etf: 'XLP'  },
+  { symbol: 'MA',    name: 'Mastercard',        type: 'stock', sector: 'financials',             sector_etf: 'XLF'  },
+  { symbol: 'LLY',   name: 'Eli Lilly',         type: 'stock', sector: 'health_care',            sector_etf: 'XLV'  },
+  { symbol: 'AVGO',  name: 'Broadcom',          type: 'stock', sector: 'semiconductors',         sector_etf: 'SOXX' },
+  { symbol: 'AMD',   name: 'AMD',               type: 'stock', sector: 'semiconductors',         sector_etf: 'SOXX' },
+  { symbol: 'COST',  name: 'Costco',            type: 'stock', sector: 'consumer_staples',       sector_etf: 'XLP'  },
+  { symbol: 'NFLX',  name: 'Netflix',           type: 'stock', sector: 'communication_services', sector_etf: 'XLC'  },
+  { symbol: 'CRM',   name: 'Salesforce',        type: 'stock', sector: 'technology',             sector_etf: 'XLK'  },
+  { symbol: 'ORCL',  name: 'Oracle',            type: 'stock', sector: 'technology',             sector_etf: 'XLK'  },
+  { symbol: 'SPY',   name: 'S&P 500 ETF',       type: 'etf',   sector: 'broad_market',           sector_etf: 'SPY'  },
+  { symbol: 'QQQ',   name: 'Nasdaq 100 ETF',    type: 'etf',   sector: 'broad_market',           sector_etf: 'QQQ'  },
+  { symbol: 'IWM',   name: 'Russell 2000 ETF',  type: 'etf',   sector: 'broad_market',           sector_etf: 'IWM'  },
+  { symbol: 'XLK',   name: 'Tech ETF',          type: 'etf',   sector: 'technology',             sector_etf: 'XLK'  },
+  { symbol: 'XLF',   name: 'Finance ETF',       type: 'etf',   sector: 'financials',             sector_etf: 'XLF'  },
+  { symbol: 'XLE',   name: 'Energy ETF',        type: 'etf',   sector: 'energy',                 sector_etf: 'XLE'  },
+  { symbol: 'XLV',   name: 'Health ETF',        type: 'etf',   sector: 'health_care',            sector_etf: 'XLV'  },
+  { symbol: 'SOXX',  name: 'Semi ETF',          type: 'etf',   sector: 'semiconductors',         sector_etf: 'SOXX' },
+  { symbol: 'GLD',   name: 'Gold ETF',          type: 'etf',   sector: 'broad_market',           sector_etf: 'GLD'  },
+  { symbol: 'TLT',   name: '20Y Bond ETF',      type: 'etf',   sector: 'broad_market',           sector_etf: 'TLT'  },
+];
