@@ -452,20 +452,6 @@ function _renderPane(pane) {
   let linePathsSvg = '';
 
   if (pane === 'vix') {
-    /*  ── 1분 단위 보간: 빈 구간은 직전값으로 채움 ──────────
-    const filledData = [];
-    let prevV = null;
-    for (let m = 0; m < AXIS_MINS; m++) {
-      const ms  = _axisStartMs + m * 60_000;
-      const hit = data.find(d => d.ms === ms);
-      if (hit) {
-        prevV = hit.v;
-        filledData.push({ ms, v: hit.v });
-      } else if (prevV !== null) {
-        filledData.push({ ms, v: prevV });
-      }
-    } */
-
     // baseline 위/아래 바뀔 때마다 <path> 를 끊어서 색상 분리
     let seg = '';
     let segFirst = true;
@@ -561,7 +547,7 @@ function _renderPane(pane) {
         segPath += `L${_toX(d.ms, W).toFixed(1)},${py.toFixed(1)} `;
       }
     }
-    //if (filledData.length) flushArea(segAbove, filledData[filledData.length - 1].ms, segYExtreme.toFixed(1));
+    if (data.length) flushArea(segAbove, data[data.length - 1].ms, (segYExtreme ?? parseFloat(baseY)).toFixed(1));
     if (data.length) flushArea(segAbove, data[data.length - 1].ms, (segYExtreme ?? parseFloat(baseY)).toFixed(1));
 
     // 마지막 구간 색상 = lastVal 기준
