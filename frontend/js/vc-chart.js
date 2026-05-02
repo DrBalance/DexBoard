@@ -221,6 +221,8 @@ async function _restoreVixHistory() {
     if (!res.ok) return;
     const data = await res.json();
 
+  console.log('vix-tick response:', data);  // 이 줄 추가
+
     if (data.prevClose != null) {
       _vixPrevClose = data.prevClose;
     }
