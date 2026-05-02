@@ -548,7 +548,6 @@ function _renderPane(pane) {
       }
     }
     if (data.length) flushArea(segAbove, data[data.length - 1].ms, (segYExtreme ?? parseFloat(baseY)).toFixed(1));
-    if (data.length) flushArea(segAbove, data[data.length - 1].ms, (segYExtreme ?? parseFloat(baseY)).toFixed(1));
 
     // 마지막 구간 색상 = lastVal 기준
     const lineColor = lastVal >= baseline ? COLOR_GREEN : COLOR_RED;
