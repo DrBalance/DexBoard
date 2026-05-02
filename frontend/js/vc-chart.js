@@ -308,10 +308,11 @@ function _buildShell() {
            style="flex:1;overflow-x:auto;overflow-y:hidden;scrollbar-width:thin">
         <div id="vc-inner" style="display:flex;flex-direction:column;position:relative">
           <svg id="vc-chart-vix"   height="${PANE_H}"  style="display:block"></svg>
+          <div style="height:1px;background:rgba(255,255,255,0.3)"></div>
           <svg id="vc-chart-vold"  height="${PANE_H}"  style="display:block"></svg>
           <svg id="vc-chart-xaxis" height="${XAXIS_H}" style="display:block"></svg>
           <!-- 세로선 오버레이: VIX+VOLD+xaxis 전체 높이를 커버 -->
-          <svg id="vc-vgrid" height="${PANE_H * 2 + XAXIS_H}"
+          <svg id="vc-vgrid" height="${PANE_H * 2}"
                style="position:absolute;top:0;left:0;pointer-events:none"></svg>
         </div>
       </div>
@@ -752,14 +753,14 @@ function _renderVGrid() {
   const svg = document.getElementById('vc-vgrid');
   if (!svg || !_svgW) return;
   const W = _svgW;
-  const H = PANE_H * 2 + XAXIS_H;
+  const H = PANE_H * 2;
 
   let lines = '';
   for (let hr = AXIS_START_ET_H; hr <= AXIS_END_ET_H; hr++) {
     const ms = _etHMtoUtcMs(hr, 0);
     const x  = _toX(ms, W).toFixed(1);
     lines += `<line x1="${x}" y1="0" x2="${x}" y2="${H}"
-                    stroke="#ffffff" stroke-width="0.8" opacity="0.12"/>`;
+                    stroke="#ffffff" stroke-width="0.8" opacity="0.3"/>`;
   }
   // 개장(09:30 ET) 파란 점선
   const openMs = _etHMtoUtcMs(9, 30);
@@ -829,13 +830,13 @@ function _lastLabel(x, y, label, color, W) {
   const px     = parseFloat(x);
   const py     = parseFloat(y);
   const anchor = px > W - 52 ? 'end' : 'start';
-  const dx     = anchor === 'end' ? -6 : 6;
-  const rectX  = anchor === 'end' ? px + dx - 38 : px + dx;
+  const dx     = anchor === 'end' ? -14 : 14;
+  const rectX  = anchor === 'end' ? px + dx - 46 : px + dx;
   return `
     <rect x="${rectX}" y="${py - 9}" width="38" height="16" rx="3"
           fill="#0d1117" opacity="0.85"/>
     <text x="${rectX + 19}" y="${py}"
-          font-size="10" font-family="monospace" font-weight="600"
+          font-size="13" font-family="monospace" font-weight="600"
           fill="${color}" text-anchor="middle"
           dominant-baseline="middle">${label}</text>
   `;
