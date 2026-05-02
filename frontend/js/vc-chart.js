@@ -221,8 +221,6 @@ async function _restoreVixHistory() {
     if (!res.ok) return;
     const data = await res.json();
 
-  console.log('vix-tick response:', data);  // 이 줄 추가
-
     if (data.prevClose != null) {
       _vixPrevClose = data.prevClose;
     }
@@ -409,12 +407,10 @@ function _renderPane(pane) {
   const data = pane === 'vix' ? _vixData : _voldData;
 
   // ── y 범위 계산 ────────────────────────────────────────
-  //const baseline = pane === 'vix' ? (_vixPrevClose ?? null) : 0;
-  const baseline = pane === 'vix' ? (_vixPrevClose ?? 16.9) : 0;
+  const baseline = pane === 'vix' ? (_vixPrevClose ?? null) : 0;
 
   let yMin, yMax;
-  //if (!data.length || (pane === 'vix' && baseline == null)) {
-  if (!data.length) {
+  if (!data.length || (pane === 'vix' && baseline == null)) {
     // 데이터 없음: 빈 배경 + x축만 그림
     chartSvg.innerHTML = _emptyPane(W, pane);
     _renderYAxis(yaxisSvg, 0, 1, 0, pane);
