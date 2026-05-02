@@ -17,7 +17,7 @@
 
 // ── 레이아웃 상수 (updateHeatmapSpot에서도 참조) ──────────
 const COL_W    = 72;
-const LBL_W    = 30;
+const LBL_W    = 15;
 const ROW_H_SM = 28;
 const ROW_H_LG = 52;
 
