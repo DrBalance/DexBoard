@@ -452,7 +452,7 @@ function _renderPane(pane) {
   let linePathsSvg = '';
 
   if (pane === 'vix') {
-    // ── 1분 단위 보간: 빈 구간은 직전값으로 채움 ──────────
+    /*  ── 1분 단위 보간: 빈 구간은 직전값으로 채움 ──────────
     const filledData = [];
     let prevV = null;
     for (let m = 0; m < AXIS_MINS; m++) {
@@ -464,7 +464,7 @@ function _renderPane(pane) {
       } else if (prevV !== null) {
         filledData.push({ ms, v: prevV });
       }
-    }
+    } */
 
     // baseline 위/아래 바뀔 때마다 <path> 를 끊어서 색상 분리
     let seg = '';
@@ -479,7 +479,7 @@ function _renderPane(pane) {
       }
     };
 
-    for (const d of filledData) {
+    for (const d of data) {
       const x     = _toX(d.ms, W).toFixed(1);
       const y     = toY(d.v).toFixed(1);
       const above = d.v >= baseline;
@@ -499,14 +499,14 @@ function _renderPane(pane) {
     // linePath 는 면적용으로도 필요 — 전체 경로를 단일 string으로 재구성
     let linePath = '';
     let first = true;
-    for (const d of filledData) {
+    for (const d of data) {
       const x = _toX(d.ms, W).toFixed(1);
       const y = toY(d.v).toFixed(1);
       linePath += `${first ? 'M' : 'L'}${x},${y} `;
       first = false;
     }
 
-    const linePoints = filledData;
+    const linePoints = data;
     const firstX   = _toX(linePoints[0].ms, W).toFixed(1);
     const lastX    = _toX(linePoints[linePoints.length - 1].ms, W).toFixed(1);
     const lastY    = toY(lastVal).toFixed(1);
@@ -539,7 +539,7 @@ function _renderPane(pane) {
 
     let segYExtreme = null; // 위 구간=y최솟값(라인높음), 아래 구간=y최댓값(라인낮음)
 
-    for (const d of filledData) {
+    for (const d of data) {
       const above = d.v >= baseline;
       const py    = toY(d.v);
       if (segAbove === null) {
@@ -561,7 +561,8 @@ function _renderPane(pane) {
         segPath += `L${_toX(d.ms, W).toFixed(1)},${py.toFixed(1)} `;
       }
     }
-    if (filledData.length) flushArea(segAbove, filledData[filledData.length - 1].ms, segYExtreme.toFixed(1));
+    //if (filledData.length) flushArea(segAbove, filledData[filledData.length - 1].ms, segYExtreme.toFixed(1));
+    if (data.length) flushArea(segAbove, data[data.length - 1].ms, (segYExtreme ?? parseFloat(baseY)).toFixed(1));
 
     // 마지막 구간 색상 = lastVal 기준
     const lineColor = lastVal >= baseline ? COLOR_GREEN : COLOR_RED;
