@@ -471,6 +471,84 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // ── POST /rescore ────────────────────────────────────────────────
+  // 기존 options_dex + price_indicators 데이터로 점수만 재계산
+  if (req.method === "POST" && req.url === "/rescore") {
+    const auth = req.headers["x-cron-secret"];
+    if (CRON_SECRET && auth !== CRON_SECRET) {
+      res.writeHead(401);
+      return res.end("Unauthorized");
+    }
+
+    try {
+      // Worker에서 원본 데이터 조회
+      const dataRes = await fetch(`${CF_WORKER_URL}/api/rescore-data`, {
+        headers: { "x-cron-secret": CRON_SECRET },
+        signal: AbortSignal.timeout(15000),
+      });
+      if (!dataRes.ok) throw new Error(`rescore-data fetch failed: ${dataRes.status}`);
+      const { dex_date, dex, pi, meta } = await dataRes.json();
+
+      if (!dex?.length) {
+        return sendJSON(res, 200, { ok: false, error: "options_dex 데이터 없음" });
+      }
+
+      // price_indicators를 symbol → priceData Map으로 변환
+      const piMap = new Map();
+      for (const r of pi) {
+        piMap.set(r.symbol, {
+          bb_position: r.bb_position ?? null,
+          vol_squeeze: r.vol_ratio   ?? null,
+        });
+      }
+
+      // meta를 symbol → meta Map으로 변환
+      const metaMap = new Map();
+      for (const r of meta) metaMap.set(r.symbol, r);
+
+      // options_dex를 symbol별로 그룹핑
+      const symbolMap = new Map();
+      for (const row of dex) {
+        if (!symbolMap.has(row.symbol)) symbolMap.set(row.symbol, []);
+        symbolMap.get(row.symbol).push(row);
+      }
+
+      // 심볼별 점수 재계산
+      const scoreRows = [];
+      for (const [symbol, rows] of symbolMap) {
+        const priceData = piMap.get(symbol) ?? {};
+        const m = metaMap.get(symbol) ?? {};
+        const scoreData = calcScreenerScore(rows, priceData);
+        if (scoreData) {
+          scoreRows.push({
+            date:       dex_date,
+            symbol,
+            name:       m.name       ?? symbol,
+            type:       m.type       ?? "stock",
+            sector:     m.sector     ?? null,
+            sector_etf: m.sector_etf ?? null,
+            ...scoreData,
+          });
+        }
+      }
+
+      // screener_scores 업데이트
+      await d1Write("/d1/screener-scores", { rows: scoreRows });
+
+      console.log(`[Rescore] 완료 — ${scoreRows.length}개 종목 점수 갱신 (기준일: ${dex_date})`);
+      return sendJSON(res, 200, {
+        ok:      true,
+        date:    dex_date,
+        count:   scoreRows.length,
+        message: `${scoreRows.length}개 종목 점수 재계산 완료`,
+      });
+
+    } catch (err) {
+      console.error("[Rescore] 실패:", err.message);
+      return sendJSON(res, 500, { ok: false, error: err.message });
+    }
+  }
+
   // ── POST /collect-screener ───────────────────────────────────────
   // body: { symbols: [{symbol, name, type, sector, sector_etf}], force?: boolean }
   if (req.method === "POST" && req.url === "/collect-screener") {
