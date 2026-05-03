@@ -240,6 +240,8 @@ export function aggregateByExpiry(options, spot) {
         callVol: 0, putVol: 0,
         callIV: 0, putIV: 0,
         callIVCount: 0, putIVCount: 0,
+        callTheo: 0, callTheoCount: 0,
+        callDelta: 0, callDeltaCount: 0,
       };
     }
 
@@ -250,7 +252,9 @@ export function aggregateByExpiry(options, spot) {
     if (type === "C") {
       s.callOI  += oi;
       s.callVol += vol;
-      if (o.iv > 0) { s.callIV += o.iv; s.callIVCount++; }
+      if (o.iv > 0)    { s.callIV    += o.iv;    s.callIVCount++;    }
+      if (o.theo  > 0) { s.callTheo  += o.theo;  s.callTheoCount++;  }
+      if (o.delta > 0) { s.callDelta += o.delta; s.callDeltaCount++; }
     } else {
       s.putOI  += oi;
       s.putVol += vol;
@@ -288,6 +292,18 @@ export function aggregateByExpiry(options, spot) {
 
     const avgOTMCallIV = _avgIV(otmCallStrikes, "call");
     const avgOTMPutIV  = _avgIV(otmPutStrikes,  "put");
+
+    // OTM 콜 theo/delta 평균 (ATM+5% 이내 콜 스트라이크)
+    const otmCallTheoVals  = otmCallStrikes
+      .map(s => s.callTheoCount  > 0 ? s.callTheo  / s.callTheoCount  : null)
+      .filter(v => v != null && v > 0);
+    const otmCallDeltaVals = otmCallStrikes
+      .map(s => s.callDeltaCount > 0 ? s.callDelta / s.callDeltaCount : null)
+      .filter(v => v != null && v > 0);
+    const avgOTMCallTheo  = otmCallTheoVals.length
+      ? otmCallTheoVals.reduce((a, b) => a + b, 0) / otmCallTheoVals.length : null;
+    const avgOTMCallDelta = otmCallDeltaVals.length
+      ? otmCallDeltaVals.reduce((a, b) => a + b, 0) / otmCallDeltaVals.length : null;
 
     const callVol = strikes.reduce((s, r) => s + r.callVol, 0);
     const putVol  = strikes.reduce((s, r) => s + r.putVol,  0);
@@ -338,6 +354,8 @@ export function aggregateByExpiry(options, spot) {
       charm:            +charm.toFixed(6),
       atm_put_oi:       atmPutOI,
       atm_put_oi_ratio: +atmPutRatio.toFixed(4),
+      otm_call_theo:    avgOTMCallTheo  != null ? +avgOTMCallTheo.toFixed(4)  : null,
+      otm_call_delta:   avgOTMCallDelta != null ? +avgOTMCallDelta.toFixed(4) : null,
     });
   }
 
