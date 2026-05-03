@@ -434,6 +434,28 @@ const server = http.createServer(async (req, res) => {
     // 백그라운드 수집
     (async () => {
       try {
+        // ── 1. BB 맵 전용 종목 price_indicators 수집
+        try {
+          const bbRes = await fetch(`${CF_WORKER_URL}/api/bb-map-symbols`, {
+            headers: { 'x-cron-secret': CRON_SECRET },
+            signal: AbortSignal.timeout(10000),
+          });
+          if (bbRes.ok) {
+            const bbData = await bbRes.json();
+            const optionSymSet = new Set(symbols.map(s => s.symbol));
+            const bbOnly = (bbData.symbols ?? []).filter(s => !optionSymSet.has(s.symbol));
+
+            console.log(`[Screener] BB 맵 전용 종목 ${bbOnly.length}개 가격 수집`);
+            for (const { symbol: sym } of bbOnly) {
+              await collectPriceIndicators(sym, CF_WORKER_URL, CRON_SECRET);
+              await sleep(200);
+            }
+          }
+        } catch (bbErr) {
+          console.warn('[Screener] BB 맵 수집 실패 (계속 진행):', bbErr.message);
+        }
+
+        // ── 2. 옵션 수집 종목 처리
         const symbolsWithDate = symbols.map(s => ({ ...s, date }));
         const BATCH = 5;
         const allResults = [];
@@ -463,12 +485,18 @@ const server = http.createServer(async (req, res) => {
           if (i + BATCH < symbolsWithDate.length) await sleep(300);
         }
 
-        // D1 저장
+        // ── 3. 옵션 수집 종목 price_indicators 수집
+        console.log(`[Screener] 옵션 종목 ${symbols.length}개 가격 수집`);
+        for (const { symbol: sym } of symbols) {
+          await collectPriceIndicators(sym, CF_WORKER_URL, CRON_SECRET);
+          await sleep(200);
+        }
+
+        // ── 4. D1 저장
         if (allResults.length) {
           console.log(`[Screener] ${allResults.length}개 종목 수집 완료 → D1 저장 시작`);
 
-          // options_dex rows
-          const dexRows = [];
+          const dexRows   = [];
           const scoreRows = [];
 
           for (const { symbol, rows, meta } of allResults) {
@@ -489,8 +517,8 @@ const server = http.createServer(async (req, res) => {
             }
           }
 
-          await d1Write("/d1/options-dex",       { rows: dexRows });
-          await d1Write("/d1/screener-scores",    { rows: scoreRows });
+          await d1Write("/d1/options-dex",    { rows: dexRows });
+          await d1Write("/d1/screener-scores", { rows: scoreRows });
 
           console.log(`[Screener] D1 저장 완료 — DEX: ${dexRows.length}행, Scores: ${scoreRows.length}행`);
         }
@@ -690,12 +718,34 @@ function startScheduler() {
       if (session === 'AFTER' && !screenerDone) {
         screenerDone = true;
         console.log('[scheduler] 장 마감 → 스크리너 수집 트리거');
-        // triggerScreenerCollect는 CF Worker 대신 Railway 직접 POST
-        fetch(`http://localhost:${PORT}/collect-screener`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
-          body: JSON.stringify({ symbols: SCREENER_SYMBOLS, force: false }),
-        }).catch(e => console.error('[scheduler] screener trigger error:', e.message));
+
+        // D1에서 수집 대상 심볼 조회 후 수집 트리거
+        (async () => {
+          try {
+            const symRes = await fetch(`${CF_WORKER_URL}/api/collect-targets`, {
+              headers: { 'x-cron-secret': CRON_SECRET },
+              signal: AbortSignal.timeout(10000),
+            });
+            if (!symRes.ok) throw new Error(`collect-targets: ${symRes.status}`);
+            const symData = await symRes.json();
+            const symbols = symData.symbols ?? [];
+
+            if (!symbols.length) {
+              console.warn('[scheduler] 수집 대상 심볼 없음 — 스크리너 수집 생략');
+              return;
+            }
+
+            console.log(`[scheduler] ${symbols.length}개 심볼 수집 시작`);
+            await fetch(`http://localhost:${PORT}/collect-screener`, {
+              method:  'POST',
+              headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
+              body:    JSON.stringify({ symbols, force: false }),
+              signal:  AbortSignal.timeout(10000),
+            });
+          } catch (e) {
+            console.error('[scheduler] screener trigger error:', e.message);
+          }
+        })();
       }
     }
 
@@ -721,37 +771,5 @@ function startScheduler() {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// 스크리너 심볼 목록
+// 유틸
 // ─────────────────────────────────────────────────────────────────
-const SCREENER_SYMBOLS = [
-  { symbol: 'AAPL',  name: 'Apple',            type: 'stock', sector: 'technology',             sector_etf: 'XLK'  },
-  { symbol: 'MSFT',  name: 'Microsoft',         type: 'stock', sector: 'technology',             sector_etf: 'XLK'  },
-  { symbol: 'NVDA',  name: 'NVIDIA',            type: 'stock', sector: 'semiconductors',         sector_etf: 'SOXX' },
-  { symbol: 'AMZN',  name: 'Amazon',            type: 'stock', sector: 'consumer_discretionary', sector_etf: 'XLY'  },
-  { symbol: 'GOOGL', name: 'Alphabet',          type: 'stock', sector: 'communication_services', sector_etf: 'XLC'  },
-  { symbol: 'META',  name: 'Meta',              type: 'stock', sector: 'communication_services', sector_etf: 'XLC'  },
-  { symbol: 'TSLA',  name: 'Tesla',             type: 'stock', sector: 'consumer_discretionary', sector_etf: 'XLY'  },
-  { symbol: 'JPM',   name: 'JPMorgan',          type: 'stock', sector: 'financials',             sector_etf: 'XLF'  },
-  { symbol: 'V',     name: 'Visa',              type: 'stock', sector: 'financials',             sector_etf: 'XLF'  },
-  { symbol: 'UNH',   name: 'UnitedHealth',      type: 'stock', sector: 'health_care',            sector_etf: 'XLV'  },
-  { symbol: 'XOM',   name: 'Exxon',             type: 'stock', sector: 'energy',                 sector_etf: 'XLE'  },
-  { symbol: 'WMT',   name: 'Walmart',           type: 'stock', sector: 'consumer_staples',       sector_etf: 'XLP'  },
-  { symbol: 'MA',    name: 'Mastercard',        type: 'stock', sector: 'financials',             sector_etf: 'XLF'  },
-  { symbol: 'LLY',   name: 'Eli Lilly',         type: 'stock', sector: 'health_care',            sector_etf: 'XLV'  },
-  { symbol: 'AVGO',  name: 'Broadcom',          type: 'stock', sector: 'semiconductors',         sector_etf: 'SOXX' },
-  { symbol: 'AMD',   name: 'AMD',               type: 'stock', sector: 'semiconductors',         sector_etf: 'SOXX' },
-  { symbol: 'COST',  name: 'Costco',            type: 'stock', sector: 'consumer_staples',       sector_etf: 'XLP'  },
-  { symbol: 'NFLX',  name: 'Netflix',           type: 'stock', sector: 'communication_services', sector_etf: 'XLC'  },
-  { symbol: 'CRM',   name: 'Salesforce',        type: 'stock', sector: 'technology',             sector_etf: 'XLK'  },
-  { symbol: 'ORCL',  name: 'Oracle',            type: 'stock', sector: 'technology',             sector_etf: 'XLK'  },
-  { symbol: 'SPY',   name: 'S&P 500 ETF',       type: 'etf',   sector: 'broad_market',           sector_etf: 'SPY'  },
-  { symbol: 'QQQ',   name: 'Nasdaq 100 ETF',    type: 'etf',   sector: 'broad_market',           sector_etf: 'QQQ'  },
-  { symbol: 'IWM',   name: 'Russell 2000 ETF',  type: 'etf',   sector: 'broad_market',           sector_etf: 'IWM'  },
-  { symbol: 'XLK',   name: 'Tech ETF',          type: 'etf',   sector: 'technology',             sector_etf: 'XLK'  },
-  { symbol: 'XLF',   name: 'Finance ETF',       type: 'etf',   sector: 'financials',             sector_etf: 'XLF'  },
-  { symbol: 'XLE',   name: 'Energy ETF',        type: 'etf',   sector: 'energy',                 sector_etf: 'XLE'  },
-  { symbol: 'XLV',   name: 'Health ETF',        type: 'etf',   sector: 'health_care',            sector_etf: 'XLV'  },
-  { symbol: 'SOXX',  name: 'Semi ETF',          type: 'etf',   sector: 'semiconductors',         sector_etf: 'SOXX' },
-  { symbol: 'GLD',   name: 'Gold ETF',          type: 'etf',   sector: 'broad_market',           sector_etf: 'GLD'  },
-  { symbol: 'TLT',   name: '20Y Bond ETF',      type: 'etf',   sector: 'broad_market',           sector_etf: 'TLT'  },
-];
