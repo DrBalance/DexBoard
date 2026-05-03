@@ -44,43 +44,25 @@ function renderShell() {
 
   <!-- ── 수집 패널 ── -->
   <div class="sc-collect-panel" id="sc-collect-panel">
-    <div class="sc-collect-left">
-      <div class="sc-collect-title">데이터 수집</div>
-      <div class="sc-collect-info" id="sc-collect-info">
-        <span class="sc-status-dot idle" id="sc-status-dot"></span>
-        <span id="sc-collect-msg">마지막 수집 정보 확인 중...</span>
-      </div>
-      <div class="sc-progress-wrap" id="sc-progress-wrap" style="display:none">
-        <div class="sc-progress-track">
-          <div class="sc-progress-fill" id="sc-progress-fill" style="width:0%"></div>
-        </div>
-        <span class="sc-progress-label" id="sc-progress-label">0 / 0</span>
-      </div>
+    <div class="sc-collect-title">딜러 헷지 압력 스크리너</div>
+    <div class="sc-collect-info" id="sc-collect-info">
+      <span class="sc-status-dot idle" id="sc-status-dot"></span>
+      <span id="sc-collect-msg">마지막 수집 정보 확인 중...</span>
     </div>
-    <div class="sc-collect-right">
+    <div class="sc-progress-wrap" id="sc-progress-wrap" style="display:none">
+      <div class="sc-progress-track">
+        <div class="sc-progress-fill" id="sc-progress-fill" style="width:0%"></div>
+      </div>
+      <span class="sc-progress-label" id="sc-progress-label">0 / 0</span>
+    </div>
+    <div class="sc-btn-row">
+      <button class="sc-btn sc-btn-collect" id="sc-collect-btn">▶ 지금 수집</button>
+      <button class="sc-btn sc-btn-force" id="sc-force-btn" style="display:none">↻ 강제 재수집</button>
+      <button class="sc-btn sc-btn-refresh" id="sc-refresh-btn">↻ 새로고침</button>
+      <a href="/admin.html" class="sc-btn sc-btn-settings" style="text-decoration:none">⚙ 설정</a>
       <div class="sc-collect-meta" id="sc-collect-meta"></div>
-      <button class="sc-btn sc-btn-collect" id="sc-collect-btn">
-        ▶ 지금 수집
-      </button>
-      <button class="sc-btn sc-btn-force" id="sc-force-btn" style="display:none">
-        ↻ 강제 재수집
-      </button>
-      <a href="/admin.html" class="sc-btn" style="text-decoration:none;opacity:.7">⚙ 설정</a>
     </div>
-  </div>
-
-  <!-- ── 상단 컨트롤 바 ── -->
-  <div class="screener-top-bar">
-    <div class="screener-title-row">
-      <span class="screener-title">딜러 헷지 압력 스크리너</span>
-      <span class="screener-date" id="sc-date">-</span>
-    </div>
-    <div class="screener-controls">
-      <div class="sc-sector-pills" id="sc-sector-pills">
-        <button class="pill active" data-s="all">전체</button>
-      </div>
-      <button class="screener-run-btn" id="sc-refresh-btn" title="새로고침">↻ 새로고침</button>
-    </div>
+    <span class="screener-date" id="sc-date"></span>
   </div>
 
   <!-- ── 요약 카드 행 ── -->
@@ -142,16 +124,6 @@ function bindEvents() {
 
   // 새로고침
   document.getElementById('sc-refresh-btn')?.addEventListener('click', () => loadScreener());
-
-  // 섹터 필터 pills
-  document.getElementById('sc-sector-pills')?.addEventListener('click', e => {
-    const btn = e.target.closest('.pill');
-    if (!btn) return;
-    document.querySelectorAll('#sc-sector-pills .pill').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    sectorFilter = btn.dataset.s;
-    renderTable();
-  });
 
   // 테이블 정렬
   document.getElementById('sc-tbl')?.addEventListener('click', e => {
@@ -388,7 +360,6 @@ async function loadScreener() {
       document.getElementById('sc-date').textContent = `기준일: ${lastDate}`;
     }
 
-    buildSectorPills(data);
     renderSummary(data);
     showContent();
     renderTable();
@@ -399,49 +370,6 @@ async function loadScreener() {
   } finally {
     isLoading = false;
   }
-}
-
-// ── 섹터 pills 생성
-function buildSectorPills(data) {
-  const sectors = [...new Set(data.map(r => r.sector).filter(Boolean))].sort();
-  const el = document.getElementById('sc-sector-pills');
-  if (!el) return;
-
-  el.innerHTML = `<button class="pill${sectorFilter === 'all' ? ' active' : ''}" data-s="all">전체</button>` +
-    sectors.map(s => {
-      const label = sectorShortName(s);
-      return `<button class="pill${sectorFilter === s ? ' active' : ''}" data-s="${s}">${label}</button>`;
-    }).join('');
-
-  // pills 이벤트 재바인딩
-  el.addEventListener('click', e => {
-    const btn = e.target.closest('.pill');
-    if (!btn) return;
-    el.querySelectorAll('.pill').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    sectorFilter = btn.dataset.s;
-    renderTable();
-  });
-}
-
-function sectorShortName(sector) {
-  const map = {
-    technology:              'Tech',
-    energy:                  'Energy',
-    financials:              'Finance',
-    health_care:             'Health',
-    utilities:               'Util',
-    industrials:             'Indust',
-    materials:               'Mater',
-    consumer_discretionary:  'Disc',
-    consumer_staples:        'Staple',
-    real_estate:             'REIT',
-    communication_services:  'Comm',
-    broad_market:            'Broad',
-    semiconductors:          'Semi',
-    software:                'SW',
-  };
-  return map[sector] || sector;
 }
 
 // ── 요약 카드
