@@ -103,7 +103,7 @@ async function collectPriceIndicators(symbol, cfWorkerUrl, cronSecret) {
     });
     if (!writeRes.ok) throw new Error(`D1 write failed: ${writeRes.status}`);
 
-    return { symbol, close, bbPosition: row.bb_position };
+    return { symbol, close, bbPosition: row.bb_position, volRatio: row.vol_ratio };
   } catch (err) {
     console.error(`[${symbol}] 가격 수집 실패:`, err.message);
     return null;
@@ -581,10 +581,17 @@ const server = http.createServer(async (req, res) => {
           if (i + BATCH < symbolsWithDate.length) await sleep(300);
         }
 
-        // ── 3. 옵션 수집 종목 price_indicators 수집
+        // ── 3. 옵션 수집 종목 price_indicators 수집 (결과를 Map으로 보관)
         console.log(`[Screener] 옵션 종목 ${symbols.length}개 가격 수집`);
+        const priceMap = new Map(); // symbol → { bbPosition, volRatio }
         for (const { symbol: sym } of symbols) {
-          await collectPriceIndicators(sym, CF_WORKER_URL, CRON_SECRET);
+          const pi = await collectPriceIndicators(sym, CF_WORKER_URL, CRON_SECRET);
+          if (pi) {
+            priceMap.set(sym, {
+              bb_position: pi.bbPosition ?? null,
+              vol_squeeze: pi.volRatio   ?? null,
+            });
+          }
           await sleep(200);
         }
 
@@ -599,7 +606,9 @@ const server = http.createServer(async (req, res) => {
             for (const r of rows) {
               dexRows.push({ date, symbol, ...r });
             }
-            const scoreData = calcScreenerScore(rows);
+            // price_indicators에서 수집한 BB/변동성 데이터를 점수 계산에 반영
+            const priceData = priceMap.get(symbol) ?? {};
+            const scoreData = calcScreenerScore(rows, priceData);
             if (scoreData) {
               scoreRows.push({
                 date,
