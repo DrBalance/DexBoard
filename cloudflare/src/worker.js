@@ -407,18 +407,19 @@ export default {
       return json({ ok: true, inserted }, 200, corsHeaders);
     }
 
-    // ── GET /api/rescore-data (Railway → 재평가용 원본 데이터 조회) ──
+  // ── GET /api/rescore-data (Railway → 재평가용 원본 데이터 조회) ──
     if (request.method === "GET" && path === "/api/rescore-data") {
       const secret = request.headers.get("x-cron-secret");
       if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
+
       // options_dex 최신 날짜 기준 전체 조회
       const latestDex = await env.DB.prepare(
         "SELECT MAX(date) as d FROM options_dex"
       ).first();
       const dexDate = latestDex?.d;
-      if (!dexDate) return json({ symbols: [] }, 200, corsHeaders);
+      if (!dexDate) return json({ dex: [], pi: [], meta: [] }, 200, corsHeaders);
 
       const dexRows = await env.DB.prepare(`
         SELECT symbol, expiry_date, dte,
@@ -435,20 +436,15 @@ export default {
         "SELECT MAX(date) as d FROM price_indicators"
       ).first();
       const piDate = latestPI?.d;
-
       const piRows = piDate ? await env.DB.prepare(`
-        SELECT symbol, bb_position, vol_ratio
+        SELECT symbol, bb_position, vol_ratio, close
         FROM price_indicators
         WHERE date = ?
       `).bind(piDate).all() : { results: [] };
 
-      // symbol 목록 및 meta 조회
+      // symbols 메타 조회 (실제 컬럼만: symbol, name, type)
       const metaRows = await env.DB.prepare(`
-        SELECT s.symbol, s.name, s.type, s.sector,
-               sg.sector_etf
-        FROM symbols s
-        LEFT JOIN symbol_groups sg ON s.symbol = sg.symbol
-        GROUP BY s.symbol
+        SELECT symbol, name, type FROM symbols
       `).all();
 
       return json({
