@@ -65,6 +65,15 @@ function renderShell() {
       <button class="sc-btn sc-btn-force" id="sc-force-btn" style="display:none">
         ↻ 강제 재수집
       </button>
+      <a href="/admin.html"
+        style="display:inline-flex;align-items:center;gap:4px;padding:6px 12px;
+               border:1px solid var(--border,#30363d);border-radius:5px;
+               color:var(--text3,#6e7681);font-size:12px;text-decoration:none;
+               background:transparent;cursor:pointer;"
+        onmouseover="this.style.color='var(--text,#e6edf3)';this.style.borderColor='var(--text3,#6e7681)'"
+        onmouseout="this.style.color='var(--text3,#6e7681)';this.style.borderColor='var(--border,#30363d)'">
+        ⚙ 설정
+      </a>
     </div>
   </div>
 
