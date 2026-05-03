@@ -110,9 +110,8 @@ function renderShell() {
             <th class="sc-th sortable" data-col="symbol">종목</th>
             <th class="sc-th">섹터 ETF</th>
             <th class="sc-th sortable" data-col="total_score">총점 ↕</th>
-            <th class="sc-th sortable" data-col="score_skew_weeks">A 스큐</th>
+            <th class="sc-th sortable" data-col="score_skew">A 스큐</th>
             <th class="sc-th sortable" data-col="score_bb">B BB</th>
-            <th class="sc-th sortable" data-col="score_atm_put">C ATM풋</th>
             <th class="sc-th sortable" data-col="score_vol_squeeze">D 변동</th>
             <th class="sc-th sortable" data-col="bb_position">BB위치</th>
             <th class="sc-th sortable" data-col="iv_skew">IV스큐</th>
@@ -530,9 +529,8 @@ function renderTable() {
             <div class="mini-score-fill ${scoreColor}" style="width:${(r.total_score / 10) * 100}%"></div>
           </div>
         </td>
-        <td class="sc-td-sub">${scoreCell(r.score_skew_weeks, 3)}</td>
+        <td class="sc-td-sub">${scoreCell(r.score_skew, 5)}</td>
         <td class="sc-td-sub">${scoreCell(r.score_bb, 3)}</td>
-        <td class="sc-td-sub">${scoreCell(r.score_atm_put, 2)}</td>
         <td class="sc-td-sub">${scoreCell(r.score_vol_squeeze, 2)}</td>
         <td class="sc-td-bb">
           <div class="bb-pos-wrap">
