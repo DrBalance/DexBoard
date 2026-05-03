@@ -18,43 +18,6 @@ let isLoading      = false;
 let lastDate       = null;
 let statusPollTimer = null;
 
-// 종목 목록 (config에서 가져오거나 여기서 정의)
-// 실제 운영 시 config.js의 SCREENER_SYMBOLS 로 분리 권장
-const SYMBOL_LIST = [
-  // ── 대형주
-  { symbol: 'AAPL',  name: 'Apple',           type: 'stock', sector: 'technology',            sector_etf: 'XLK'  },
-  { symbol: 'MSFT',  name: 'Microsoft',        type: 'stock', sector: 'technology',            sector_etf: 'XLK'  },
-  { symbol: 'NVDA',  name: 'NVIDIA',           type: 'stock', sector: 'semiconductors',        sector_etf: 'SOXX' },
-  { symbol: 'AMZN',  name: 'Amazon',           type: 'stock', sector: 'consumer_discretionary',sector_etf: 'XLY'  },
-  { symbol: 'GOOGL', name: 'Alphabet',         type: 'stock', sector: 'communication_services',sector_etf: 'XLC'  },
-  { symbol: 'META',  name: 'Meta',             type: 'stock', sector: 'communication_services',sector_etf: 'XLC'  },
-  { symbol: 'TSLA',  name: 'Tesla',            type: 'stock', sector: 'consumer_discretionary',sector_etf: 'XLY'  },
-  { symbol: 'JPM',   name: 'JPMorgan',         type: 'stock', sector: 'financials',            sector_etf: 'XLF'  },
-  { symbol: 'V',     name: 'Visa',             type: 'stock', sector: 'financials',            sector_etf: 'XLF'  },
-  { symbol: 'UNH',   name: 'UnitedHealth',     type: 'stock', sector: 'health_care',           sector_etf: 'XLV'  },
-  { symbol: 'XOM',   name: 'Exxon',            type: 'stock', sector: 'energy',                sector_etf: 'XLE'  },
-  { symbol: 'WMT',   name: 'Walmart',          type: 'stock', sector: 'consumer_staples',      sector_etf: 'XLP'  },
-  { symbol: 'MA',    name: 'Mastercard',       type: 'stock', sector: 'financials',            sector_etf: 'XLF'  },
-  { symbol: 'LLY',   name: 'Eli Lilly',        type: 'stock', sector: 'health_care',           sector_etf: 'XLV'  },
-  { symbol: 'AVGO',  name: 'Broadcom',         type: 'stock', sector: 'semiconductors',        sector_etf: 'SOXX' },
-  { symbol: 'AMD',   name: 'AMD',              type: 'stock', sector: 'semiconductors',        sector_etf: 'SOXX' },
-  { symbol: 'COST',  name: 'Costco',           type: 'stock', sector: 'consumer_staples',      sector_etf: 'XLP'  },
-  { symbol: 'NFLX',  name: 'Netflix',          type: 'stock', sector: 'communication_services',sector_etf: 'XLC'  },
-  { symbol: 'CRM',   name: 'Salesforce',       type: 'stock', sector: 'technology',            sector_etf: 'XLK'  },
-  { symbol: 'ORCL',  name: 'Oracle',           type: 'stock', sector: 'technology',            sector_etf: 'XLK'  },
-  // ── 섹터 ETF
-  { symbol: 'SPY',   name: 'S&P 500 ETF',      type: 'etf',   sector: 'broad_market',          sector_etf: 'SPY'  },
-  { symbol: 'QQQ',   name: 'Nasdaq 100 ETF',   type: 'etf',   sector: 'broad_market',          sector_etf: 'QQQ'  },
-  { symbol: 'IWM',   name: 'Russell 2000 ETF', type: 'etf',   sector: 'broad_market',          sector_etf: 'IWM'  },
-  { symbol: 'XLK',   name: 'Tech ETF',         type: 'etf',   sector: 'technology',            sector_etf: 'XLK'  },
-  { symbol: 'XLF',   name: 'Finance ETF',      type: 'etf',   sector: 'financials',            sector_etf: 'XLF'  },
-  { symbol: 'XLE',   name: 'Energy ETF',       type: 'etf',   sector: 'energy',                sector_etf: 'XLE'  },
-  { symbol: 'XLV',   name: 'Health ETF',       type: 'etf',   sector: 'health_care',           sector_etf: 'XLV'  },
-  { symbol: 'SOXX',  name: 'Semi ETF',         type: 'etf',   sector: 'semiconductors',        sector_etf: 'SOXX' },
-  { symbol: 'GLD',   name: 'Gold ETF',         type: 'etf',   sector: 'broad_market',          sector_etf: 'GLD'  },
-  { symbol: 'TLT',   name: '20Y Bond ETF',     type: 'etf',   sector: 'broad_market',          sector_etf: 'TLT'  },
-];
-
 // ============================================
 // 진입점
 // ============================================
@@ -224,7 +187,16 @@ async function checkCollectionStatus() {
     updateCollectUI(data);
   } catch (err) {
     console.warn('[screener] status check failed:', err.message);
-    setCollectMsg('상태 확인 실패 — Railway 연결 확인 필요', 'error');
+    setCollectMsg('Railway 연결 실패 — 수집 버튼으로 시작하세요', 'error');
+    // 연결 실패 시에도 수집 버튼은 반드시 표시
+    const collectBtn = document.getElementById('sc-collect-btn');
+    const forceBtn   = document.getElementById('sc-force-btn');
+    if (collectBtn) {
+      collectBtn.style.display = 'inline-flex';
+      collectBtn.disabled      = false;
+      collectBtn.textContent   = '▶ 지금 수집';
+    }
+    if (forceBtn) forceBtn.style.display = 'none';
   }
 }
 
@@ -321,13 +293,27 @@ async function startCollection(force = false) {
   if (btn) { btn.disabled = true; btn.textContent = '요청 중...'; }
 
   try {
+    // D1에서 수집 대상 심볼 목록 조회
+    setCollectMsg('심볼 목록 조회 중...', 'running');
+    const symRes = await fetch(`${CF_API}/api/admin/collect-targets`, {
+      headers: { 'x-admin-secret': CRON_SECRET },
+    });
+    const symData = await symRes.json();
+    const symbols = symData.symbols ?? [];
+
+    if (!symbols.length) {
+      setCollectMsg('수집 대상 심볼이 없습니다. 설정 탭에서 그룹/심볼을 먼저 추가해주세요.', 'error');
+      if (btn) { btn.disabled = false; btn.textContent = force ? '↻ 강제 재수집' : '▶ 지금 수집'; }
+      return;
+    }
+
     const res = await fetch(`${RAILWAY_URL}/collect-screener`, {
       method:  'POST',
       headers: {
         'Content-Type':  'application/json',
         'x-cron-secret': CRON_SECRET,
       },
-      body: JSON.stringify({ symbols: SYMBOL_LIST, force }),
+      body: JSON.stringify({ symbols, force }),
     });
 
     const data = await res.json();
