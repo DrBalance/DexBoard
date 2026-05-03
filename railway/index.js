@@ -48,62 +48,62 @@ async function collectPriceIndicators(symbol, cfWorkerUrl, cronSecret) {
 
     if (candles.length < 20) throw new Error('insufficient_data');
 
-    const today = candles[candles.length - 1].date;
-    const close = candles[candles.length - 1].close;
-    const cls   = candles.map(c => c.close);
+    const cls = candles.map(c => c.close);
 
-    // 볼린저밴드 (20일)
-    const slice  = cls.slice(-20);
-    const sma    = slice.reduce((a, b) => a + b, 0) / 20;
-    const std    = Math.sqrt(slice.reduce((a, b) => a + (b - sma) ** 2, 0) / 20);
-    const bb = {
-      mid:    +sma.toFixed(4),
-      upper1: +(sma + std).toFixed(4),
-      lower1: +(sma - std).toFixed(4),
-      upper2: +(sma + std * 2).toFixed(4),
-      lower2: +(sma - std * 2).toFixed(4),
-    };
+    // 캔들 전체에 대해 BB/ATR 계산 → 전체 행 생성 (INSERT OR IGNORE로 기존 보존)
+    const rows = [];
+    for (let i = 19; i < candles.length; i++) {
+      const { date, close, high, low } = candles[i];
 
-    // ATR
-    const calcATR = (n) => {
-      const s = candles.slice(-n);
-      if (s.length < n) return null;
-      return s.reduce((a, c) => a + (c.high - c.low), 0) / n;
-    };
-    const atr5  = calcATR(5);
-    const atr20 = calcATR(20);
+      // 볼린저밴드 (20일 rolling)
+      const slice = cls.slice(i - 19, i + 1);
+      const sma   = slice.reduce((a, b) => a + b, 0) / 20;
+      const std   = Math.sqrt(slice.reduce((a, b) => a + (b - sma) ** 2, 0) / 20);
+      const upper2 = sma + std * 2;
+      const lower2 = sma - std * 2;
+      const bbRange    = upper2 - lower2;
+      const bbPosition = bbRange > 0 ? (close - lower2) / bbRange : 0.5;
 
-    const bbRange    = bb.upper2 - bb.lower2;
-    const bbPosition = bbRange > 0 ? (close - bb.lower2) / bbRange : 0.5;
+      // ATR (5일/20일) — i 기준 슬라이스
+      const atr = (n) => {
+        if (i < n - 1) return null;
+        const s = candles.slice(i - n + 1, i + 1);
+        return s.reduce((a, c) => a + (c.high - c.low), 0) / n;
+      };
+      const atr5  = atr(5);
+      const atr20 = atr(20);
 
-    const row = {
-      date:        today,
-      symbol,
-      close,
-      bb_mid:      bb.mid,
-      bb_upper1:   bb.upper1,
-      bb_lower1:   bb.lower1,
-      bb_upper2:   bb.upper2,
-      bb_lower2:   bb.lower2,
-      bb_position: +bbPosition.toFixed(4),
-      atr5:        atr5  ? +atr5.toFixed(4)  : null,
-      atr20:       atr20 ? +atr20.toFixed(4) : null,
-      vol_ratio:   (atr5 && atr20) ? +(atr5 / atr20).toFixed(4) : null,
-    };
+      rows.push({
+        date,
+        symbol,
+        close,
+        bb_mid:      +sma.toFixed(4),
+        bb_upper1:   +(sma + std).toFixed(4),
+        bb_lower1:   +(sma - std).toFixed(4),
+        bb_upper2:   +upper2.toFixed(4),
+        bb_lower2:   +lower2.toFixed(4),
+        bb_position: +bbPosition.toFixed(4),
+        atr5:        atr5  ? +atr5.toFixed(4)  : null,
+        atr20:       atr20 ? +atr20.toFixed(4) : null,
+        vol_ratio:   (atr5 && atr20) ? +(atr5 / atr20).toFixed(4) : null,
+      });
+    }
 
-    // CF Worker D1 저장
+    // CF Worker D1 저장 — INSERT OR IGNORE (기존 날짜 데이터 보존, 신규만 추가)
     const writeRes = await fetch(`${cfWorkerUrl}/d1/price-indicators`, {
       method:  'POST',
       headers: {
         'Content-Type':  'application/json',
         'x-cron-secret': cronSecret,
       },
-      body: JSON.stringify({ rows: [row] }),
-      signal: AbortSignal.timeout(10000),
+      body: JSON.stringify({ rows, mode: 'ignore' }),
+      signal: AbortSignal.timeout(15000),
     });
     if (!writeRes.ok) throw new Error(`D1 write failed: ${writeRes.status}`);
 
-    return { symbol, close, bbPosition: row.bb_position, volRatio: row.vol_ratio };
+    // 반환값은 가장 최신 캔들 기준
+    const latest = rows[rows.length - 1];
+    return { symbol, close: latest.close, bbPosition: latest.bb_position, volRatio: latest.vol_ratio };
   } catch (err) {
     console.error(`[${symbol}] 가격 수집 실패:`, err.message);
     return null;
