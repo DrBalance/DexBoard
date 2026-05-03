@@ -407,6 +407,59 @@ export default {
       return json({ ok: true, inserted }, 200, corsHeaders);
     }
 
+    // ── GET /api/rescore-data (Railway → 재평가용 원본 데이터 조회) ──
+    if (request.method === "GET" && path === "/api/rescore-data") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      // options_dex 최신 날짜 기준 전체 조회
+      const latestDex = await env.DB.prepare(
+        "SELECT MAX(date) as d FROM options_dex"
+      ).first();
+      const dexDate = latestDex?.d;
+      if (!dexDate) return json({ symbols: [] }, 200, corsHeaders);
+
+      const dexRows = await env.DB.prepare(`
+        SELECT symbol, expiry_date, dte,
+               call_oi, put_oi, iv_skew, atm_iv,
+               otm_call_iv, otm_put_iv, atm_put_oi_ratio,
+               dex, gex, vanna, charm
+        FROM options_dex
+        WHERE date = ?
+        ORDER BY symbol, dte ASC
+      `).bind(dexDate).all();
+
+      // price_indicators 최신 날짜 기준 조회
+      const latestPI = await env.DB.prepare(
+        "SELECT MAX(date) as d FROM price_indicators"
+      ).first();
+      const piDate = latestPI?.d;
+
+      const piRows = piDate ? await env.DB.prepare(`
+        SELECT symbol, bb_position, vol_ratio
+        FROM price_indicators
+        WHERE date = ?
+      `).bind(piDate).all() : { results: [] };
+
+      // symbol 목록 및 meta 조회
+      const metaRows = await env.DB.prepare(`
+        SELECT s.symbol, s.name, s.type, s.sector,
+               sg.sector_etf
+        FROM symbols s
+        LEFT JOIN symbol_groups sg ON s.symbol = sg.symbol
+        GROUP BY s.symbol
+      `).all();
+
+      return json({
+        dex_date: dexDate,
+        pi_date:  piDate,
+        dex:      dexRows.results  ?? [],
+        pi:       piRows.results   ?? [],
+        meta:     metaRows.results ?? [],
+      }, 200, corsHeaders);
+    }
+
   // ── GET /api/structure/:symbol ─────────────────────────────
   const structMatch = path.match(/^\/api\/structure\/([A-Z0-9.\-]+)$/);
   if (request.method === "GET" && structMatch) {
