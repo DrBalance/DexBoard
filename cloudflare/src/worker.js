@@ -352,8 +352,9 @@ export default {
               call_oi, put_oi, call_vol, put_vol,
               pcr_oi, pcr_vol, iv_skew, atm_iv, otm_call_iv, otm_put_iv,
               dex, gex, vanna, charm,
-              atm_put_oi, atm_put_oi_ratio
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              atm_put_oi, atm_put_oi_ratio,
+              otm_call_theo, otm_call_delta
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
           `).bind(
             r.date, r.symbol, r.expiry_date, r.dte,
             r.call_oi ?? 0, r.put_oi ?? 0, r.call_vol ?? 0, r.put_vol ?? 0,
@@ -362,6 +363,7 @@ export default {
             r.otm_call_iv ?? null, r.otm_put_iv ?? null,
             r.dex ?? null, r.gex ?? null, r.vanna ?? null, r.charm ?? null,
             r.atm_put_oi ?? null, r.atm_put_oi_ratio ?? null,
+            r.otm_call_theo ?? null, r.otm_call_delta ?? null,
           )
         );
         await env.DB.batch(stmts);
