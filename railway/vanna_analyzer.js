@@ -379,60 +379,69 @@ function _strikeAvgIV(s) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// 스크리너 점수 계산
+// 스크리너 점수 계산 (바닥 반등 후보 탐색)
+// A. OTM 콜 베팅 강도 (최대 5점) — 스마트머니 선행 신호
+// B. BB 위치           (최대 3점) — 가격 바닥권 여부
+// D. 변동성 수축       (최대 2점) — 에너지 축적 여부
+// 총점 10점
 // ─────────────────────────────────────────────────────────────────
 export function calcScreenerScore(rows, priceData = {}) {
-  // rows: aggregateByExpiry 결과 (만기별 집계)
   if (!rows || !rows.length) return null;
 
-  // A. 콜 스큐 지속 (최대 3점)
-  //    30DTE 이내 만기에서 iv_skew > 0.05 (의미있는 콜 프리미엄) 만기 수
-  //    원거리 만기는 구조적 콜 스큐가 존재하므로 제외
-  const nearTermRows = rows.filter(r => r.dte <= 30);
-  const callSkewCount = nearTermRows.filter(r => r.iv_skew > 0.05).length;
-  const score_skew_weeks = Math.min(callSkewCount, 3);
+  // A. OTM 콜 베팅 강도 (최대 5점)
+  // 전체 만기 중 OTM 스큐 양수인 만기의 최대 베팅 강도
+  // skew_strength = otm_call_theo × call_oi × 100
+  // OTM 스큐 양수 조건: otm_call_iv > otm_put_iv (단, 둘 다 존재해야 함)
+  let skewStrength = 0;
+  for (const r of rows) {
+    if (
+      r.otm_call_theo != null && r.otm_call_theo > 0 &&
+      r.otm_call_iv != null && r.otm_put_iv != null &&
+      r.otm_call_iv > r.otm_put_iv
+    ) {
+      const strength = r.otm_call_theo * r.call_oi * 100;
+      if (strength > skewStrength) skewStrength = strength;
+    }
+  }
+  let score_skew = 0;
+  if      (skewStrength >= 100_000_000) score_skew = 5;
+  else if (skewStrength >=  20_000_000) score_skew = 4;
+  else if (skewStrength >=   5_000_000) score_skew = 3;
+  else if (skewStrength >=   1_000_000) score_skew = 2;
+  else if (skewStrength >            0) score_skew = 1;
 
-  // B. 볼린저 위치 (최대 3점) — priceData에서 bb_position 받음
-  // 바닥 반등 스크리너: 하단 근처일수록 높은 점수
+  // B. 볼린저 위치 (최대 3점)
   // bb_position: 0=하단2σ, 0.5=중간(SMA), 1=상단2σ, 음수=BREAKDOWN
   const bb = priceData.bb_position ?? null;
   const bb_flag = (bb != null && bb < 0) ? 'BREAKDOWN' : null;
   let score_bb = 0;
   if (bb != null && !bb_flag) {
-    if (bb < 0.2)      score_bb = 3;  // 하단 2σ 극근처 (바닥권)
-    else if (bb < 0.4) score_bb = 2;  // 하단~중간 (반등 초입)
-    else if (bb < 0.8) score_bb = 1;  // 중립 구간
+    if      (bb < 0.2) score_bb = 3;  // 하단 바닥권
+    else if (bb < 0.4) score_bb = 2;  // 반등 초입
+    else if (bb < 0.8) score_bb = 1;  // 중립
     else               score_bb = 0;  // 상단 과열
   }
 
-  // C. ATM 풋 집중도 (최대 2점)
-  //    가장 가까운 만기의 atm_put_oi_ratio
-  const nearRow = rows[0];  // dte 오름차순이므로 첫 번째가 최근
-  const atmRatio = nearRow?.atm_put_oi_ratio ?? 0;
-  let score_atm_put = 0;
-  if (atmRatio < 0.3) score_atm_put = 2;
-  else if (atmRatio < 0.5) score_atm_put = 1;
-
-  // D. 변동폭 수축 (최대 2점) — priceData에서 vol_squeeze 받음
+  // D. 변동성 수축 (최대 2점)
+  // vol_ratio = ATR5 / ATR20: 1 미만이면 최근 변동폭 수축
   const squeeze = priceData.vol_squeeze ?? null;
   let score_vol_squeeze = 0;
   if (squeeze != null) {
-    if (squeeze < 0.7) score_vol_squeeze = 2;
+    if      (squeeze < 0.7) score_vol_squeeze = 2;
     else if (squeeze < 0.9) score_vol_squeeze = 1;
   }
 
-  const total_score = score_skew_weeks + score_bb + score_atm_put + score_vol_squeeze;
+  const total_score = score_skew + score_bb + score_vol_squeeze;
 
   return {
-    score_skew_weeks,
-    score_bb,
-    score_atm_put,
-    score_vol_squeeze,
-    total_score,
-    bb_position: bb,
+    score_skew,          // A항목 점수 (0~5)
+    score_bb,            // B항목 점수 (0~3)
+    score_vol_squeeze,   // D항목 점수 (0~2)
+    total_score,         // 합계 (0~10)
+    skew_strength: skewStrength,  // 베팅 강도 원값
+    bb_position:   bb,
     bb_flag,
-    skew_weeks:  callSkewCount,
-    iv_skew:     rows.length ? rows[0].iv_skew : null,
+    iv_skew: rows.length ? rows[0].iv_skew : null,
   };
 }
 
