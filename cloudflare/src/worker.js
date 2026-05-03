@@ -34,7 +34,7 @@ export default {
     const corsHeaders = {
       "Access-Control-Allow-Origin":  "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, x-kv-secret, x-admin-secret, x-cron-secret",
+      "Access-Control-Allow-Headers": "Content-Type, x-kv-secret, x-admin-secret",
     };
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
@@ -219,6 +219,65 @@ export default {
       } catch {
         return json({ symbol: sym, name: null }, 200, corsHeaders);
       }
+    }
+
+    // ── GET /api/bb-map-symbols (Railway용 — CRON_SECRET 인증) ──
+    if (request.method === "GET" && path === "/api/bb-map-symbols") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      const rows = await env.DB.prepare(
+        "SELECT symbol, name FROM bb_map_symbols WHERE is_active=1 ORDER BY sort_order, symbol"
+      ).all();
+      return json({ symbols: rows.results ?? [] }, 200, corsHeaders);
+    }
+
+    // ── POST /d1/price-indicators (Railway → D1 저장) ────────────
+    if (request.method === "POST" && path === "/d1/price-indicators") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      const { rows } = await request.json();
+      if (!Array.isArray(rows) || !rows.length) {
+        return json({ ok: false, error: "rows 배열 필요" }, 400, corsHeaders);
+      }
+      const stmts = rows.map(r =>
+        env.DB.prepare(`
+          INSERT OR REPLACE INTO price_indicators
+            (date, symbol, close, bb_mid, bb_upper1, bb_lower1,
+             bb_upper2, bb_lower2, bb_position, atr5, atr20, vol_ratio)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+        `).bind(
+          r.date, r.symbol, r.close,
+          r.bb_mid ?? null, r.bb_upper1 ?? null, r.bb_lower1 ?? null,
+          r.bb_upper2 ?? null, r.bb_lower2 ?? null, r.bb_position ?? null,
+          r.atr5 ?? null, r.atr20 ?? null, r.vol_ratio ?? null
+        )
+      );
+      const CHUNK = 50;
+      let inserted = 0;
+      for (let i = 0; i < stmts.length; i += CHUNK) {
+        await env.DB.batch(stmts.slice(i, i + CHUNK));
+        inserted += Math.min(CHUNK, stmts.length - i);
+      }
+      return json({ ok: true, inserted }, 200, corsHeaders);
+    }
+
+    // ── GET /api/collect-targets (CRON_SECRET 인증 — 프론트엔드용) ─
+    if (request.method === "GET" && path === "/api/collect-targets") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      const rows = await env.DB.prepare(`
+        SELECT DISTINCT s.symbol, s.name, s.type
+        FROM symbols s
+        JOIN symbol_groups sg ON s.symbol = sg.symbol
+        ORDER BY s.type DESC, s.symbol
+      `).all();
+      return json({ symbols: rows.results ?? [] }, 200, corsHeaders);
     }
 
     // ── /api/admin/* ────────────────────────────────────────────

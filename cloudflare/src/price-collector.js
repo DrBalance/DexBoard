@@ -61,11 +61,8 @@ export async function fetchPriceData(symbol) {
   return candles;
 }
 
-// ── 지표 계산 + D1 저장
-// ※ apiKey 파라미터 제거 — Yahoo는 키 불필요
-//   screener-v2.js의 collectPriceIndicators(db, symbol, apiKey) 호출을
-//   collectPriceIndicators(db, symbol) 로 변경 필요
-export async function collectPriceIndicators(db, symbol) {
+// ── 지표 계산 + CF Worker D1 저장
+export async function collectPriceIndicators(symbol, cfWorkerUrl, cfKvSecret) {
   try {
     const candles = await fetchPriceData(symbol);
     const closes  = candles.map(c => c.close);
@@ -81,22 +78,35 @@ export async function collectPriceIndicators(db, symbol) {
     const bbRange    = bb.upper2 - bb.lower2;
     const bbPosition = bbRange > 0 ? (close - bb.lower2) / bbRange : 0.5;
 
-    await db.prepare(`
-      INSERT OR REPLACE INTO price_indicators
-        (date, symbol, close,
-         bb_mid, bb_upper1, bb_lower1, bb_upper2, bb_lower2,
-         bb_position, atr5, atr20, vol_ratio)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).bind(
-      today, symbol, close,
-      bb.mid, bb.upper1, bb.lower1, bb.upper2, bb.lower2,
-      +bbPosition.toFixed(4),
-      atr5  ? +atr5.toFixed(4)  : null,
-      atr20 ? +atr20.toFixed(4) : null,
-      (atr5 && atr20) ? +(atr5 / atr20).toFixed(4) : null
-    ).run();
+    const row = {
+      date:        today,
+      symbol,
+      close,
+      bb_mid:      bb.mid,
+      bb_upper1:   bb.upper1,
+      bb_lower1:   bb.lower1,
+      bb_upper2:   bb.upper2,
+      bb_lower2:   bb.lower2,
+      bb_position: +bbPosition.toFixed(4),
+      atr5:        atr5  ? +atr5.toFixed(4)  : null,
+      atr20:       atr20 ? +atr20.toFixed(4) : null,
+      vol_ratio:   (atr5 && atr20) ? +(atr5 / atr20).toFixed(4) : null,
+    };
 
-    return { symbol, close, bbPosition, atr5, atr20 };
+    // CF Worker D1 write
+    const res = await fetch(`${cfWorkerUrl}/d1/price-indicators`, {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'x-cron-secret': cfKvSecret,
+      },
+      body: JSON.stringify({ rows: [row] }),
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (!res.ok) throw new Error(`D1 write failed: ${res.status}`);
+
+    return { symbol, close, bbPosition: row.bb_position, atr5, atr20 };
 
   } catch (err) {
     console.error(`[${symbol}] 가격 수집 실패:`, err.message);
