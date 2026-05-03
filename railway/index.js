@@ -481,7 +481,6 @@ const server = http.createServer(async (req, res) => {
     }
 
     try {
-      // Worker에서 원본 데이터 조회
       const dataRes = await fetch(`${CF_WORKER_URL}/api/rescore-data`, {
         headers: { "x-cron-secret": CRON_SECRET },
         signal: AbortSignal.timeout(15000),
@@ -493,20 +492,21 @@ const server = http.createServer(async (req, res) => {
         return sendJSON(res, 200, { ok: false, error: "options_dex 데이터 없음" });
       }
 
-      // price_indicators를 symbol → priceData Map으로 변환
+      // price_indicators → symbol별 Map
       const piMap = new Map();
       for (const r of pi) {
         piMap.set(r.symbol, {
           bb_position: r.bb_position ?? null,
           vol_squeeze: r.vol_ratio   ?? null,
+          close:       r.close       ?? null,
         });
       }
 
-      // meta를 symbol → meta Map으로 변환
+      // symbols meta → symbol별 Map
       const metaMap = new Map();
       for (const r of meta) metaMap.set(r.symbol, r);
 
-      // options_dex를 symbol별로 그룹핑
+      // options_dex → symbol별 그룹핑
       const symbolMap = new Map();
       for (const row of dex) {
         if (!symbolMap.has(row.symbol)) symbolMap.set(row.symbol, []);
@@ -517,25 +517,19 @@ const server = http.createServer(async (req, res) => {
       const scoreRows = [];
       for (const [symbol, rows] of symbolMap) {
         const priceData = piMap.get(symbol) ?? {};
-        const m = metaMap.get(symbol) ?? {};
         const scoreData = calcScreenerScore(rows, priceData);
         if (scoreData) {
           scoreRows.push({
-            date:       dex_date,
+            date:   dex_date,
             symbol,
-            name:       m.name       ?? symbol,
-            type:       m.type       ?? "stock",
-            sector:     m.sector     ?? null,
-            sector_etf: m.sector_etf ?? null,
+            close:  priceData.close ?? null,
             ...scoreData,
           });
         }
       }
 
-      // screener_scores 업데이트
       await d1Write("/d1/screener-scores", { rows: scoreRows });
-
-      console.log(`[Rescore] 완료 — ${scoreRows.length}개 종목 점수 갱신 (기준일: ${dex_date})`);
+      console.log(`[Rescore] 완료 — ${scoreRows.length}개 종목 (기준일: ${dex_date})`);
       return sendJSON(res, 200, {
         ok:      true,
         date:    dex_date,
