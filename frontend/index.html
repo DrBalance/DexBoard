@@ -12,6 +12,22 @@
 <link rel="stylesheet" href="./css/layout.css">
 <link rel="stylesheet" href="./css/components.css">
 <link rel="stylesheet" href="/css/screener-structure.css">
+<style>
+  .admin-link {
+    color: var(--text3, #6e7681);
+    text-decoration: none;
+    font-size: 12px;
+    padding: 4px 10px;
+    border: 1px solid var(--border, #30363d);
+    border-radius: 5px;
+    margin-right: 8px;
+    transition: color .15s, border-color .15s;
+  }
+  .admin-link:hover {
+    color: var(--text, #e6edf3);
+    border-color: var(--text3, #6e7681);
+  }
+</style>
 </head>
 <body>
 <div id="app">
@@ -28,6 +44,7 @@
     </nav>
 
     <div class="header-right">
+      <a href="/admin.html" class="admin-link" title="설정">⚙ 설정</a>
       <div class="market-badge" id="market-badge">
         <div class="market-dot" id="market-dot"></div>
         <span id="market-label">마감</span>
@@ -304,25 +321,7 @@
 
     <!-- ══ Tab 3: Screener ═══════════════════════════════════ -->
     <div class="tab-panel" id="tab-screener">
-      <div class="card" style="flex:1">
-        <div class="card-header">
-          <span class="card-title">Options Screener</span>
-          <button class="btn btn-ghost" id="screener-refresh">Refresh</button>
-        </div>
-        <div style="overflow-x:auto">
-          <table class="data-table">
-            <thead><tr>
-              <th>Ticker</th><th>Signal</th><th>DEX</th>
-              <th>GEX</th><th>Vanna</th><th>Updated</th><th></th>
-            </tr></thead>
-            <tbody id="screener-tbody">
-              <tr><td colspan="7"><div class="loading">
-                <div class="spinner"></div>Loading…
-              </div></td></tr>
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <!-- screener.js의 initScreener() → renderShell()이 여기를 채움 -->
     </div><!-- /tab-screener -->
 
     <!-- ══ Tab 4: Chart ══════════════════════════════════════ -->
