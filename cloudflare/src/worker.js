@@ -390,17 +390,16 @@ export default {
           env.DB.prepare(`
             INSERT OR REPLACE INTO screener_scores (
               date, symbol,
-              close, bb_position, bb_flag, iv_skew, skew_weeks,
-              score_skew_weeks, score_bb, score_atm_put, score_vol_squeeze,
-              total_score
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+              close, bb_position, bb_flag, iv_skew,
+              score_skew, score_bb, score_vol_squeeze,
+              skew_strength, total_score
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
           `).bind(
             r.date, r.symbol,
             r.close ?? null, r.bb_position ?? null,
-            r.bb_flag ?? null, r.iv_skew ?? null, r.skew_weeks ?? null,
-            r.score_skew_weeks ?? 0, r.score_bb ?? 0,
-            r.score_atm_put ?? 0, r.score_vol_squeeze ?? 0,
-            r.total_score ?? 0,
+            r.bb_flag ?? null, r.iv_skew ?? null,
+            r.score_skew ?? 0, r.score_bb ?? 0, r.score_vol_squeeze ?? 0,
+            r.skew_strength ?? null, r.total_score ?? 0,
           )
         );
         await env.DB.batch(stmts);
