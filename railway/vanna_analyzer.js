@@ -163,13 +163,14 @@ export function filterOptions(options, nextTradingDate) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Screener용 필터 (60DTE 이내, OI > 0)
+// Screener용 필터 (3~60DTE, OI > 0)
+// 0~2DTE는 당일/익일 만기라 스크리너 목적에 무의미하므로 제외
 // ─────────────────────────────────────────────────────────────────
 export function filterOptionsScreener(options) {
   return options.filter((o) => {
     const parsed = parseOption(o.option);
     if (!parsed) return false;
-    if (parsed.dte < 0 || parsed.dte > 60) return false;
+    if (parsed.dte < 3 || parsed.dte > 60) return false;
     if (o.open_interest <= 0) return false;
     return true;
   });
@@ -273,7 +274,12 @@ export function aggregateByExpiry(options, spot) {
     const atmCallIV = atmStrike.callIVCount > 0 ? atmStrike.callIV / atmStrike.callIVCount : 0;
     const atmPutIV  = atmStrike.putIVCount  > 0 ? atmStrike.putIV  / atmStrike.putIVCount  : 0;
     const atmIV     = (atmCallIV + atmPutIV) / 2 || 0;
-    const ivSkew    = atmIV > 0 ? (atmCallIV - atmPutIV) / atmIV : 0;
+
+    // OI 극소 만기(콜+풋 합산 1000 미만)는 iv_skew 신뢰 불가 → 0 처리
+    const callOI  = strikes.reduce((s, r) => s + r.callOI,  0);
+    const putOI   = strikes.reduce((s, r) => s + r.putOI,   0);
+    const totalOI = callOI + putOI;
+    const ivSkew  = (atmIV > 0 && totalOI >= 1000) ? (atmCallIV - atmPutIV) / atmIV : 0;
 
     // OTM IV (ATM±5%)
     const otmRange = spot * 0.05;
@@ -283,9 +289,6 @@ export function aggregateByExpiry(options, spot) {
     const avgOTMCallIV = _avgIV(otmCallStrikes, "call");
     const avgOTMPutIV  = _avgIV(otmPutStrikes,  "put");
 
-    // OI/Volume 집계
-    const callOI  = strikes.reduce((s, r) => s + r.callOI,  0);
-    const putOI   = strikes.reduce((s, r) => s + r.putOI,   0);
     const callVol = strikes.reduce((s, r) => s + r.callVol, 0);
     const putVol  = strikes.reduce((s, r) => s + r.putVol,  0);
 
@@ -365,8 +368,10 @@ export function calcScreenerScore(rows, priceData = {}) {
   if (!rows || !rows.length) return null;
 
   // A. 콜 스큐 지속 (최대 3점)
-  //    이번 수집 기준: iv_skew > 0 (콜 프리미엄) 만기가 몇 개인지
-  const callSkewCount = rows.filter(r => r.iv_skew > 0.01).length;
+  //    30DTE 이내 만기에서 iv_skew > 0.05 (의미있는 콜 프리미엄) 만기 수
+  //    원거리 만기는 구조적 콜 스큐가 존재하므로 제외
+  const nearTermRows = rows.filter(r => r.dte <= 30);
+  const callSkewCount = nearTermRows.filter(r => r.iv_skew > 0.05).length;
   const score_skew_weeks = Math.min(callSkewCount, 3);
 
   // B. 볼린저 위치 (최대 3점) — priceData에서 bb_position 받음
