@@ -231,47 +231,119 @@
 
 .screener-container { padding: 20px 0; }
 
-/* ── 상단 바 */
-.screener-top-bar {
+/* ── 수집 패널 */
+.sc-collect-panel {
+  background: var(--bg2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 18px;
+  margin-bottom: 20px;
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  margin-bottom: 16px;
+  gap: 8px;
 }
-.screener-title-row {
+.sc-collect-title {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--text);
+}
+.sc-collect-info {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text3);
 }
-.screener-title { font-size: 16px; font-weight: 700; color: var(--text); }
-.screener-date  { font-size: 12px; color: var(--text3); }
-.screener-controls {
+.sc-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.sc-status-dot.idle    { background: var(--text3); }
+.sc-status-dot.running { background: var(--green); animation: pulse 1s infinite; }
+.sc-status-dot.error   { background: var(--red); }
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0.3; }
+}
+.sc-progress-wrap {
   display: flex;
   align-items: center;
   gap: 10px;
-  flex-wrap: wrap;
 }
-.sc-sector-pills {
-  display: flex;
-  gap: 6px;
-  flex-wrap: wrap;
+.sc-progress-track {
   flex: 1;
-  min-width: 0;
+  height: 4px;
+  background: var(--bg3);
+  border-radius: 2px;
+  overflow: hidden;
 }
-.screener-run-btn {
-  padding: 5px 14px;
-  border: 1px solid var(--border);
-  background: var(--bg2);
-  color: var(--text3);
+.sc-progress-fill {
+  height: 100%;
+  background: var(--blue);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+.sc-progress-label { font-size: 12px; color: var(--text3); font-family: var(--mono); white-space: nowrap; }
+
+/* ── 버튼 행 */
+.sc-btn-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.sc-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 14px;
   border-radius: 6px;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 600;
   cursor: pointer;
+  border: 1px solid var(--border);
+  background: var(--bg3);
+  color: var(--text2);
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
   white-space: nowrap;
-  transition: color 0.15s, border-color 0.15s;
-  flex-shrink: 0;
+  font-family: var(--font);
 }
-.screener-run-btn:hover { color: var(--blue); border-color: var(--blue); }
+.sc-btn:hover { color: var(--text); border-color: var(--text3); }
+.sc-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.sc-btn-collect {
+  background: var(--blue-dim);
+  border-color: var(--blue-dim);
+  color: var(--blue);
+}
+.sc-btn-collect:hover { background: var(--blue); color: #000; border-color: var(--blue); }
+
+.sc-btn-force {
+  background: rgba(240,136,62,0.12);
+  border-color: rgba(240,136,62,0.3);
+  color: var(--orange);
+}
+.sc-btn-force:hover { background: rgba(240,136,62,0.25); }
+
+.sc-btn-refresh { color: var(--text3); }
+.sc-btn-refresh:hover { color: var(--blue); border-color: var(--blue); }
+
+.sc-btn-settings { color: var(--text3); }
+.sc-btn-settings:hover { color: var(--text); border-color: var(--text3); }
+
+.sc-collect-meta { margin-left: auto; }
+.sc-meta-tag {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+.sc-meta-tag.ok  { background: rgba(63,185,80,0.12); color: var(--green); }
+.sc-meta-tag.err { background: rgba(248,81,73,0.12); color: var(--red); }
+
+.screener-date { font-size: 12px; color: var(--text3); }
 
 /* ── 요약 카드 */
 .screener-summary {
