@@ -34,7 +34,7 @@ export default {
     const corsHeaders = {
       "Access-Control-Allow-Origin":  "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, x-kv-secret, x-admin-secret",
+      "Access-Control-Allow-Headers": "Content-Type, x-kv-secret, x-admin-secret, x-cron-secret",
     };
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
@@ -219,21 +219,6 @@ export default {
       } catch {
         return json({ symbol: sym, name: null }, 200, corsHeaders);
       }
-    }
-
-    // ── GET /api/collect-targets (CRON_SECRET 인증 — 프론트엔드용) ─
-    if (request.method === "GET" && path === "/api/collect-targets") {
-      const secret = request.headers.get("x-cron-secret");
-      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
-        return json({ error: "Unauthorized" }, 401, corsHeaders);
-      }
-      const rows = await env.DB.prepare(`
-        SELECT DISTINCT s.symbol, s.name, s.type
-        FROM symbols s
-        JOIN symbol_groups sg ON s.symbol = sg.symbol
-        ORDER BY s.type DESC, s.symbol
-      `).all();
-      return json({ symbols: rows.results ?? [] }, 200, corsHeaders);
     }
 
     // ── /api/admin/* ────────────────────────────────────────────
