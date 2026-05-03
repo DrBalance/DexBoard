@@ -34,7 +34,7 @@ export default {
     const corsHeaders = {
       "Access-Control-Allow-Origin":  "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, x-kv-secret",
+      "Access-Control-Allow-Headers": "Content-Type, x-kv-secret, x-admin-secret",
     };
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
@@ -184,10 +184,14 @@ export default {
     if (request.method === "GET" && path === "/api/symbols") {
       const q    = url.searchParams.get("q")?.toUpperCase() || "";
       const rows = await env.DB.prepare(`
-        SELECT symbol, name, type, sector FROM symbols
-        WHERE is_active = 1
-          AND (symbol LIKE ? OR name LIKE ?)
-        ORDER BY type DESC, symbol
+        SELECT s.symbol, s.name, s.type,
+          GROUP_CONCAT(g.code) as groups
+        FROM symbols s
+        LEFT JOIN symbol_groups sg ON s.symbol = sg.symbol
+        LEFT JOIN groups g ON sg.group_id = g.id
+        WHERE (s.symbol LIKE ? OR s.name LIKE ?)
+        GROUP BY s.symbol
+        ORDER BY s.type DESC, s.symbol
         LIMIT 20
       `).bind(q + "%", q + "%").all();
       return json({ symbols: rows.results }, 200, corsHeaders);
@@ -201,11 +205,20 @@ export default {
       }
       const sym = url.searchParams.get("symbol");
       if (!sym) return json({ error: "symbol required" }, 400, corsHeaders);
-      const r = await fetch(
-        `https://api.twelvedata.com/quote?symbol=${encodeURIComponent(sym)}&apikey=${env.TWELVE_DATA_KEY}`
-      );
-      const d = await r.json();
-      return json({ symbol: d.symbol, name: d.name || null }, 200, corsHeaders);
+      try {
+        const r = await fetch(
+          `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=1d`,
+          { headers: { "User-Agent": "Mozilla/5.0" }, signal: AbortSignal.timeout(8000) }
+        );
+        if (!r.ok) return json({ symbol: sym, name: null }, 200, corsHeaders);
+        const d    = await r.json();
+        const meta = d?.chart?.result?.[0]?.meta;
+        const name = meta?.longName || meta?.shortName || null;
+        const type = meta?.instrumentType === "ETF" ? "etf" : "stock";
+        return json({ symbol: sym, name, type }, 200, corsHeaders);
+      } catch {
+        return json({ symbol: sym, name: null }, 200, corsHeaders);
+      }
     }
 
     // ── /api/admin/* ────────────────────────────────────────────
@@ -231,23 +244,28 @@ export default {
       return json(rows.results ?? [], 200, corsHeaders);
     }
 
-    // ── GET /api/screener/sector ────────────────────────────────
-    if (request.method === "GET" && path === "/api/screener/sector") {
-      const sector = url.searchParams.get("sector");
-      let targetDate = url.searchParams.get("date");
+    // ── GET /api/screener/group ─────────────────────────────────
+    // ?group=TECH&date=YYYY-MM-DD
+    if (request.method === "GET" && path === "/api/screener/group") {
+      const groupCode = url.searchParams.get("group");
+      let targetDate  = url.searchParams.get("date");
       if (!targetDate) {
         const latest = await env.DB.prepare(
           "SELECT MAX(date) as d FROM screener_scores"
         ).first();
         targetDate = latest?.d;
       }
-      if (!sector)     return json({ error: "sector param required" }, 400, corsHeaders);
-      if (!targetDate) return json([], 200, corsHeaders);
+      if (!groupCode)   return json({ error: "group param required" }, 400, corsHeaders);
+      if (!targetDate)  return json([], 200, corsHeaders);
+
       const rows = await env.DB.prepare(`
-        SELECT * FROM screener_scores
-        WHERE date = ? AND sector = ?
-        ORDER BY total_score DESC
-      `).bind(targetDate, sector).all();
+        SELECT sc.*
+        FROM screener_scores sc
+        JOIN symbol_groups sg ON sc.symbol = sg.symbol
+        JOIN groups g ON sg.group_id = g.id
+        WHERE sc.date = ? AND g.code = ?
+        ORDER BY sc.total_score DESC
+      `).bind(targetDate, groupCode.toUpperCase()).all();
       return json(rows.results ?? [], 200, corsHeaders);
     }
 
@@ -307,14 +325,13 @@ export default {
         const stmts = chunk.map(r =>
           env.DB.prepare(`
             INSERT OR REPLACE INTO screener_scores (
-              date, symbol, name, type, sector, sector_etf,
+              date, symbol,
               close, bb_position, bb_flag, iv_skew, skew_weeks,
               score_skew_weeks, score_bb, score_atm_put, score_vol_squeeze,
-              total_score, updated_at
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'))
+              total_score
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
           `).bind(
-            r.date, r.symbol, r.name ?? null, r.type ?? null,
-            r.sector ?? null, r.sector_etf ?? null,
+            r.date, r.symbol,
             r.close ?? null, r.bb_position ?? null,
             r.bb_flag ?? null, r.iv_skew ?? null, r.skew_weeks ?? null,
             r.score_skew_weeks ?? 0, r.score_bb ?? 0,
@@ -496,40 +513,25 @@ async function fetchVIX(env) {
 // ─────────────────────────────────────────────────────────────────
 // triggerScreenerCollect — 장 마감 후 Railway 스크리너 수집 트리거
 // ─────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────
+// triggerScreenerCollect — 장 마감 후 Railway 스크리너 수집 트리거
+// 심볼 목록을 D1 groups/symbol_groups에서 읽어옴
+// ─────────────────────────────────────────────────────────────────
 async function triggerScreenerCollect(env) {
   try {
-    const SYMBOL_LIST = [
-      { symbol: 'AAPL',  name: 'Apple',            type: 'stock', sector: 'technology',             sector_etf: 'XLK'  },
-      { symbol: 'MSFT',  name: 'Microsoft',         type: 'stock', sector: 'technology',             sector_etf: 'XLK'  },
-      { symbol: 'NVDA',  name: 'NVIDIA',            type: 'stock', sector: 'semiconductors',         sector_etf: 'SOXX' },
-      { symbol: 'AMZN',  name: 'Amazon',            type: 'stock', sector: 'consumer_discretionary', sector_etf: 'XLY'  },
-      { symbol: 'GOOGL', name: 'Alphabet',          type: 'stock', sector: 'communication_services', sector_etf: 'XLC'  },
-      { symbol: 'META',  name: 'Meta',              type: 'stock', sector: 'communication_services', sector_etf: 'XLC'  },
-      { symbol: 'TSLA',  name: 'Tesla',             type: 'stock', sector: 'consumer_discretionary', sector_etf: 'XLY'  },
-      { symbol: 'JPM',   name: 'JPMorgan',          type: 'stock', sector: 'financials',             sector_etf: 'XLF'  },
-      { symbol: 'V',     name: 'Visa',              type: 'stock', sector: 'financials',             sector_etf: 'XLF'  },
-      { symbol: 'UNH',   name: 'UnitedHealth',      type: 'stock', sector: 'health_care',            sector_etf: 'XLV'  },
-      { symbol: 'XOM',   name: 'Exxon',             type: 'stock', sector: 'energy',                 sector_etf: 'XLE'  },
-      { symbol: 'WMT',   name: 'Walmart',           type: 'stock', sector: 'consumer_staples',       sector_etf: 'XLP'  },
-      { symbol: 'MA',    name: 'Mastercard',        type: 'stock', sector: 'financials',             sector_etf: 'XLF'  },
-      { symbol: 'LLY',   name: 'Eli Lilly',         type: 'stock', sector: 'health_care',            sector_etf: 'XLV'  },
-      { symbol: 'AVGO',  name: 'Broadcom',          type: 'stock', sector: 'semiconductors',         sector_etf: 'SOXX' },
-      { symbol: 'AMD',   name: 'AMD',               type: 'stock', sector: 'semiconductors',         sector_etf: 'SOXX' },
-      { symbol: 'COST',  name: 'Costco',            type: 'stock', sector: 'consumer_staples',       sector_etf: 'XLP'  },
-      { symbol: 'NFLX',  name: 'Netflix',           type: 'stock', sector: 'communication_services', sector_etf: 'XLC'  },
-      { symbol: 'CRM',   name: 'Salesforce',        type: 'stock', sector: 'technology',             sector_etf: 'XLK'  },
-      { symbol: 'ORCL',  name: 'Oracle',            type: 'stock', sector: 'technology',             sector_etf: 'XLK'  },
-      { symbol: 'SPY',   name: 'S&P 500 ETF',       type: 'etf',   sector: 'broad_market',           sector_etf: 'SPY'  },
-      { symbol: 'QQQ',   name: 'Nasdaq 100 ETF',    type: 'etf',   sector: 'broad_market',           sector_etf: 'QQQ'  },
-      { symbol: 'IWM',   name: 'Russell 2000 ETF',  type: 'etf',   sector: 'broad_market',           sector_etf: 'IWM'  },
-      { symbol: 'XLK',   name: 'Tech ETF',          type: 'etf',   sector: 'technology',             sector_etf: 'XLK'  },
-      { symbol: 'XLF',   name: 'Finance ETF',       type: 'etf',   sector: 'financials',             sector_etf: 'XLF'  },
-      { symbol: 'XLE',   name: 'Energy ETF',        type: 'etf',   sector: 'energy',                 sector_etf: 'XLE'  },
-      { symbol: 'XLV',   name: 'Health ETF',        type: 'etf',   sector: 'health_care',            sector_etf: 'XLV'  },
-      { symbol: 'SOXX',  name: 'Semi ETF',          type: 'etf',   sector: 'semiconductors',         sector_etf: 'SOXX' },
-      { symbol: 'GLD',   name: 'Gold ETF',          type: 'etf',   sector: 'broad_market',           sector_etf: 'GLD'  },
-      { symbol: 'TLT',   name: '20Y Bond ETF',      type: 'etf',   sector: 'broad_market',           sector_etf: 'TLT'  },
-    ];
+    // D1에서 수집 대상 심볼 조회 (어느 그룹에든 속한 심볼 전체)
+    const rows = await env.DB.prepare(`
+      SELECT DISTINCT s.symbol, s.name, s.type
+      FROM symbols s
+      JOIN symbol_groups sg ON s.symbol = sg.symbol
+      ORDER BY s.type DESC, s.symbol
+    `).all();
+
+    const symbols = rows.results ?? [];
+    if (!symbols.length) {
+      console.warn("[screener-cron] D1에 수집 대상 심볼 없음 — 생략");
+      return;
+    }
 
     const res = await fetch(`${env.RAILWAY_URL}/collect-screener`, {
       method: "POST",
@@ -537,11 +539,11 @@ async function triggerScreenerCollect(env) {
         "Content-Type":  "application/json",
         "x-cron-secret": env.CRON_SECRET || "",
       },
-      body: JSON.stringify({ symbols: SYMBOL_LIST, force: false }),
+      body: JSON.stringify({ symbols, force: false }),
       signal: AbortSignal.timeout(10_000),
     });
     const text = await res.text();
-    console.log(`[screener-cron] ${res.status}: ${text.slice(0, 200)}`);
+    console.log(`[screener-cron] ${symbols.length}종목 → Railway ${res.status}: ${text.slice(0, 200)}`);
   } catch (e) {
     console.error("[screener-cron] error:", e.message);
   }

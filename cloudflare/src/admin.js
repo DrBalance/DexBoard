@@ -1,9 +1,10 @@
 // ============================================
-// admin.js — 관리자 API 핸들러
+// admin.js — 관리자 API 핸들러 (v2)
+// 새 스키마: groups, symbol_groups, bb_map_symbols
 // worker.js에서 import해서 사용
 // ============================================
 
-const TWELVE_BASE = 'https://api.twelvedata.com';
+const YAHOO_BASE = 'https://query1.finance.yahoo.com/v8/finance/chart';
 
 // ── 인증 체크
 function authCheck(request, env) {
@@ -18,47 +19,86 @@ function json(data, status = 200) {
     headers: {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Content-Type, x-admin-secret',
     },
   });
 }
 
 // ============================================
-// 라우터 — worker.js fetch 핸들러에서 호출
+// 라우터
 // ============================================
 export async function handleAdmin(path, request, env) {
   if (!authCheck(request, env)) {
     return json({ error: 'Unauthorized' }, 401);
   }
 
-  // ── GET /api/admin/stats
+  // ── GET  /api/admin/stats
   if (path === '/api/admin/stats' && request.method === 'GET') {
     return handleStats(env);
   }
 
-  // ── GET /api/admin/sectors
-  if (path === '/api/admin/sectors' && request.method === 'GET') {
-    return handleGetSectors(env);
+  // ════════════════════════════════════════
+  // GROUPS
+  // ════════════════════════════════════════
+
+  // ── GET  /api/admin/groups
+  if (path === '/api/admin/groups' && request.method === 'GET') {
+    return handleGetGroups(env);
   }
 
-  // ── POST /api/admin/sectors  (추가)
-  if (path === '/api/admin/sectors' && request.method === 'POST') {
-    return handleAddSector(request, env);
+  // ── POST /api/admin/groups
+  if (path === '/api/admin/groups' && request.method === 'POST') {
+    return handleAddGroup(request, env);
   }
 
-  // ── DELETE /api/admin/sectors/:key
-  const sectorDel = path.match(/^\/api\/admin\/sectors\/(.+)$/);
-  if (sectorDel && request.method === 'DELETE') {
-    return handleDeleteSector(sectorDel[1], env);
+  // ── PATCH /api/admin/groups/:id
+  const groupPatch = path.match(/^\/api\/admin\/groups\/(\d+)$/);
+  if (groupPatch && request.method === 'PATCH') {
+    return handleUpdateGroup(Number(groupPatch[1]), request, env);
   }
 
-  // ── GET /api/admin/symbols
+  // ── DELETE /api/admin/groups/:id
+  const groupDel = path.match(/^\/api\/admin\/groups\/(\d+)$/);
+  if (groupDel && request.method === 'DELETE') {
+    return handleDeleteGroup(Number(groupDel[1]), env);
+  }
+
+  // ── GET  /api/admin/groups/:id/symbols
+  const groupSymsGet = path.match(/^\/api\/admin\/groups\/(\d+)\/symbols$/);
+  if (groupSymsGet && request.method === 'GET') {
+    return handleGetGroupSymbols(Number(groupSymsGet[1]), env);
+  }
+
+  // ── POST /api/admin/groups/:id/symbols
+  const groupSymsPost = path.match(/^\/api\/admin\/groups\/(\d+)\/symbols$/);
+  if (groupSymsPost && request.method === 'POST') {
+    return handleAddGroupSymbol(Number(groupSymsPost[1]), request, env);
+  }
+
+  // ── DELETE /api/admin/groups/:id/symbols/:symbol
+  const groupSymDel = path.match(/^\/api\/admin\/groups\/(\d+)\/symbols\/([A-Z0-9.\-]+)$/);
+  if (groupSymDel && request.method === 'DELETE') {
+    return handleRemoveGroupSymbol(Number(groupSymDel[1]), groupSymDel[2], env);
+  }
+
+  // ════════════════════════════════════════
+  // SYMBOLS
+  // ════════════════════════════════════════
+
+  // ── GET  /api/admin/symbols
   if (path === '/api/admin/symbols' && request.method === 'GET') {
     return handleGetSymbols(env);
   }
 
-  // ── POST /api/admin/symbols  (추가)
+  // ── POST /api/admin/symbols
   if (path === '/api/admin/symbols' && request.method === 'POST') {
     return handleAddSymbol(request, env);
+  }
+
+  // ── PATCH /api/admin/symbols/:sym
+  const symPatch = path.match(/^\/api\/admin\/symbols\/([A-Z0-9.\-]+)$/);
+  if (symPatch && request.method === 'PATCH') {
+    return handleUpdateSymbol(symPatch[1], request, env);
   }
 
   // ── DELETE /api/admin/symbols/:sym
@@ -67,286 +107,474 @@ export async function handleAdmin(path, request, env) {
     return handleDeleteSymbol(symDel[1], env);
   }
 
-  // ── PATCH /api/admin/symbols/:sym  (활성/비활성 토글)
-  const symPatch = path.match(/^\/api\/admin\/symbols\/([A-Z0-9.\-]+)$/);
-  if (symPatch && request.method === 'PATCH') {
-    return handleToggleSymbol(symPatch[1], request, env);
-  }
-
-  // ── POST /api/admin/symbols/refresh  (Twelve Data로 name 갱신)
+  // ── POST /api/admin/symbols/refresh
   if (path === '/api/admin/symbols/refresh' && request.method === 'POST') {
     return handleRefreshSymbols(env);
   }
 
-  // ── GET /api/admin/symbol-etf-map/:sym
-  const mapGet = path.match(/^\/api\/admin\/symbol-etf-map\/([A-Z0-9.\-]+)$/);
-  if (mapGet && request.method === 'GET') {
-    return handleGetEtfMap(mapGet[1], env);
+  // ════════════════════════════════════════
+  // BB MAP SYMBOLS
+  // ════════════════════════════════════════
+
+  // ── GET  /api/admin/bb-map
+  if (path === '/api/admin/bb-map' && request.method === 'GET') {
+    return handleGetBBMap(env);
   }
 
-  // ── POST /api/admin/symbol-etf-map  (ETF 매핑 추가)
-  if (path === '/api/admin/symbol-etf-map' && request.method === 'POST') {
-    return handleAddEtfMap(request, env);
+  // ── POST /api/admin/bb-map
+  if (path === '/api/admin/bb-map' && request.method === 'POST') {
+    return handleAddBBMap(request, env);
   }
 
-  // ── DELETE /api/admin/symbol-etf-map
-  if (path === '/api/admin/symbol-etf-map' && request.method === 'DELETE') {
-    return handleDeleteEtfMap(request, env);
+  // ── PATCH /api/admin/bb-map/:sym
+  const bbPatch = path.match(/^\/api\/admin\/bb-map\/([A-Z0-9.\-]+)$/);
+  if (bbPatch && request.method === 'PATCH') {
+    return handleUpdateBBMap(bbPatch[1], request, env);
   }
 
-  // ── POST /api/admin/bulk-import  (CSV 데이터 일괄 등록)
-  if (path === '/api/admin/bulk-import' && request.method === 'POST') {
-    return handleBulkImport(request, env);
+  // ── DELETE /api/admin/bb-map/:sym
+  const bbDel = path.match(/^\/api\/admin\/bb-map\/([A-Z0-9.\-]+)$/);
+  if (bbDel && request.method === 'DELETE') {
+    return handleDeleteBBMap(bbDel[1], env);
   }
 
-  // ── GET /api/symbols  (자동완성용 — 인증 불필요)
-  // → worker.js에서 별도 처리
+  // ════════════════════════════════════════
+  // ETF 구성종목 조회
+  // ════════════════════════════════════════
+
+  // ── GET /api/admin/etf-holdings/:sym
+  const etfHoldings = path.match(/^\/api\/admin\/etf-holdings\/([A-Z0-9.\-]+)$/);
+  if (etfHoldings && request.method === 'GET') {
+    return handleGetETFHoldings(etfHoldings[1]);
+  }
+
+  // ════════════════════════════════════════
+  // 수집 대상 (Railway trigger용)
+  // ════════════════════════════════════════
+
+  // ── GET /api/admin/collect-targets
+  if (path === '/api/admin/collect-targets' && request.method === 'GET') {
+    return handleGetCollectTargets(env);
+  }
 
   return json({ error: 'Not found' }, 404);
 }
 
 // ============================================
-// 핸들러 구현
+// STATS
 // ============================================
-
 async function handleStats(env) {
-  const [total, active, etf, stock, flow] = await Promise.all([
+  const [symbols, groups, bbmap, flow] = await Promise.all([
     env.DB.prepare('SELECT COUNT(*) as n FROM symbols').first(),
-    env.DB.prepare('SELECT COUNT(*) as n FROM symbols WHERE is_active=1').first(),
-    env.DB.prepare("SELECT COUNT(*) as n FROM symbols WHERE type='etf'").first(),
-    env.DB.prepare("SELECT COUNT(*) as n FROM symbols WHERE type='stock'").first(),
+    env.DB.prepare('SELECT COUNT(*) as n FROM groups').first(),
+    env.DB.prepare('SELECT COUNT(*) as n FROM bb_map_symbols WHERE is_active=1').first(),
     env.DB.prepare("SELECT COUNT(*) as n FROM options_flow WHERE date=date('now')").first(),
   ]);
   return json({
-    total:      total.n,
-    active:     active.n,
-    etf:        etf.n,
-    stock:      stock.n,
+    symbols:    symbols.n,
+    groups:     groups.n,
+    bb_map:     bbmap.n,
     flow_today: flow.n,
   });
 }
 
-async function handleGetSectors(env) {
-  const rows = await env.DB.prepare(
-    'SELECT * FROM sectors ORDER BY sort_order, sector_key'
-  ).all();
-  return json({ sectors: rows.results });
+// ============================================
+// GROUPS
+// ============================================
+async function handleGetGroups(env) {
+  const rows = await env.DB.prepare(`
+    SELECT g.*, COUNT(sg.symbol) as symbol_count
+    FROM groups g
+    LEFT JOIN symbol_groups sg ON g.id = sg.group_id
+    GROUP BY g.id
+    ORDER BY g.code
+  `).all();
+  return json({ groups: rows.results });
 }
 
-async function handleAddSector(request, env) {
-  const { sector_key, sector_name, primary_etf, sort_order } = await request.json();
-  if (!sector_key || !sector_name) return json({ error: 'sector_key, sector_name 필수' }, 400);
+async function handleAddGroup(request, env) {
+  const { code, name, color, comment } = await request.json();
+  if (!code || !name) return json({ error: 'code, name 필수' }, 400);
 
-  await env.DB.prepare(`
-    INSERT OR REPLACE INTO sectors (sector_key, sector_name, primary_etf, sort_order)
+  const code_upper = code.toUpperCase().trim();
+  const exists = await env.DB.prepare(
+    'SELECT id FROM groups WHERE code=?'
+  ).bind(code_upper).first();
+  if (exists) return json({ error: `${code_upper} 코드가 이미 존재합니다` }, 409);
+
+  const result = await env.DB.prepare(`
+    INSERT INTO groups (code, name, color, comment)
     VALUES (?, ?, ?, ?)
-  `).bind(sector_key, sector_name, primary_etf || null, sort_order || 99).run();
+  `).bind(code_upper, name.trim(), color || null, comment || null).run();
 
-  return json({ ok: true, sector_key });
+  return json({ ok: true, id: result.meta.last_row_id, code: code_upper });
 }
 
-async function handleDeleteSector(sector_key, env) {
-  await env.DB.prepare('DELETE FROM sectors WHERE sector_key=?').bind(sector_key).run();
-  return json({ ok: true, sector_key });
+async function handleUpdateGroup(id, request, env) {
+  const { name, color, comment } = await request.json();
+  await env.DB.prepare(
+    'UPDATE groups SET name=?, color=?, comment=? WHERE id=?'
+  ).bind(name, color || null, comment || null, id).run();
+  return json({ ok: true, id });
 }
 
+async function handleDeleteGroup(id, env) {
+  // symbol_groups는 CASCADE로 자동 삭제됨
+  await env.DB.prepare('DELETE FROM groups WHERE id=?').bind(id).run();
+
+  // 고아 심볼 (어느 그룹에도 속하지 않은) 정리
+  const orphans = await env.DB.prepare(`
+    SELECT symbol FROM symbols
+    WHERE symbol NOT IN (SELECT DISTINCT symbol FROM symbol_groups)
+  `).all();
+
+  if (orphans.results.length > 0) {
+    const syms = orphans.results.map(r => r.symbol);
+    const delStmts = syms.flatMap(sym => [
+      env.DB.prepare('DELETE FROM symbols WHERE symbol=?').bind(sym),
+      env.DB.prepare('DELETE FROM options_flow WHERE symbol=?').bind(sym),
+      env.DB.prepare('DELETE FROM price_indicators WHERE symbol=?').bind(sym),
+      env.DB.prepare('DELETE FROM screener_scores WHERE symbol=?').bind(sym),
+    ]);
+    for (const chunk of chunkArray(delStmts, 100)) {
+      await env.DB.batch(chunk);
+    }
+    return json({ ok: true, id, orphans_removed: syms });
+  }
+
+  return json({ ok: true, id, orphans_removed: [] });
+}
+
+async function handleGetGroupSymbols(id, env) {
+  const rows = await env.DB.prepare(`
+    SELECT s.symbol, s.name, s.type, s.comment
+    FROM symbol_groups sg
+    JOIN symbols s ON sg.symbol = s.symbol
+    WHERE sg.group_id = ?
+    ORDER BY s.type DESC, s.symbol
+  `).bind(id).all();
+  return json({ group_id: id, symbols: rows.results });
+}
+
+async function handleAddGroupSymbol(id, request, env) {
+  const { symbol } = await request.json();
+  if (!symbol) return json({ error: 'symbol 필수' }, 400);
+
+  const sym = symbol.toUpperCase().trim();
+
+  // symbols에 없으면 자동 등록
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO symbols (symbol, added_date)
+    VALUES (?, date('now'))
+  `).bind(sym).run();
+
+  // 그룹에 추가
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO symbol_groups (symbol, group_id)
+    VALUES (?, ?)
+  `).bind(sym, id).run();
+
+  // Yahoo에서 name/type 자동수집
+  const info = await refreshOneSymbol(env.DB, sym);
+
+  return json({ ok: true, symbol: sym, group_id: id, name: info?.name, type: info?.type });
+}
+
+async function handleRemoveGroupSymbol(id, symbol, env) {
+  await env.DB.prepare(
+    'DELETE FROM symbol_groups WHERE group_id=? AND symbol=?'
+  ).bind(id, symbol).run();
+
+  // 고아가 되었으면 모든 데이터 삭제
+  const stillExists = await env.DB.prepare(
+    'SELECT 1 FROM symbol_groups WHERE symbol=? LIMIT 1'
+  ).bind(symbol).first();
+
+  if (!stillExists) {
+    await env.DB.batch([
+      env.DB.prepare('DELETE FROM symbols WHERE symbol=?').bind(symbol),
+      env.DB.prepare('DELETE FROM options_flow WHERE symbol=?').bind(symbol),
+      env.DB.prepare('DELETE FROM price_indicators WHERE symbol=?').bind(symbol),
+      env.DB.prepare('DELETE FROM screener_scores WHERE symbol=?').bind(symbol),
+    ]);
+    return json({ ok: true, symbol, group_id: id, orphan_removed: true });
+  }
+
+  return json({ ok: true, symbol, group_id: id, orphan_removed: false });
+}
+
+// ============================================
+// SYMBOLS
+// ============================================
 async function handleGetSymbols(env) {
   const rows = await env.DB.prepare(`
-    SELECT s.*, GROUP_CONCAT(m.etf) as etf_list
+    SELECT
+      s.symbol, s.name, s.type, s.comment, s.added_date,
+      GROUP_CONCAT(g.code) as groups
     FROM symbols s
-    LEFT JOIN symbol_etf_map m ON s.symbol = m.symbol
+    LEFT JOIN symbol_groups sg ON s.symbol = sg.symbol
+    LEFT JOIN groups g ON sg.group_id = g.id
     GROUP BY s.symbol
-    ORDER BY s.type DESC, s.sector, s.symbol
+    ORDER BY s.type DESC, s.symbol
   `).all();
   return json({ symbols: rows.results });
 }
 
 async function handleAddSymbol(request, env) {
-  const { symbol, name, type, sector, is_active } = await request.json();
-  if (!symbol || !name || !type || !sector) {
-    return json({ error: 'symbol, name, type, sector 필수' }, 400);
-  }
+  const { symbol, group_id } = await request.json();
+  if (!symbol) return json({ error: 'symbol 필수' }, 400);
+
+  const sym = symbol.toUpperCase().trim();
 
   await env.DB.prepare(`
-    INSERT OR REPLACE INTO symbols (symbol, name, type, sector, is_active, added_date)
-    VALUES (?, ?, ?, ?, ?, date('now'))
-  `).bind(symbol.toUpperCase(), name, type, sector, is_active ?? 1).run();
+    INSERT OR IGNORE INTO symbols (symbol, added_date)
+    VALUES (?, date('now'))
+  `).bind(sym).run();
 
+  if (group_id) {
+    await env.DB.prepare(`
+      INSERT OR IGNORE INTO symbol_groups (symbol, group_id)
+      VALUES (?, ?)
+    `).bind(sym, group_id).run();
+  }
+
+  const info = await refreshOneSymbol(env.DB, sym);
+  return json({ ok: true, symbol: sym, name: info?.name, type: info?.type });
+}
+
+async function handleUpdateSymbol(symbol, request, env) {
+  const { comment } = await request.json();
+  await env.DB.prepare(
+    'UPDATE symbols SET comment=? WHERE symbol=?'
+  ).bind(comment || null, symbol).run();
   return json({ ok: true, symbol });
 }
 
 async function handleDeleteSymbol(symbol, env) {
   await env.DB.batch([
+    env.DB.prepare('DELETE FROM symbol_groups WHERE symbol=?').bind(symbol),
     env.DB.prepare('DELETE FROM symbols WHERE symbol=?').bind(symbol),
-    env.DB.prepare('DELETE FROM symbol_etf_map WHERE symbol=?').bind(symbol),
     env.DB.prepare('DELETE FROM options_flow WHERE symbol=?').bind(symbol),
-    env.DB.prepare('DELETE FROM options_baseline WHERE symbol=?').bind(symbol),
     env.DB.prepare('DELETE FROM price_indicators WHERE symbol=?').bind(symbol),
     env.DB.prepare('DELETE FROM screener_scores WHERE symbol=?').bind(symbol),
   ]);
   return json({ ok: true, symbol });
 }
 
-async function handleToggleSymbol(symbol, request, env) {
-  const { is_active } = await request.json();
-  await env.DB.prepare(
-    'UPDATE symbols SET is_active=? WHERE symbol=?'
-  ).bind(is_active, symbol).run();
-  return json({ ok: true, symbol, is_active });
-}
-
-// ── 종목 갱신: Twelve Data /quote로 name 업데이트
 async function handleRefreshSymbols(env) {
-  const rows = await env.DB.prepare(
-    'SELECT symbol FROM symbols WHERE is_active=1'
-  ).all();
-
-  const symbols = rows.results.map(r => r.symbol);
+  const rows = await env.DB.prepare('SELECT symbol FROM symbols').all();
   const results = { updated: [], failed: [] };
 
-  // Twelve Data는 콤마로 여러 종목 한번에 조회 가능 (최대 8개)
-  const chunks = chunkArray(symbols, 8);
-
-  for (const chunk of chunks) {
-    try {
-      const url = `${TWELVE_BASE}/quote?symbol=${chunk.join(',')}&apikey=${env.TWELVE_DATA_KEY}`;
-      const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-      const data = await res.json();
-
-      // 단일 종목이면 배열로 통일
-      const items = Array.isArray(data) ? data : [data];
-
-      const updates = [];
-      for (const item of items) {
-        if (item.status === 'error' || !item.symbol || !item.name) {
-          results.failed.push(item.symbol || '?');
-          continue;
-        }
-        updates.push(
-          env.DB.prepare('UPDATE symbols SET name=? WHERE symbol=?')
-            .bind(item.name, item.symbol)
-        );
-        results.updated.push(item.symbol);
-      }
-
-      if (updates.length) await env.DB.batch(updates);
-
-    } catch (err) {
-      results.failed.push(...chunk);
-    }
-
-    // API 레이트 리밋 방지 (8req/min)
-    await sleep(500);
+  for (const { symbol } of rows.results) {
+    const info = await refreshOneSymbol(env.DB, symbol);
+    if (info) results.updated.push(symbol);
+    else results.failed.push(symbol);
+    await sleep(200);
   }
 
   return json({ ok: true, ...results });
 }
 
-async function handleGetEtfMap(symbol, env) {
-  const rows = await env.DB.prepare(
-    'SELECT * FROM symbol_etf_map WHERE symbol=? ORDER BY is_primary DESC, etf'
-  ).bind(symbol).all();
-  return json({ symbol, etfs: rows.results });
+// ── Yahoo Finance로 단일 심볼 name/type 수집
+async function refreshOneSymbol(db, symbol) {
+  try {
+    const url = `${YAHOO_BASE}/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) return null;
+
+    const data   = await res.json();
+    const meta   = data?.chart?.result?.[0]?.meta;
+    if (!meta) return null;
+
+    const name = meta.longName || meta.shortName || symbol;
+    const type = (meta.instrumentType === 'ETF') ? 'etf' : 'stock';
+
+    await db.prepare(
+      'UPDATE symbols SET name=?, type=? WHERE symbol=?'
+    ).bind(name, type, symbol).run();
+
+    return { name, type };
+  } catch {
+    return null;
+  }
 }
 
-async function handleAddEtfMap(request, env) {
-  const { symbol, etf, is_primary } = await request.json();
-  if (!symbol || !etf) return json({ error: 'symbol, etf 필수' }, 400);
+// ============================================
+// BB MAP SYMBOLS
+// ============================================
+async function handleGetBBMap(env) {
+  const rows = await env.DB.prepare(
+    'SELECT * FROM bb_map_symbols ORDER BY sort_order, symbol'
+  ).all();
+  return json({ bb_map: rows.results });
+}
 
-  // is_primary=1이면 기존 primary 해제
-  if (is_primary) {
-    await env.DB.prepare(
-      'UPDATE symbol_etf_map SET is_primary=0 WHERE symbol=?'
-    ).bind(symbol).run();
-  }
+async function handleAddBBMap(request, env) {
+  const { symbol, name, color, sort_order } = await request.json();
+  if (!symbol) return json({ error: 'symbol 필수' }, 400);
+
+  const sym = symbol.toUpperCase().trim();
+
+  // Yahoo에서 name 자동수집
+  let resolvedName = name || sym;
+  try {
+    const url = `${YAHOO_BASE}/${encodeURIComponent(sym)}?interval=1d&range=5d`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const meta = data?.chart?.result?.[0]?.meta;
+      if (meta) resolvedName = meta.longName || meta.shortName || sym;
+    }
+  } catch { /* 실패 시 입력값 사용 */ }
 
   await env.DB.prepare(`
-    INSERT OR REPLACE INTO symbol_etf_map (symbol, etf, is_primary)
-    VALUES (?, ?, ?)
-  `).bind(symbol, etf.toUpperCase(), is_primary ? 1 : 0).run();
+    INSERT OR REPLACE INTO bb_map_symbols (symbol, name, color, sort_order, is_active, added_date)
+    VALUES (?, ?, ?, ?, 1, date('now'))
+  `).bind(sym, resolvedName, color || null, sort_order ?? 99).run();
 
-  // symbols.sector_etf도 primary ETF로 동기화
-  if (is_primary) {
-    await env.DB.prepare(
-      'UPDATE symbols SET sector_etf=? WHERE symbol=?'
-    ).bind(etf.toUpperCase(), symbol).run();
-  }
+  // price_indicators 2개월치 백필 (비동기, 응답을 기다리지 않음)
+  // Cloudflare Workers에서는 ctx.waitUntil로 처리하는 게 이상적이나
+  // admin.js에서는 ctx 접근이 없으므로 await로 처리
+  await backfillPriceIndicators(env.DB, sym);
 
-  return json({ ok: true, symbol, etf });
+  return json({ ok: true, symbol: sym, name: resolvedName });
 }
 
-async function handleDeleteEtfMap(request, env) {
-  const { symbol, etf } = await request.json();
-  await env.DB.prepare(
-    'DELETE FROM symbol_etf_map WHERE symbol=? AND etf=?'
-  ).bind(symbol, etf).run();
-  return json({ ok: true, symbol, etf });
+async function handleUpdateBBMap(symbol, request, env) {
+  const { name, color, sort_order, is_active } = await request.json();
+  await env.DB.prepare(`
+    UPDATE bb_map_symbols SET name=?, color=?, sort_order=?, is_active=? WHERE symbol=?
+  `).bind(name, color || null, sort_order ?? 99, is_active ?? 1, symbol).run();
+  return json({ ok: true, symbol });
 }
 
-// ── CSV 데이터 일괄 등록
-// body: { rows: [{etf, etf_name, ticker}] }
-async function handleBulkImport(request, env) {
-  const { rows } = await request.json();
-  if (!Array.isArray(rows) || !rows.length) return json({ error: 'rows 필요' }, 400);
+async function handleDeleteBBMap(symbol, env) {
+  await env.DB.prepare('DELETE FROM bb_map_symbols WHERE symbol=?').bind(symbol).run();
+  // price_indicators는 유지 (옵션 수집 종목과 공유할 수 있으므로)
+  return json({ ok: true, symbol });
+}
 
-  // 섹터 ETF → sector_key 매핑
-  const sectors = await env.DB.prepare('SELECT sector_key, primary_etf FROM sectors').all();
-  const etfToSector = {};
-  for (const s of sectors.results) {
-    if (s.primary_etf) etfToSector[s.primary_etf] = s.sector_key;
-  }
+// ── price_indicators 과거 2개월치 백필
+async function backfillPriceIndicators(db, symbol) {
+  try {
+    const url = `${YAHOO_BASE}/${encodeURIComponent(symbol)}?interval=1d&range=3mo`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!res.ok) return;
 
-  const symbolStmts = [];
-  const mapStmts    = [];
-  const seen        = new Set();
+    const data   = await res.json();
+    const result = data?.chart?.result?.[0];
+    if (!result) return;
 
-  for (const row of rows) {
-    const etf    = row.etf?.toUpperCase();
-    const ticker = row.ticker?.toUpperCase();
-    const name   = row.etf_name || '';
+    const timestamps = result.timestamp ?? [];
+    const closes     = (result.indicators?.quote?.[0]?.close ?? []);
 
-    if (!etf || !ticker) continue;
+    const candles = timestamps
+      .map((ts, i) => ({
+        date:  new Date(ts * 1000).toISOString().slice(0, 10),
+        close: closes[i] ?? null,
+      }))
+      .filter(c => c.close != null);
 
-    // ETF 자체 등록
-    if (!seen.has(etf)) {
-      seen.add(etf);
-      const sectorKey = etfToSector[etf] || 'broad_market';
-      symbolStmts.push(
-        env.DB.prepare(`
-          INSERT OR IGNORE INTO symbols (symbol, name, type, sector, is_active, added_date)
-          VALUES (?, ?, 'etf', ?, 1, date('now'))
-        `).bind(etf, name + ' ETF', sectorKey)
+    if (candles.length < 20) return;
+
+    const stmts = [];
+    for (let i = 19; i < candles.length; i++) {
+      const slice      = candles.slice(i - 19, i + 1).map(c => c.close);
+      const { date, close } = candles[i];
+      const bb         = calcBollinger(slice);
+      if (!bb) continue;
+
+      const bbRange    = bb.upper2 - bb.lower2;
+      const bbPosition = bbRange > 0 ? (close - bb.lower2) / bbRange : 0.5;
+
+      stmts.push(
+        db.prepare(`
+          INSERT OR IGNORE INTO price_indicators
+            (date, symbol, close, bb_mid, bb_upper1, bb_lower1, bb_upper2, bb_lower2, bb_position)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).bind(
+          date, symbol, close,
+          bb.mid, bb.upper1, bb.lower1, bb.upper2, bb.lower2,
+          +bbPosition.toFixed(4)
+        )
       );
     }
 
-    // 종목 등록
-    if (!seen.has(ticker)) {
-      seen.add(ticker);
-      const sectorKey = etfToSector[etf] || 'broad_market';
-      symbolStmts.push(
-        env.DB.prepare(`
-          INSERT OR IGNORE INTO symbols (symbol, name, type, sector, sector_etf, is_active, added_date)
-          VALUES (?, ?, 'stock', ?, ?, 1, date('now'))
-        `).bind(ticker, ticker, sectorKey, etf)
-      );
+    for (const chunk of chunkArray(stmts, 100)) {
+      await db.batch(chunk);
     }
 
-    // ETF 매핑 등록
-    mapStmts.push(
-      env.DB.prepare(`
-        INSERT OR IGNORE INTO symbol_etf_map (symbol, etf, is_primary)
-        VALUES (?, ?, 0)
-      `).bind(ticker, etf)
-    );
+    console.log(`[backfill] ${symbol}: ${stmts.length}개 저장`);
+  } catch (err) {
+    console.error(`[backfill] ${symbol}:`, err.message);
   }
+}
 
-  // 배치 실행 (D1 최대 100개씩)
-  const allStmts = [...symbolStmts, ...mapStmts];
-  for (const chunk of chunkArray(allStmts, 100)) {
-    await env.DB.batch(chunk);
+// ============================================
+// ETF 구성종목 조회
+// ============================================
+async function handleGetETFHoldings(symbol) {
+  try {
+    const url = `https://query1.finance.yahoo.com/v1/finance/quoteSummary/${symbol}`
+      + `?modules=topHoldings`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) return json({ error: `Yahoo: ${res.status}` }, 502);
+
+    const data     = await res.json();
+    const holdings = data?.quoteSummary?.result?.[0]?.topHoldings?.holdings ?? [];
+
+    const result = holdings.map(h => ({
+      symbol: h.symbol,
+      name:   h.holdingName,
+      pct:    h.holdingPercent ? +(h.holdingPercent * 100).toFixed(2) : null,
+    }));
+
+    return json({ etf: symbol, holdings: result });
+  } catch (err) {
+    return json({ error: err.message }, 500);
   }
+}
 
-  return json({ ok: true, symbols: symbolStmts.length, maps: mapStmts.length });
+// ============================================
+// 수집 대상 심볼 목록
+// ============================================
+async function handleGetCollectTargets(env) {
+  const rows = await env.DB.prepare(`
+    SELECT DISTINCT s.symbol, s.name, s.type
+    FROM symbols s
+    JOIN symbol_groups sg ON s.symbol = sg.symbol
+    ORDER BY s.type DESC, s.symbol
+  `).all();
+  return json({ symbols: rows.results });
+}
+
+// ============================================
+// 볼린저밴드 계산
+// ============================================
+function calcBollinger(closes, period = 20) {
+  if (closes.length < period) return null;
+  const slice = closes.slice(-period);
+  const sma   = slice.reduce((a, b) => a + b, 0) / period;
+  const std   = Math.sqrt(slice.reduce((a, b) => a + (b - sma) ** 2, 0) / period);
+  return {
+    mid:    +sma.toFixed(4),
+    upper1: +(sma + std).toFixed(4),
+    lower1: +(sma - std).toFixed(4),
+    upper2: +(sma + std * 2).toFixed(4),
+    lower2: +(sma - std * 2).toFixed(4),
+  };
 }
 
 // ============================================
