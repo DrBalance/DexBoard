@@ -34,7 +34,7 @@ export default {
     const corsHeaders = {
       "Access-Control-Allow-Origin":  "*",
       "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-      "Access-Control-Allow-Headers": "Content-Type, x-kv-secret, x-admin-secret",
+      "Access-Control-Allow-Headers": "Content-Type, x-kv-secret, x-admin-secret, x-cron-secret",
     };
     if (request.method === "OPTIONS") {
       return new Response(null, { headers: corsHeaders });
