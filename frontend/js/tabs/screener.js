@@ -65,6 +65,9 @@ function renderShell() {
       <button class="sc-btn sc-btn-force" id="sc-force-btn" style="display:none">
         ↻ 강제 재수집
       </button>
+      <button class="sc-btn sc-btn-rescore" id="sc-rescore-btn" title="기존 데이터로 점수만 재계산">
+        ⚡ 재평가
+      </button>
       <a href="/admin.html" class="sc-btn" style="text-decoration:none;opacity:.7">⚙ 설정</a>
     </div>
   </div>
@@ -139,6 +142,7 @@ function bindEvents() {
   // 수집 버튼
   document.getElementById('sc-collect-btn')?.addEventListener('click', () => startCollection(false));
   document.getElementById('sc-force-btn')?.addEventListener('click', () => startCollection(true));
+  document.getElementById('sc-rescore-btn')?.addEventListener('click', () => startRescore());
 
   // 새로고침
   document.getElementById('sc-refresh-btn')?.addEventListener('click', () => loadScreener());
@@ -359,6 +363,35 @@ async function startCollection(force = false) {
     console.error('[screener] 수집 시작 실패:', err.message);
     setCollectMsg(`수집 시작 실패: ${err.message}`, 'error');
     if (btn) { btn.disabled = false; btn.textContent = force ? '↻ 강제 재수집' : '▶ 지금 수집'; }
+  }
+}
+
+// ============================================
+// 재평가 (기존 데이터로 점수만 재계산)
+// ============================================
+async function startRescore() {
+  const btn = document.getElementById('sc-rescore-btn');
+  if (btn) { btn.disabled = true; btn.textContent = '재평가 중...'; }
+  setCollectMsg('기존 데이터로 점수 재계산 중...', 'running');
+
+  try {
+    const res = await fetch(`${RAILWAY_URL}/rescore`, {
+      method:  'POST',
+      headers: { 'x-cron-secret': CRON_SECRET },
+    });
+    const data = await res.json();
+
+    if (res.ok && data.ok) {
+      setCollectMsg(`재평가 완료 — ${data.count}개 종목 (기준일: ${data.date})`, 'ok');
+      await loadScreener();  // 화면 갱신
+    } else {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+  } catch (err) {
+    console.error('[screener] 재평가 실패:', err.message);
+    setCollectMsg(`재평가 실패: ${err.message}`, 'error');
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⚡ 재평가'; }
   }
 }
 
