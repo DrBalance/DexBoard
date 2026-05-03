@@ -375,15 +375,16 @@ export function calcScreenerScore(rows, priceData = {}) {
   const score_skew_weeks = Math.min(callSkewCount, 3);
 
   // B. 볼린저 위치 (최대 3점) — priceData에서 bb_position 받음
+  // 바닥 반등 스크리너: 하단 근처일수록 높은 점수
+  // bb_position: 0=하단2σ, 0.5=중간(SMA), 1=상단2σ, 음수=BREAKDOWN
   const bb = priceData.bb_position ?? null;
-  const bb_flag = (bb != null && bb < 0) ? "BREAKDOWN" : null;
+  const bb_flag = (bb != null && bb < 0) ? 'BREAKDOWN' : null;
   let score_bb = 0;
-  if (bb != null) {
-    if (!bb_flag) {
-      if (bb >= 0.7) score_bb = 3;
-      else if (bb >= 0.4) score_bb = 2;
-      else if (bb >= 0.2) score_bb = 1;
-    }
+  if (bb != null && !bb_flag) {
+    if (bb < 0.2)      score_bb = 3;  // 하단 2σ 극근처 (바닥권)
+    else if (bb < 0.4) score_bb = 2;  // 하단~중간 (반등 초입)
+    else if (bb < 0.8) score_bb = 1;  // 중립 구간
+    else               score_bb = 0;  // 상단 과열
   }
 
   // C. ATM 풋 집중도 (최대 2점)
