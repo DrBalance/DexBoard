@@ -7,6 +7,7 @@
 
 import http from "http";
 import { calculateAndStore, collectSymbol, calcScreenerScore, getTodayET } from "./vanna_analyzer.js";
+import { collectPriceIndicators } from "./price-collector.js";
 
 const PORT        = process.env.PORT        || 8080;
 const CRON_SECRET = process.env.CRON_SECRET || "";
