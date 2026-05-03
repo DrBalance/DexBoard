@@ -239,13 +239,16 @@ export default {
       if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
-      const { rows } = await request.json();
+      const { rows, mode } = await request.json();
       if (!Array.isArray(rows) || !rows.length) {
         return json({ ok: false, error: "rows 배열 필요" }, 400, corsHeaders);
       }
+      // mode='ignore': 기존 날짜 데이터 보존 (백필용)
+      // mode 미지정 or 'replace': 기존 데이터 덮어쓰기 (당일 갱신용)
+      const insertMode = mode === 'ignore' ? 'INSERT OR IGNORE' : 'INSERT OR REPLACE';
       const stmts = rows.map(r =>
         env.DB.prepare(`
-          INSERT OR REPLACE INTO price_indicators
+          ${insertMode} INTO price_indicators
             (date, symbol, close, bb_mid, bb_upper1, bb_lower1,
              bb_upper2, bb_lower2, bb_position, atr5, atr20, vol_ratio)
           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
