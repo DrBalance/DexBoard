@@ -44,25 +44,43 @@ function renderShell() {
 
   <!-- ── 수집 패널 ── -->
   <div class="sc-collect-panel" id="sc-collect-panel">
-    <div class="sc-collect-title">딜러 헷지 압력 스크리너</div>
-    <div class="sc-collect-info" id="sc-collect-info">
-      <span class="sc-status-dot idle" id="sc-status-dot"></span>
-      <span id="sc-collect-msg">마지막 수집 정보 확인 중...</span>
-    </div>
-    <div class="sc-progress-wrap" id="sc-progress-wrap" style="display:none">
-      <div class="sc-progress-track">
-        <div class="sc-progress-fill" id="sc-progress-fill" style="width:0%"></div>
+    <div class="sc-collect-left">
+      <div class="sc-collect-title">데이터 수집</div>
+      <div class="sc-collect-info" id="sc-collect-info">
+        <span class="sc-status-dot idle" id="sc-status-dot"></span>
+        <span id="sc-collect-msg">마지막 수집 정보 확인 중...</span>
       </div>
-      <span class="sc-progress-label" id="sc-progress-label">0 / 0</span>
+      <div class="sc-progress-wrap" id="sc-progress-wrap" style="display:none">
+        <div class="sc-progress-track">
+          <div class="sc-progress-fill" id="sc-progress-fill" style="width:0%"></div>
+        </div>
+        <span class="sc-progress-label" id="sc-progress-label">0 / 0</span>
+      </div>
     </div>
-    <div class="sc-btn-row">
-      <button class="sc-btn sc-btn-collect" id="sc-collect-btn">▶ 지금 수집</button>
-      <button class="sc-btn sc-btn-force" id="sc-force-btn" style="display:none">↻ 강제 재수집</button>
-      <button class="sc-btn sc-btn-refresh" id="sc-refresh-btn">↻ 새로고침</button>
-      <a href="/admin.html" class="sc-btn sc-btn-settings" style="text-decoration:none">⚙ 설정</a>
+    <div class="sc-collect-right">
       <div class="sc-collect-meta" id="sc-collect-meta"></div>
+      <button class="sc-btn sc-btn-collect" id="sc-collect-btn">
+        ▶ 지금 수집
+      </button>
+      <button class="sc-btn sc-btn-force" id="sc-force-btn" style="display:none">
+        ↻ 강제 재수집
+      </button>
+      <a href="/admin.html" class="sc-btn" style="text-decoration:none;opacity:.7">⚙ 설정</a>
     </div>
-    <span class="screener-date" id="sc-date"></span>
+  </div>
+
+  <!-- ── 상단 컨트롤 바 ── -->
+  <div class="screener-top-bar">
+    <div class="screener-title-row">
+      <span class="screener-title">딜러 헷지 압력 스크리너</span>
+      <span class="screener-date" id="sc-date">-</span>
+    </div>
+    <div class="screener-controls">
+      <div class="sc-sector-pills" id="sc-sector-pills">
+        <button class="pill active" data-s="all">전체</button>
+      </div>
+      <button class="screener-run-btn" id="sc-refresh-btn" title="새로고침">↻ 새로고침</button>
+    </div>
   </div>
 
   <!-- ── 요약 카드 행 ── -->
@@ -124,6 +142,16 @@ function bindEvents() {
 
   // 새로고침
   document.getElementById('sc-refresh-btn')?.addEventListener('click', () => loadScreener());
+
+  // 섹터 필터 pills
+  document.getElementById('sc-sector-pills')?.addEventListener('click', e => {
+    const btn = e.target.closest('.pill');
+    if (!btn) return;
+    document.querySelectorAll('#sc-sector-pills .pill').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    sectorFilter = btn.dataset.s;
+    renderTable();
+  });
 
   // 테이블 정렬
   document.getElementById('sc-tbl')?.addEventListener('click', e => {
@@ -266,10 +294,10 @@ async function startCollection(force = false) {
   if (btn) { btn.disabled = true; btn.textContent = '요청 중...'; }
 
   try {
-    // D1에서 수집 대상 심볼 목록 조회
+    // D1에서 수집 대상 심볼 목록 조회 (CRON_SECRET 인증)
     setCollectMsg('심볼 목록 조회 중...', 'running');
-    const symRes = await fetch(`${CF_API}/api/admin/collect-targets`, {
-      headers: { 'x-admin-secret': CRON_SECRET },
+    const symRes = await fetch(`${CF_API}/api/collect-targets`, {
+      headers: { 'x-cron-secret': CRON_SECRET },
     });
     const symData = await symRes.json();
     const symbols = symData.symbols ?? [];
@@ -341,6 +369,13 @@ async function loadScreener() {
   if (isLoading) return;
   isLoading = true;
 
+  // 새로고침 버튼 로딩 상태
+  const refreshBtn = document.getElementById('sc-refresh-btn');
+  if (refreshBtn) {
+    refreshBtn.disabled    = true;
+    refreshBtn.textContent = '↻ 로딩 중...';
+  }
+
   showState('loading', '스크리너 데이터를 불러오는 중...');
 
   try {
@@ -369,6 +404,11 @@ async function loadScreener() {
     showState('error', '데이터 로드 실패: ' + err.message);
   } finally {
     isLoading = false;
+    const refreshBtn = document.getElementById('sc-refresh-btn');
+    if (refreshBtn) {
+      refreshBtn.disabled    = false;
+      refreshBtn.textContent = '↻ 새로고침';
+    }
   }
 }
 
