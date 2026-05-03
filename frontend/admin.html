@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DexBoard 설정</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#0d1117;--bg2:#161b22;--bg3:#21262d;--border:#30363d;
+  --text:#e6edf3;--text2:#8b949e;--text3:#6e7681;
+  --blue:#58a6ff;--blue-dim:#1f6feb;--green:#3fb950;--red:#f85149;
+  --yellow:#d29922;--orange:#f0883e;--purple:#bc8cff;
+  --font:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  --mono:'SF Mono','Fira Code','Consolas',monospace;
+}
+html,body{width:100%;min-height:100vh;background:var(--bg);color:var(--text);font-family:var(--font);font-size:14px}
+
+/* ── 헤더 */
+.header{display:flex;align-items:center;justify-content:space-between;padding:12px 28px;border-bottom:1px solid var(--border);background:var(--bg2)}
+.logo{font-size:17px;font-weight:700}.logo span{color:var(--orange)}
+.back-btn{color:var(--blue);text-decoration:none;font-size:13px;padding:5px 12px;border:1px solid var(--blue-dim);border-radius:5px}
+
+/* ── 인증 */
+#auth-screen{display:flex;align-items:center;justify-content:center;min-height:80vh}
+.auth-card{background:var(--bg2);border:1px solid var(--border);border-radius:10px;padding:40px;width:360px;text-align:center}
+.auth-title{font-size:18px;font-weight:700;margin-bottom:8px}
+.auth-sub{color:var(--text3);font-size:13px;margin-bottom:24px}
+.auth-input{width:100%;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:10px 14px;border-radius:6px;font-size:14px;font-family:var(--mono);margin-bottom:12px}
+.auth-input:focus{outline:none;border-color:var(--blue)}
+.auth-btn{width:100%;background:var(--blue-dim);color:var(--blue);border:1px solid var(--blue-dim);border-radius:6px;padding:10px;font-size:14px;font-weight:600;cursor:pointer}
+.auth-btn:hover{background:var(--blue);color:#000}
+.auth-error{color:var(--red);font-size:13px;margin-top:8px}
+
+/* ── 메인 */
+#main-screen{display:none;padding:24px 28px;max-width:1300px;margin:0 auto}
+
+/* ── 통계 */
+.db-stats{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:24px}
+.stat-card{background:var(--bg2);border:1px solid var(--border);border-radius:7px;padding:14px 20px;flex:1;min-width:120px}
+.stat-num{font-size:24px;font-weight:700;color:var(--blue);font-family:var(--mono)}
+.stat-label{font-size:11px;color:var(--text3);margin-top:2px}
+
+/* ── 탭 */
+.tab-bar{display:flex;gap:2px;border-bottom:1px solid var(--border);margin-bottom:20px}
+.tab-btn{padding:8px 18px;border:none;background:none;color:var(--text3);font-size:13px;font-weight:600;cursor:pointer;border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab-btn.active{color:var(--blue);border-bottom-color:var(--blue)}
+.tab-btn:hover{color:var(--text)}
+.tab-panel{display:none}.tab-panel.active{display:block}
+
+/* ── 섹션 */
+.section{margin-bottom:24px}
+.section-title{font-size:14px;font-weight:700;color:var(--text);margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+.badge{font-size:11px;font-weight:600;padding:2px 7px;border-radius:3px;background:var(--bg3);color:var(--text3)}
+
+/* ── 폼 */
+.add-form{background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:16px}
+.form-row{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px}
+.form-group{display:flex;flex-direction:column;gap:4px}
+.form-group label{font-size:11px;color:var(--text3);font-weight:600;text-transform:uppercase}
+.form-input,.form-select{background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:7px 12px;border-radius:5px;font-size:13px;font-family:var(--font)}
+.form-input:focus,.form-select:focus{outline:none;border-color:var(--blue)}
+.form-input.sm{width:90px}.form-input.mid{width:150px}.form-input.wide{width:220px}
+.form-msg{font-size:12px;min-height:16px;margin-top:4px}
+.form-msg.ok{color:var(--green)}.form-msg.err{color:var(--red)}
+
+/* ── 버튼 */
+.btn{padding:7px 16px;border-radius:5px;font-size:13px;font-weight:600;cursor:pointer;border:none;font-family:var(--font)}
+.btn:hover{opacity:.8}.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn-green{background:var(--green);color:#000}
+.btn-blue{background:var(--blue-dim);color:var(--blue);border:1px solid var(--blue-dim)}
+.btn-red{background:rgba(248,81,73,.15);color:var(--red);border:1px solid rgba(248,81,73,.3)}
+.btn-orange{background:rgba(240,136,62,.15);color:var(--orange);border:1px solid rgba(240,136,62,.3)}
+.btn-purple{background:rgba(188,140,255,.15);color:var(--purple);border:1px solid rgba(188,140,255,.3)}
+.btn-sm{padding:3px 10px;font-size:11px;border-radius:4px}
+
+/* ── 테이블 */
+.tbl-wrap{background:var(--bg2);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th{text-align:left;padding:9px 14px;color:var(--text3);font-size:11px;font-weight:600;text-transform:uppercase;border-bottom:1px solid var(--border);background:var(--bg3)}
+.tbl td{padding:9px 14px;border-bottom:1px solid var(--border);color:var(--text2);vertical-align:middle}
+.tbl tr:last-child td{border-bottom:none}
+.tbl tr:hover td{background:rgba(255,255,255,.02)}
+.sym-bold{font-weight:700;color:var(--text);font-family:var(--mono)}
+.type-badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 6px;border-radius:3px;text-transform:uppercase}
+.type-etf{background:rgba(88,166,255,.15);color:var(--blue)}
+.type-stock{background:rgba(63,185,80,.12);color:var(--green)}
+
+/* ── 태그 */
+.tag{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:700;font-family:var(--mono);margin:2px}
+.tag-blue{background:rgba(88,166,255,.12);color:var(--blue)}
+.tag-green{background:rgba(63,185,80,.12);color:var(--green)}
+.tag-rm{cursor:pointer;opacity:.6;font-size:10px}.tag-rm:hover{opacity:1;color:var(--red)}
+
+/* ── 색상 피커 */
+.color-dot{width:14px;height:14px;border-radius:50%;display:inline-block;flex-shrink:0}
+input[type=color]{width:32px;height:28px;border:1px solid var(--border);border-radius:4px;background:var(--bg3);cursor:pointer;padding:0}
+
+/* ── 그룹 카드 레이아웃 */
+.groups-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px}
+.group-card{background:var(--bg2);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+.group-card-header{display:flex;align-items:center;gap:10px;padding:12px 16px;border-bottom:1px solid var(--border);background:var(--bg3)}
+.group-card-title{font-size:14px;font-weight:700;flex:1}
+.group-card-code{font-family:var(--mono);font-size:11px;color:var(--text3)}
+.group-card-body{padding:12px 16px}
+.group-sym-list{display:flex;flex-wrap:wrap;gap:4px;min-height:32px;margin-bottom:10px}
+.group-sym-tag{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:4px;font-size:12px;font-weight:700;font-family:var(--mono);background:var(--bg3);border:1px solid var(--border);color:var(--text)}
+.group-sym-tag .rm{cursor:pointer;color:var(--text3);font-size:10px}.group-sym-tag .rm:hover{color:var(--red)}
+.group-add-row{display:flex;gap:6px;align-items:center}
+
+/* ── BB 맵 */
+.bb-list{display:flex;flex-direction:column;gap:8px}
+.bb-item{display:flex;align-items:center;gap:12px;background:var(--bg2);border:1px solid var(--border);border-radius:7px;padding:10px 14px}
+.bb-color{width:12px;height:12px;border-radius:50%;flex-shrink:0}
+.bb-sym{font-family:var(--mono);font-weight:700;font-size:14px;width:70px}
+.bb-name{color:var(--text2);font-size:13px;flex:1}
+.bb-order{width:40px;background:var(--bg3);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:4px;font-size:12px;text-align:center}
+.bb-active{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text3)}
+
+/* ── ETF 구성종목 패널 */
+.holdings-panel{background:var(--bg3);border:1px solid var(--border);border-radius:7px;padding:12px;margin-top:10px}
+.holding-row{display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--border)}
+.holding-row:last-child{border-bottom:none}
+.holding-sym{font-family:var(--mono);font-weight:700;width:70px}
+.holding-name{flex:1;font-size:12px;color:var(--text2)}
+.holding-pct{font-size:12px;color:var(--text3);width:50px;text-align:right}
+
+/* ── 자동완성 */
+.sym-wrap{position:relative}
+.sym-dropdown{position:absolute;top:100%;left:0;width:260px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;z-index:100;display:none;max-height:200px;overflow-y:auto;box-shadow:0 4px 16px rgba(0,0,0,.4)}
+.sym-dd-item{padding:8px 12px;cursor:pointer;border-bottom:1px solid var(--border)}
+.sym-dd-item:last-child{border-bottom:none}
+.sym-dd-item:hover{background:var(--bg3)}
+.sym-dd-sym{font-size:13px;font-weight:700;font-family:var(--mono);color:var(--text)}
+.sym-dd-name{font-size:11px;color:var(--text3)}
+
+.loading{text-align:center;padding:24px;color:var(--text3)}
+.empty{text-align:center;padding:20px;color:var(--text3);font-size:13px}
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="logo">Dex<span>Board</span> · 설정</div>
+  <a href="/" class="back-btn">← 대시보드로</a>
+</div>
+
+<!-- ── 인증 화면 -->
+<div id="auth-screen">
+  <div class="auth-card">
+    <div class="auth-title">🔐 관리자 인증</div>
+    <div class="auth-sub">설정 페이지</div>
+    <input type="password" class="auth-input" id="secret-input" placeholder="Secret 입력"
+      onkeydown="if(event.key==='Enter')doAuth()">
+    <button class="auth-btn" onclick="doAuth()">로그인</button>
+    <div class="auth-error" id="auth-error"></div>
+  </div>
+</div>
+
+<!-- ── 메인 화면 -->
+<div id="main-screen">
+
+  <!-- 통계 -->
+  <div class="db-stats">
+    <div class="stat-card"><div class="stat-num" id="stat-symbols">-</div><div class="stat-label">수집 종목</div></div>
+    <div class="stat-card"><div class="stat-num" id="stat-groups">-</div><div class="stat-label">그룹</div></div>
+    <div class="stat-card"><div class="stat-num" id="stat-bbmap">-</div><div class="stat-label">BB 맵 종목</div></div>
+    <div class="stat-card"><div class="stat-num" id="stat-flow">-</div><div class="stat-label">오늘 플로우</div></div>
+  </div>
+
+  <!-- 탭 -->
+  <div class="tab-bar">
+    <button class="tab-btn active" onclick="switchTab('groups')">🗂 그룹 관리</button>
+    <button class="tab-btn" onclick="switchTab('symbols')">📋 심볼 목록</button>
+    <button class="tab-btn" onclick="switchTab('bbmap')">📈 BB 위치 맵</button>
+  </div>
+
+  <!-- ══════════════════════════════════════ -->
+  <!-- 탭1: 그룹 관리 -->
+  <!-- ══════════════════════════════════════ -->
+  <div id="tab-groups" class="tab-panel active">
+
+    <!-- 그룹 추가 -->
+    <div class="section">
+      <div class="section-title">➕ 그룹 추가</div>
+      <div class="add-form">
+        <div class="form-row">
+          <div class="form-group">
+            <label>코드 *</label>
+            <input class="form-input sm" id="g-code" placeholder="TECH" style="text-transform:uppercase">
+          </div>
+          <div class="form-group">
+            <label>이름 *</label>
+            <input class="form-input mid" id="g-name" placeholder="기술주">
+          </div>
+          <div class="form-group">
+            <label>색상</label>
+            <input type="color" id="g-color" value="#58a6ff">
+          </div>
+          <div class="form-group">
+            <label>메모</label>
+            <input class="form-input wide" id="g-comment" placeholder="선택사항">
+          </div>
+          <div class="form-group">
+            <button class="btn btn-green" onclick="addGroup()">+ 그룹 추가</button>
+          </div>
+        </div>
+        <div class="form-msg" id="group-msg"></div>
+      </div>
+    </div>
+
+    <!-- 그룹 카드 목록 -->
+    <div class="section">
+      <div class="section-title">
+        🗂 그룹 목록
+        <span class="badge" id="group-count">0개</span>
+      </div>
+      <div class="groups-grid" id="groups-grid">
+        <div class="loading">로딩 중...</div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ══════════════════════════════════════ -->
+  <!-- 탭2: 심볼 목록 -->
+  <!-- ══════════════════════════════════════ -->
+  <div id="tab-symbols" class="tab-panel">
+    <div class="section">
+      <div class="section-title">
+        📋 전체 심볼
+        <span class="badge" id="sym-count">0개</span>
+        <button class="btn btn-orange btn-sm" onclick="refreshAllSymbols()" style="margin-left:auto">
+          🔄 name/type 일괄 갱신
+        </button>
+      </div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>심볼</th><th>이름</th><th>구분</th><th>그룹</th><th>추가일</th><th>메모</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="sym-tbody"><tr><td colspan="7" class="loading">로딩 중...</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════════════════════════════════ -->
+  <!-- 탭3: BB 위치 맵 -->
+  <!-- ══════════════════════════════════════ -->
+  <div id="tab-bbmap" class="tab-panel">
+
+    <!-- BB 맵 종목 추가 -->
+    <div class="section">
+      <div class="section-title">➕ BB 맵 종목 추가</div>
+      <div class="add-form">
+        <div class="form-row">
+          <div class="form-group">
+            <label>티커 *</label>
+            <input class="form-input sm" id="bb-symbol" placeholder="XLK" style="text-transform:uppercase">
+          </div>
+          <div class="form-group">
+            <label>색상</label>
+            <input type="color" id="bb-color" value="#58a6ff">
+          </div>
+          <div class="form-group">
+            <label>순서</label>
+            <input type="number" class="form-input sm" id="bb-order" value="99" min="1" max="99">
+          </div>
+          <div class="form-group">
+            <button class="btn btn-green" onclick="addBBMap()">+ 추가</button>
+          </div>
+        </div>
+        <div class="form-msg" id="bb-msg"></div>
+        <div style="font-size:12px;color:var(--text3);margin-top:4px">
+          ※ 추가 시 Yahoo Finance에서 name 자동수집 + 과거 2개월치 BB 데이터 백필
+        </div>
+      </div>
+    </div>
+
+    <!-- BB 맵 종목 목록 -->
+    <div class="section">
+      <div class="section-title">
+        📈 BB 맵 종목
+        <span class="badge" id="bb-count">0개</span>
+      </div>
+      <div class="bb-list" id="bb-list">
+        <div class="loading">로딩 중...</div>
+      </div>
+    </div>
+
+  </div>
+
+</div>
+
+<script>
+// ════════════════════════════════════════════
+// 설정
+// ════════════════════════════════════════════
+const API = '';  // 같은 도메인
+let SECRET = '';
+
+// ── API 호출
+async function api(method, path, body) {
+  const opts = {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'x-admin-secret': SECRET,
+    },
+  };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(API + path, opts);
+  return res.json();
+}
+
+// ════════════════════════════════════════════
+// 인증
+// ════════════════════════════════════════════
+async function doAuth() {
+  const val = document.getElementById('secret-input').value.trim();
+  if (!val) return;
+  SECRET = val;
+  const d = await api('GET', '/api/admin/stats');
+  if (d.error) {
+    document.getElementById('auth-error').textContent = '❌ 인증 실패';
+    SECRET = '';
+    return;
+  }
+  document.getElementById('auth-screen').style.display = 'none';
+  document.getElementById('main-screen').style.display = 'block';
+  updateStats(d);
+  await Promise.all([loadGroups(), loadSymbols(), loadBBMap()]);
+}
+
+function updateStats(d) {
+  document.getElementById('stat-symbols').textContent = d.symbols ?? '-';
+  document.getElementById('stat-groups').textContent  = d.groups  ?? '-';
+  document.getElementById('stat-bbmap').textContent   = d.bb_map  ?? '-';
+  document.getElementById('stat-flow').textContent    = d.flow_today ?? '-';
+}
+
+async function reloadStats() {
+  const d = await api('GET', '/api/admin/stats');
+  if (!d.error) updateStats(d);
+}
+
+// ════════════════════════════════════════════
+// 탭
+// ════════════════════════════════════════════
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach((b, i) => {
+    const tabs = ['groups', 'symbols', 'bbmap'];
+    b.classList.toggle('active', tabs[i] === name);
+  });
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+}
+
+// ════════════════════════════════════════════
+// 그룹 관리
+// ════════════════════════════════════════════
+let groupsCache = [];
+
+async function loadGroups() {
+  const d = await api('GET', '/api/admin/groups');
+  groupsCache = d.groups ?? [];
+  document.getElementById('group-count').textContent = groupsCache.length + '개';
+  renderGroupsGrid();
+}
+
+function renderGroupsGrid() {
+  const grid = document.getElementById('groups-grid');
+  if (!groupsCache.length) {
+    grid.innerHTML = '<div class="empty">그룹이 없습니다. 위에서 추가해주세요.</div>';
+    return;
+  }
+  grid.innerHTML = groupsCache.map(g => `
+    <div class="group-card" id="gc-${g.id}">
+      <div class="group-card-header">
+        <span class="color-dot" style="background:${g.color||'#555'}"></span>
+        <div>
+          <div class="group-card-title">${escHtml(g.name)}</div>
+          <div class="group-card-code">${escHtml(g.code)} · ${g.symbol_count}종목</div>
+        </div>
+        <div style="margin-left:auto;display:flex;gap:6px">
+          <button class="btn btn-purple btn-sm" onclick="openHoldingsPanel(${g.id})">ETF 조회</button>
+          <button class="btn btn-red btn-sm" onclick="deleteGroup(${g.id},'${escHtml(g.name)}')">삭제</button>
+        </div>
+      </div>
+      <div class="group-card-body">
+        <div class="group-sym-list" id="gsyms-${g.id}">
+          <div class="loading" style="font-size:12px;padding:4px">로딩 중...</div>
+        </div>
+        <div class="group-add-row">
+          <div class="sym-wrap">
+            <input class="form-input sm" id="gi-${g.id}"
+              placeholder="티커 입력"
+              style="text-transform:uppercase;width:110px"
+              oninput="onGroupSymInput(${g.id},this.value)"
+              onkeydown="if(event.key==='Enter')addGroupSymbol(${g.id})">
+            <div class="sym-dropdown" id="gdd-${g.id}"></div>
+          </div>
+          <button class="btn btn-blue btn-sm" onclick="addGroupSymbol(${g.id})">+ 추가</button>
+          <span class="form-msg" id="gm-${g.id}" style="font-size:11px"></span>
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  // 각 그룹의 심볼 목록 로드
+  groupsCache.forEach(g => loadGroupSymbols(g.id));
+}
+
+async function loadGroupSymbols(id) {
+  const d = await api('GET', `/api/admin/groups/${id}/symbols`);
+  const el = document.getElementById(`gsyms-${id}`);
+  if (!el) return;
+  const syms = d.symbols ?? [];
+  if (!syms.length) {
+    el.innerHTML = '<span style="color:var(--text3);font-size:12px">종목 없음</span>';
+    return;
+  }
+  el.innerHTML = syms.map(s => `
+    <span class="group-sym-tag">
+      <span class="type-badge ${s.type==='etf'?'type-etf':'type-stock'}" style="margin-right:2px">${s.type||'?'}</span>
+      ${escHtml(s.symbol)}
+      <span class="rm" onclick="removeGroupSymbol(${id},'${s.symbol}')">✕</span>
+    </span>
+  `).join('');
+}
+
+async function addGroup() {
+  const code    = document.getElementById('g-code').value.trim().toUpperCase();
+  const name    = document.getElementById('g-name').value.trim();
+  const color   = document.getElementById('g-color').value;
+  const comment = document.getElementById('g-comment').value.trim();
+  const msg     = document.getElementById('group-msg');
+
+  if (!code || !name) { msg.className='form-msg err'; msg.textContent='❌ 코드와 이름 필수'; return; }
+  msg.className='form-msg'; msg.textContent='추가 중...';
+
+  const d = await api('POST', '/api/admin/groups', { code, name, color, comment });
+  if (d.error) { msg.className='form-msg err'; msg.textContent='❌ '+d.error; return; }
+
+  msg.className='form-msg ok'; msg.textContent=`✅ ${code} 그룹 추가 완료`;
+  document.getElementById('g-code').value='';
+  document.getElementById('g-name').value='';
+  document.getElementById('g-comment').value='';
+  await loadGroups(); reloadStats();
+}
+
+async function deleteGroup(id, name) {
+  if (!confirm(`"${name}" 그룹을 삭제하시겠습니까?\n이 그룹에만 속한 종목과 해당 데이터도 함께 삭제됩니다.`)) return;
+  const d = await api('DELETE', `/api/admin/groups/${id}`);
+  if (d.orphans_removed?.length) {
+    alert(`🗑 고아 종목 ${d.orphans_removed.length}개 삭제됨:\n${d.orphans_removed.join(', ')}`);
+  }
+  await loadGroups(); loadSymbols(); reloadStats();
+}
+
+async function addGroupSymbol(id) {
+  const input = document.getElementById(`gi-${id}`);
+  const sym   = input.value.trim().toUpperCase();
+  const msg   = document.getElementById(`gm-${id}`);
+  if (!sym) return;
+
+  msg.className='form-msg'; msg.textContent='추가 중...';
+  const d = await api('POST', `/api/admin/groups/${id}/symbols`, { symbol: sym });
+  if (d.error) { msg.className='form-msg err'; msg.textContent='❌ '+d.error; return; }
+
+  msg.className='form-msg ok'; msg.textContent=`✅ ${sym}`;
+  input.value='';
+  document.getElementById(`gdd-${id}`).style.display='none';
+  await loadGroupSymbols(id);
+  // 그룹 카드의 심볼 카운트 갱신
+  await loadGroups();
+  loadSymbols(); reloadStats();
+}
+
+async function removeGroupSymbol(groupId, symbol) {
+  if (!confirm(`${symbol}을 이 그룹에서 제거하시겠습니까?`)) return;
+  const d = await api('DELETE', `/api/admin/groups/${groupId}/symbols/${symbol}`);
+  if (d.orphan_removed) {
+    alert(`🗑 ${symbol}이 어느 그룹에도 속하지 않아 데이터가 삭제됩니다.`);
+  }
+  await loadGroupSymbols(groupId);
+  await loadGroups();
+  loadSymbols(); reloadStats();
+}
+
+// ── ETF 구성종목 조회 패널
+let holdingsPanelGroupId = null;
+
+async function openHoldingsPanel(groupId) {
+  holdingsPanelGroupId = groupId;
+  const etf = prompt('구성종목을 조회할 ETF 티커를 입력하세요 (예: XLK, SOXX):');
+  if (!etf) return;
+
+  const card = document.getElementById(`gc-${groupId}`);
+  let panel  = document.getElementById(`hp-${groupId}`);
+  if (!panel) {
+    panel = document.createElement('div');
+    panel.id = `hp-${groupId}`;
+    panel.className = 'holdings-panel';
+    card.appendChild(panel);
+  }
+  panel.innerHTML = '<div class="loading">조회 중...</div>';
+
+  const d = await api('GET', `/api/admin/etf-holdings/${etf.toUpperCase()}`);
+  if (d.error) { panel.innerHTML = `<div style="color:var(--red);font-size:13px">❌ ${d.error}</div>`; return; }
+
+  const holdings = d.holdings ?? [];
+  if (!holdings.length) { panel.innerHTML = '<div class="empty">구성종목 없음</div>'; return; }
+
+  panel.innerHTML = `
+    <div style="font-size:12px;font-weight:700;color:var(--text3);margin-bottom:8px">
+      ${etf.toUpperCase()} 구성종목 상위 ${holdings.length}개
+      <button class="btn btn-blue btn-sm" style="margin-left:8px" onclick="addAllHoldings(${groupId})">전체 추가</button>
+      <button class="btn btn-sm" style="margin-left:4px;background:var(--bg);border:1px solid var(--border);color:var(--text3)" onclick="this.closest('.holdings-panel').remove()">닫기</button>
+    </div>
+    ${holdings.map(h => `
+      <div class="holding-row">
+        <span class="holding-sym">${escHtml(h.symbol)}</span>
+        <span class="holding-name">${escHtml(h.name||'')}</span>
+        <span class="holding-pct">${h.pct != null ? h.pct+'%' : ''}</span>
+        <button class="btn btn-green btn-sm" onclick="addSingleHolding(${groupId},'${h.symbol}',this)">추가</button>
+      </div>
+    `).join('')}
+  `;
+
+  // 전체 추가용으로 캐싱
+  panel._holdings = holdings;
+}
+
+async function addSingleHolding(groupId, symbol, btn) {
+  btn.disabled = true; btn.textContent = '...';
+  await api('POST', `/api/admin/groups/${groupId}/symbols`, { symbol });
+  btn.textContent = '✓'; btn.className = 'btn btn-sm';
+  await loadGroupSymbols(groupId);
+  loadSymbols(); reloadStats();
+}
+
+async function addAllHoldings(groupId) {
+  const panel = document.getElementById(`hp-${groupId}`);
+  if (!panel?._holdings?.length) return;
+  if (!confirm(`${panel._holdings.length}개 종목을 모두 추가하시겠습니까?`)) return;
+
+  for (const h of panel._holdings) {
+    await api('POST', `/api/admin/groups/${groupId}/symbols`, { symbol: h.symbol });
+    await sleep(100);
+  }
+  await loadGroupSymbols(groupId);
+  await loadGroups();
+  loadSymbols(); reloadStats();
+}
+
+// ── 그룹 심볼 자동완성
+async function onGroupSymInput(groupId, val) {
+  const dd = document.getElementById(`gdd-${groupId}`);
+  if (val.length < 1) { dd.style.display='none'; return; }
+  const d = await api('GET', `/api/symbols?q=${val.toUpperCase()}`);
+  const syms = d.symbols ?? [];
+  if (!syms.length) { dd.style.display='none'; return; }
+  dd.innerHTML = syms.map(s => `
+    <div class="sym-dd-item" onclick="selectGroupSym(${groupId},'${s.symbol}')">
+      <div class="sym-dd-sym">${s.symbol}</div>
+      <div class="sym-dd-name">${escHtml(s.name||'')}</div>
+    </div>
+  `).join('');
+  dd.style.display='block';
+}
+
+function selectGroupSym(groupId, symbol) {
+  document.getElementById(`gi-${groupId}`).value = symbol;
+  document.getElementById(`gdd-${groupId}`).style.display = 'none';
+}
+
+// ════════════════════════════════════════════
+// 심볼 목록 탭
+// ════════════════════════════════════════════
+async function loadSymbols() {
+  const d = await api('GET', '/api/admin/symbols');
+  const syms = d.symbols ?? [];
+  document.getElementById('sym-count').textContent = syms.length + '개';
+
+  const tbody = document.getElementById('sym-tbody');
+  if (!syms.length) {
+    tbody.innerHTML = '<tr><td colspan="7" class="empty">심볼 없음</td></tr>';
+    return;
+  }
+  tbody.innerHTML = syms.map(s => `
+    <tr>
+      <td class="sym-bold">${escHtml(s.symbol)}</td>
+      <td>${escHtml(s.name||'-')}</td>
+      <td><span class="type-badge ${s.type==='etf'?'type-etf':'type-stock'}">${s.type||'?'}</span></td>
+      <td>${(s.groups||'').split(',').filter(Boolean).map(g=>`<span class="tag tag-blue">${escHtml(g)}</span>`).join('')||'-'}</td>
+      <td style="color:var(--text3);font-size:12px">${s.added_date||''}</td>
+      <td style="color:var(--text3);font-size:12px">${escHtml(s.comment||'')}</td>
+      <td>
+        <button class="btn btn-red btn-sm" onclick="deleteSymbol('${s.symbol}')">삭제</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+async function deleteSymbol(symbol) {
+  if (!confirm(`${symbol}을 삭제하시겠습니까?\n관련 데이터도 모두 삭제됩니다.`)) return;
+  await api('DELETE', `/api/admin/symbols/${symbol}`);
+  await loadSymbols(); loadGroups(); reloadStats();
+}
+
+async function refreshAllSymbols() {
+  if (!confirm('Yahoo Finance로 모든 종목의 name/type을 갱신합니다. 계속하시겠습니까?')) return;
+  const btn = event.target;
+  btn.disabled = true; btn.textContent = '🔄 갱신 중...';
+  const d = await api('POST', '/api/admin/symbols/refresh');
+  btn.disabled = false; btn.textContent = '🔄 name/type 일괄 갱신';
+  if (d.ok) {
+    alert(`✅ 갱신 완료\n업데이트: ${d.updated?.length||0}개 / 실패: ${d.failed?.length||0}개`);
+    await loadSymbols();
+  } else {
+    alert('❌ 실패: ' + (d.error||'알 수 없는 오류'));
+  }
+}
+
+// ════════════════════════════════════════════
+// BB 위치 맵
+// ════════════════════════════════════════════
+async function loadBBMap() {
+  const d = await api('GET', '/api/admin/bb-map');
+  const list = d.bb_map ?? [];
+  document.getElementById('bb-count').textContent = list.length + '개';
+
+  const el = document.getElementById('bb-list');
+  if (!list.length) {
+    el.innerHTML = '<div class="empty">BB 맵 종목이 없습니다.</div>';
+    return;
+  }
+  el.innerHTML = list.map(b => `
+    <div class="bb-item">
+      <span class="bb-color" style="background:${b.color||'#555'}"></span>
+      <span class="bb-sym">${escHtml(b.symbol)}</span>
+      <span class="bb-name">${escHtml(b.name||'')}</span>
+      <input type="color" value="${b.color||'#58a6ff'}"
+        onchange="updateBBColor('${b.symbol}',this.value)"
+        title="색상 변경" style="width:28px;height:24px">
+      <input type="number" class="bb-order" value="${b.sort_order}"
+        onchange="updateBBOrder('${b.symbol}',this.value)"
+        title="표시 순서" min="1" max="99">
+      <label class="bb-active">
+        <input type="checkbox" ${b.is_active?'checked':''} onchange="updateBBActive('${b.symbol}',this.checked)">
+        표시
+      </label>
+      <button class="btn btn-red btn-sm" onclick="deleteBBMap('${b.symbol}')">삭제</button>
+    </div>
+  `).join('');
+}
+
+async function addBBMap() {
+  const symbol    = document.getElementById('bb-symbol').value.trim().toUpperCase();
+  const color     = document.getElementById('bb-color').value;
+  const sort_order = parseInt(document.getElementById('bb-order').value) || 99;
+  const msg       = document.getElementById('bb-msg');
+
+  if (!symbol) { msg.className='form-msg err'; msg.textContent='❌ 티커 입력 필요'; return; }
+  msg.className='form-msg'; msg.textContent='추가 중... (Yahoo 조회 + 백필 중)';
+
+  const d = await api('POST', '/api/admin/bb-map', { symbol, color, sort_order });
+  if (d.error) { msg.className='form-msg err'; msg.textContent='❌ '+d.error; return; }
+
+  msg.className='form-msg ok'; msg.textContent=`✅ ${d.symbol} (${d.name}) 추가 완료`;
+  document.getElementById('bb-symbol').value='';
+  await loadBBMap(); reloadStats();
+}
+
+async function updateBBColor(symbol, color) {
+  const item = document.querySelector(`[data-bbsym="${symbol}"] .bb-color`);
+  await api('PATCH', `/api/admin/bb-map/${symbol}`, { color });
+  await loadBBMap();
+}
+
+async function updateBBOrder(symbol, sort_order) {
+  await api('PATCH', `/api/admin/bb-map/${symbol}`, { sort_order: parseInt(sort_order) });
+}
+
+async function updateBBActive(symbol, is_active) {
+  await api('PATCH', `/api/admin/bb-map/${symbol}`, { is_active: is_active ? 1 : 0 });
+}
+
+async function deleteBBMap(symbol) {
+  if (!confirm(`${symbol}을 BB 맵에서 제거하시겠습니까?\n(price_indicators 데이터는 유지됩니다)`)) return;
+  await api('DELETE', `/api/admin/bb-map/${symbol}`);
+  await loadBBMap(); reloadStats();
+}
+
+// ════════════════════════════════════════════
+// 유틸
+// ════════════════════════════════════════════
+function escHtml(str) {
+  return String(str||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// 외부 클릭 시 드롭다운 닫기
+document.addEventListener('click', e => {
+  if (!e.target.closest('.sym-wrap')) {
+    document.querySelectorAll('.sym-dropdown').forEach(d => d.style.display='none');
+  }
+});
+</script>
+</body>
+</html>
