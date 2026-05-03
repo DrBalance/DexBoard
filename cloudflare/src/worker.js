@@ -221,6 +221,21 @@ export default {
       }
     }
 
+    // ── GET /api/collect-targets (CRON_SECRET 인증 — 프론트엔드용) ─
+    if (request.method === "GET" && path === "/api/collect-targets") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      const rows = await env.DB.prepare(`
+        SELECT DISTINCT s.symbol, s.name, s.type
+        FROM symbols s
+        JOIN symbol_groups sg ON s.symbol = sg.symbol
+        ORDER BY s.type DESC, s.symbol
+      `).all();
+      return json({ symbols: rows.results ?? [] }, 200, corsHeaders);
+    }
+
     // ── /api/admin/* ────────────────────────────────────────────
     if (path.startsWith("/api/admin/")) {
       return handleAdmin(path, request, env);
