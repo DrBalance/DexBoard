@@ -471,6 +471,26 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // ── GET /etf-holdings/:ticker ─────────────────────────────────────
+  // CF Worker IP는 Yahoo에서 차단 → Railway에서 직접 호출
+  const etfMatch = req.url.match(/^\/etf-holdings\/([A-Z0-9.\-]+)$/i);
+  if (req.method === "GET" && etfMatch) {
+    const auth = req.headers["x-cron-secret"];
+    if (CRON_SECRET && auth !== CRON_SECRET) {
+      res.writeHead(401);
+      return res.end("Unauthorized");
+    }
+
+    const ticker = etfMatch[1].toUpperCase();
+    try {
+      const holdings = await fetchETFHoldings(ticker);
+      return sendJSON(res, 200, { etf: ticker, holdings });
+    } catch (err) {
+      console.error(`[ETF] ${ticker} 조회 실패:`, err.message);
+      return sendJSON(res, 502, { error: err.message });
+    }
+  }
+
   // ── POST /rescore ────────────────────────────────────────────────
   // 기존 options_dex + price_indicators 데이터로 점수만 재계산
   if (req.method === "POST" && req.url === "/rescore") {
@@ -751,6 +771,71 @@ const server = http.createServer(async (req, res) => {
 /* server.listen(PORT, () => {
   console.log(`DexBoard Railway service listening on port ${PORT}`);
 }); */
+// ============================================
+// ETF 구성종목 조회 (Yahoo Finance)
+// Railway 서버에서 직접 호출 — CF Worker IP 우회
+// ============================================
+async function fetchETFHoldings(ticker) {
+  // ── 시도 1: Yahoo Finance v1 quoteSummary
+  try {
+    const url = `https://query1.finance.yahoo.com/v1/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=topHoldings`;
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+        'Accept-Language': 'en-US,en;q=0.9',
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (res.ok) {
+      const data     = await res.json();
+      const holdings = data?.quoteSummary?.result?.[0]?.topHoldings?.holdings ?? [];
+      if (holdings.length > 0) {
+        console.log(`[ETF] ${ticker}: Yahoo v1 성공 (${holdings.length}개)`);
+        return holdings.map(h => ({
+          symbol: h.symbol,
+          name:   h.holdingName,
+          pct:    h.holdingPercent ? +(h.holdingPercent * 100).toFixed(2) : null,
+        }));
+      }
+    }
+    console.warn(`[ETF] ${ticker}: Yahoo v1 실패 (${res.status}), v10 시도`);
+  } catch (e) {
+    console.warn(`[ETF] ${ticker}: Yahoo v1 오류 (${e.message}), v10 시도`);
+  }
+
+  // ── 시도 2: Yahoo Finance v10
+  try {
+    const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=topHoldings`;
+    const res = await fetch(url, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+        'Accept': 'application/json',
+      },
+      signal: AbortSignal.timeout(10000),
+    });
+
+    if (res.ok) {
+      const data     = await res.json();
+      const holdings = data?.quoteSummary?.result?.[0]?.topHoldings?.holdings ?? [];
+      if (holdings.length > 0) {
+        console.log(`[ETF] ${ticker}: Yahoo v10 성공 (${holdings.length}개)`);
+        return holdings.map(h => ({
+          symbol: h.symbol,
+          name:   h.holdingName,
+          pct:    h.holdingPercent ? +(h.holdingPercent * 100).toFixed(2) : null,
+        }));
+      }
+    }
+    console.warn(`[ETF] ${ticker}: Yahoo v10 실패 (${res.status})`);
+  } catch (e) {
+    console.warn(`[ETF] ${ticker}: Yahoo v10 오류 (${e.message})`);
+  }
+
+  throw new Error(`${ticker} ETF 구성종목을 가져올 수 없습니다 (Yahoo Finance 차단 또는 데이터 없음)`);
+}
+
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`DexBoard Railway service listening on port ${PORT}`);
   startScheduler();
