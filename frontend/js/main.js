@@ -6,6 +6,7 @@ import { loadAll, loadSnapshot } from './api.js';
 import { startClock }         from './clock.js';
 import { initTabs, bindToggle } from './tabs.js';
 import { INTERVAL_SNAP, INTERVAL_FULL } from './config.js';
+import { initLive }           from './live.js';
 
 // ── clock.js 가 찾는 id와 index.html id 브리지 ────────────
 // clock.js: market-state-badge / market-state-dot / market-state-label
@@ -131,5 +132,8 @@ bindToggle('chart-expiry-toggle', g => { state.chartGroup  = g; });
 
 startClock();
 
-// 최초 1회 무조건 로드 (장 상태 무관 — 마감 중에도 KV 데이터 표시)
-fetchAndRender();
+// live 탭 초기화 → tick 콜백 등록까지 완료 후 나머지 실행
+(async () => {
+  await initLive();  // registerTickCallback 등록까지 보장
+  fetchAndRender();  // 최초 1회 무조건 로드 (장 상태 무관)
+})();

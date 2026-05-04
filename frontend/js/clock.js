@@ -27,6 +27,10 @@ const MARKET_STYLE = {
 let _pollTimer   = null;
 let _schedTimers = [];
 
+// tick 콜백 — initLive()가 등록, tick()이 매초 호출
+let _tickCallback = null;
+export function registerTickCallback(fn) { _tickCallback = fn; }
+
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 에러 모달
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -105,8 +109,9 @@ function getETParts() {
   const get    = t => fmt.find(p => p.type === t)?.value ?? '0';
   const h      = +get('hour') === 24 ? 0 : +get('hour');
   const m      = +get('minute');
+  const s      = +get('second');
   const iso    = `${get('year')}-${get('month')}-${get('day')}`;
-  return { h, m, etHour: h + m / 60, todayISO: iso, now };
+  return { h, m, s, etHour: h + m / 60, todayISO: iso, now };
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -140,7 +145,7 @@ function applyState(newState) {
 // 시계 tick (1초)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function tick() {
-  const { etHour, todayISO, now } = getETParts();
+  const { h, m, s, etHour, todayISO, now } = getETParts();
 
   window._etHour   = etHour;
   window._todayISO = todayISO;
@@ -159,6 +164,9 @@ function tick() {
   const etEl  = document.getElementById('clock-et');
   if (kstEl) kstEl.textContent = kst + ' KST';
   if (etEl)  etEl.textContent  = et  + ' ET';
+
+  // ── 폴링 스케줄 (헤더 시계 기준) ────────────────────────
+  if (_tickCallback) _tickCallback({ h, m, s });
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

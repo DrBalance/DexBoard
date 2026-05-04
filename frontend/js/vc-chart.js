@@ -2,7 +2,7 @@
 // vc-chart.js — VIX + VOLD 듀얼 페인 SVG 차트 v2
 //
 // 구조:
-//   상단 페인: VIX 1분봉 (KV snapshot:1min → pushVixPoint)
+//   상단 페인: VIX 1분봉 (Yahoo Finance → setVixSeries)
 //   하단 페인: VOLD 누적 (Twelve Data OBV → setVoldSeries)
 //
 // 레이아웃:
@@ -18,9 +18,8 @@
 //
 // 외부 호출:
 //   initVCChart(containerId)             → 초기화
-//   pushVixPoint(ts, value)              → VIX 포인트 추가 (ts: UTC ISO)
+//   setVixSeries(series, prevClose)      → VIX 전체 시리즈 교체 (ts: UTC ISO, v: number)
 //   setVoldSeries(series)                → VOLD 전체 교체
-//   setVixPrevClose(value)               → 전일 종가 기준선
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 // ── 레이아웃 상수 ─────────────────────────────────────────
@@ -159,23 +158,14 @@ export function initVCChart(containerId) {
   _render();
 }
 
-export function setVixPrevClose(value) {
-  _vixPrevClose = value;
-  _renderPane('vix');
-}
-
-export function pushVixPoint(ts, value) {
-  if (value == null || isNaN(value)) return;
-  const ms = _isoToMs(ts);
-  // 고정 시간축 범위 밖은 무시
-  if (ms < _axisStartMs || ms > _axisEndMs) return;
-  const idx = _vixData.findIndex(d => d.ms === ms);
-  if (idx !== -1) {
-    _vixData[idx].v = value;
-  } else {
-    _vixData.push({ ms, v: value });
-    _vixData.sort((a, b) => a.ms - b.ms);
-  }
+export function setVixSeries(series, prevClose = null) {
+  if (!Array.isArray(series) || !series.length) return;
+  _vixPrevClose = prevClose;
+  _vixData = series
+    .filter(d => d.v != null && !isNaN(d.v))
+    .map(d => ({ ms: _isoToMs(d.ts), v: d.v }))
+    .filter(d => d.ms >= _axisStartMs && d.ms <= _axisEndMs)
+    .sort((a, b) => a.ms - b.ms);
   _renderPane('vix');
 }
 
