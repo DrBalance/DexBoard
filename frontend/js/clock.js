@@ -265,19 +265,6 @@ async function initSchedule() {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 장중 30분 폴링 이벤트 (PRE 진입 시 시작)
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-window.addEventListener('marketStateChanged', ({ detail }) => {
-  const { marketState, prevState } = detail;
-  if (marketState === 'PRE' && prevState === 'CLOSED') {
-    console.log('[Clock] 장중 30분 폴링 시작');
-    setInterval(() => {
-      window.dispatchEvent(new CustomEvent('clockPoll30m'));
-    }, 30 * 60 * 1000);
-  }
-});
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // startClock — 진입점
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export function startClock() {

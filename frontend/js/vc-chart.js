@@ -2,8 +2,8 @@
 // vc-chart.js — VIX + VOLD 듀얼 페인 SVG 차트 v2
 //
 // 구조:
-//   상단 페인: VIX 1분봉 (Yahoo Finance via /api/vix-tick)
-//   하단 페인: VOLD 누적 (RSP WebSocket 틱)
+//   상단 페인: VIX 1분봉 (KV snapshot:1min → pushVixPoint)
+//   하단 페인: VOLD 누적 (Twelve Data OBV → setVoldSeries)
 //
 // 레이아웃:
 //   [y축 고정 컬럼] | [공통 스크롤 컨테이너]
@@ -16,14 +16,10 @@
 //   줌 버튼 = SVG width 배율만 변경 (재렌더 없음)
 //   x축 레이블: KST HH:MM 표시
 //
-// 복원:
-//   페이지 로드 시 /api/vix-tick → 당일 전체 1분봉 일괄 push
-//
 // 외부 호출:
-//   initVCChart(containerId, cfApiBase)  → 초기화 + 복원
+//   initVCChart(containerId)             → 초기화
 //   pushVixPoint(ts, value)              → VIX 포인트 추가 (ts: UTC ISO)
 //   setVoldSeries(series)                → VOLD 전체 교체
-//   pushVoldPoint(ts, value)             → VOLD 단일 추가
 //   setVixPrevClose(value)               → 전일 종가 기준선
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -137,7 +133,6 @@ function _etStrToMs(etStr) {
 // 내부 상태
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 let _containerId  = null;
-let _cfApiBase    = '';
 let _zoomIdx      = 0;       // 기본: '1h'
 
 let _vixData      = [];      // [{ ms: UTC ms, v: number }] 정렬됨
@@ -155,16 +150,13 @@ let _vixYMinRatio = 0.97;
 // 공개 API
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-export async function initVCChart(containerId, cfApiBase) {
+export function initVCChart(containerId) {
   _containerId = containerId;
-  _cfApiBase   = cfApiBase || '';
   _initAxisMs();
   _buildShell();
   _bindZoomButtons();
   _updateSvgWidth();
   _render();
-  // 당일 VIX 히스토리 복원
-  await _restoreVixHistory();
 }
 
 export function setVixPrevClose(value) {
@@ -197,51 +189,6 @@ export function setVoldSeries(series) {
   _renderPane('vold');
 }
 
-export function pushVoldPoint(ts, value) {
-  if (value == null || isNaN(value)) return;
-  const ms = _etStrToMs(ts);
-  if (ms < _axisStartMs || ms > _axisEndMs) return;
-  const idx = _voldData.findIndex(d => d.ms === ms);
-  if (idx !== -1) {
-    _voldData[idx].v = value;
-  } else {
-    _voldData.push({ ms, v: value });
-    _voldData.sort((a, b) => a.ms - b.ms);
-  }
-  _renderPane('vold');
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 당일 VIX 히스토리 복원 (/api/vix-tick)
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-async function _restoreVixHistory() {
-  if (!_cfApiBase) return;
-  try {
-    const res  = await fetch(`${_cfApiBase}/api/vix-tick`);
-    if (!res.ok) return;
-    const data = await res.json();
-
-    if (data.prevClose != null) {
-      _vixPrevClose = data.prevClose;
-    }
-
-    if (Array.isArray(data.points) && data.points.length) {
-      // 일괄 삽입 (정렬 1회만)
-      _vixData = [];
-      for (const p of data.points) {
-        if (p.v == null || isNaN(p.v)) continue;
-        const ms = _isoToMs(p.ts);
-        if (ms < _axisStartMs || ms > _axisEndMs) continue;
-        _vixData.push({ ms, v: p.v });
-      }
-      _vixData.sort((a, b) => a.ms - b.ms);
-    }
-
-    _renderPane('vix');
-  } catch (e) {
-    console.warn('[vc-chart] VIX 히스토리 복원 실패:', e.message);
-  }
-}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // HTML 뼈대 생성
