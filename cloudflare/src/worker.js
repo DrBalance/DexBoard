@@ -1,13 +1,13 @@
 // DexBoard – Cloudflare Workers main
 // Routes:
-//   GET  /api/snapshot        → latest 1min snapshot from KV (VIX only)
+//   GET  /api/snapshot        → latest 1min snapshot from KV (SPY + VIX)
 //   GET  /api/snapshot/prev   → previous snapshot from KV
 //   GET  /api/dex/:group      → DEX data (0dte | weekly | monthly | quarterly | structure)
 //   GET  /api/dex/open        → opening snapshot
 //   GET  /api/dex/0dte/prev   → 15분 전 0dte 스냅샷 (delta15m 계산용)
 //   GET  /api/ai-analysis     → 최신 AI 분석 결과 KV 캐시 (ai:analysis)
-//   GET  /api/spy-price       → SPY 현재가 프록시 (Finnhub REST → CORS 우회)
-//   GET  /api/vix-tick        → VIX 1분봉 포인트 배열 (vc-chart.js용)
+//   GET  /api/spy-price       → SPY 현재가 프록시 (Twelve Data REST → CORS 우회)
+//   GET  /api/prevclose       → 전날 SPY/VIX 종가 (KV snapshot:prevclose)
 //   GET  /api/screener        → 스크리너 점수 결과 (?date=YYYY-MM-DD)
 //   GET  /api/screener/sector → 섹터별 필터 (?sector=Technology&date=...)
 //   POST /api/screener/run    → 수동 스크리너 실행 (테스트용)
@@ -147,37 +147,13 @@ export default {
       return json({ error: "SPY 가격 없음" }, 503, corsHeaders);
     }
 
-    // ── GET /api/vix-tick ───────────────────────────────────────
-    // VIX 1분봉 포인트 배열 반환 (vc-chart.js용)
-    // { prevClose: number, points: [{ ts: ISOstring, v: number }] }
-    if (request.method === "GET" && path === "/api/vix-tick") {
-      try {
-        const url = `${env.YAHOO_BASE}/%5EVIX?interval=1m&range=1d`;
-        const res = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0" } });
-        if (!res.ok) return json({ error: `Yahoo VIX: ${res.status}` }, 502, corsHeaders);
-
-        const data      = await res.json();
-        const result    = data?.chart?.result?.[0];
-        if (!result)    return json({ error: "Yahoo VIX: no result" }, 502, corsHeaders);
-
-        const meta       = result.meta;
-        const timestamps = result.timestamp ?? [];
-        const closes     = result.indicators?.quote?.[0]?.close ?? [];
-        const prevClose  = meta.chartPreviousClose ?? meta.previousClose ?? null;
-
-        // timestamp(Unix초) → ET ISO 문자열 + 유효한 close만 추출
-        const points = timestamps
-          .map((ts, i) => ({ ts, v: closes[i] }))
-          .filter(d => d.v != null && !isNaN(d.v))
-          .map(d => ({
-            ts: new Date(d.ts * 1000).toISOString(),
-            v:  round2(d.v),
-          }));
-
-        return json({ prevClose, points }, 200, corsHeaders);
-      } catch (e) {
-        return json({ error: e.message }, 502, corsHeaders);
-      }
+    // ── GET /api/prevclose ─────────────────────────────────────
+    // 전날 종가 반환 (프리마켓 VIX 차트 baseline용)
+    // { spy: number, vix: number, date: string }
+    if (request.method === "GET" && path === "/api/prevclose") {
+      const data = await env.DEX_KV.get("snapshot:prevclose", { type: "json" });
+      if (!data) return json({ error: "No prevclose yet" }, 200, corsHeaders);
+      return json(data, 200, corsHeaders);
     }
 
     // ── GET /api/symbols (자동완성 — 인증 불필요) ───────────────
