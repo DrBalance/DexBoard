@@ -95,6 +95,7 @@ function renderShell() {
     <div class="bb-map-header">
       <span class="bb-map-title">섹터 ETF BB 위치 맵</span>
       <div class="bb-map-range-pills" id="bb-map-range-pills">
+        <button class="pill" data-r="2w">2W</button>
         <button class="pill" data-r="1m">1M</button>
         <button class="pill active" data-r="3m">3M</button>
         <button class="pill" data-r="6m">6M</button>
@@ -690,29 +691,82 @@ function renderBbMap(data) {
 
   const { symbols, dates, series } = data;
 
-  // 레전드 렌더
+  // 레전드 렌더 — 호버 시 해당 심볼 강조 연동
   const legendEl = document.getElementById('bb-map-legend');
   if (legendEl) {
     legendEl.innerHTML = symbols.map((s, i) => `
-      <span class="bb-map-legend-item">
+      <span class="bb-map-legend-item" data-idx="${i}">
         <span class="bb-map-legend-dot" style="background:${BB_MAP_COLORS[i % BB_MAP_COLORS.length]}"></span>
         <span class="bb-map-legend-sym">${s.symbol}</span>
       </span>
     `).join('');
   }
 
-  // Chart.js 데이터셋
+  // Chart.js 데이터셋 — 초기 상태: 모두 보통 밝기
   const datasets = symbols.map((s, i) => ({
-    label:           s.symbol,
-    data:            series[s.symbol] ?? [],
-    borderColor:     BB_MAP_COLORS[i % BB_MAP_COLORS.length],
-    backgroundColor: BB_MAP_COLORS[i % BB_MAP_COLORS.length] + '18',
-    borderWidth:     2,
-    pointRadius:     0,
-    pointHoverRadius: 4,
-    tension:         0.3,
-    spanGaps:        true,
+    label:            s.symbol,
+    data:             series[s.symbol] ?? [],
+    borderColor:      BB_MAP_COLORS[i % BB_MAP_COLORS.length],
+    backgroundColor:  BB_MAP_COLORS[i % BB_MAP_COLORS.length] + '18',
+    borderWidth:      2,
+    pointRadius:      0,
+    pointHoverRadius: 5,
+    tension:          0.3,
+    spanGaps:         true,
   }));
+
+  // ── 호버 강조 헬퍼 ──────────────────────────────────────────────
+  // ── 터치 환경 감지
+  const isTouch = () => window.matchMedia('(hover: none)').matches;
+
+  // pinnedIdx: 터치로 고정된 데이터셋 인덱스 (null = 고정 없음)
+  let pinnedIdx = null;
+
+  function applyHoverFocus(chart, activeIdx) {
+    chart.data.datasets.forEach((ds, i) => {
+      const color = BB_MAP_COLORS[i % BB_MAP_COLORS.length];
+      if (activeIdx === null) {
+        ds.borderColor = color;
+        ds.borderWidth = 2;
+      } else if (i === activeIdx) {
+        ds.borderColor = color;
+        ds.borderWidth = 3.5;
+      } else {
+        ds.borderColor = color + '30';
+        ds.borderWidth = 1;
+      }
+    });
+    chart.update('none');
+
+    // 레전드 동기화
+    if (legendEl) {
+      legendEl.querySelectorAll('.bb-map-legend-item').forEach((el, i) => {
+        el.style.opacity = (activeIdx === null || i === activeIdx) ? '1' : '0.25';
+        el.querySelector('.bb-map-legend-sym').style.fontWeight = (i === activeIdx) ? '800' : '700';
+      });
+    }
+  }
+
+  // 터치: 가장 가까운 데이터셋 인덱스 찾기
+  function findClosestDataset(chart, touchX, touchY) {
+    const rect = chart.canvas.getBoundingClientRect();
+    const relX = touchX - rect.left;
+    const relY = touchY - rect.top;
+    // Chart.js getElementsAtEventForMode 대신 scales로 직접 계산
+    const xScale = chart.scales.x;
+    const yScale = chart.scales.y;
+    const dataIdx = xScale.getValueForPixel(relX);
+    const clampedDataIdx = Math.max(0, Math.min(Math.round(dataIdx), chart.data.labels.length - 1));
+    let closestIdx = null, minDist = Infinity;
+    chart.data.datasets.forEach((ds, i) => {
+      const val = ds.data[clampedDataIdx];
+      if (val == null) return;
+      const yPx = yScale.getPixelForValue(val);
+      const dist = Math.abs(yPx - relY);
+      if (dist < minDist) { minDist = dist; closestIdx = i; }
+    });
+    return closestIdx;
+  }
 
   // 기준선 플러그인 (0.2 / 0.4 / 0.8)
   const refLinePlugin = {
@@ -720,9 +774,9 @@ function renderBbMap(data) {
     afterDraw(chart) {
       const { ctx, scales: { x, y } } = chart;
       const lines = [
-        { val: 0.8, color: '#ef4444', label: '0.8 (BB 상단)' },
-        { val: 0.4, color: '#f59e0b', label: '0.4' },
-        { val: 0.2, color: '#22c55e', label: '0.2 (저점)' },
+        { val: 0.8, color: '#ef444488', label: '0.8' },
+        { val: 0.4, color: '#f59e0b88', label: '0.4' },
+        { val: 0.2, color: '#22c55e88', label: '0.2' },
       ];
       ctx.save();
       lines.forEach(({ val, color, label }) => {
@@ -747,7 +801,7 @@ function renderBbMap(data) {
   // 기존 차트 파괴
   if (bbMapChart) { bbMapChart.destroy(); bbMapChart = null; }
 
-  // 날짜 레이블: 월별로 축약
+  // 날짜 레이블
   const labels = dates.map(d => {
     const [, m, day] = d.split('-');
     return `${m}/${day}`;
@@ -761,25 +815,44 @@ function renderBbMap(data) {
       maintainAspectRatio: false,
       interaction: { mode: 'index', intersect: false },
       plugins: {
-        legend: { display: false },  // 커스텀 레전드 사용
+        legend: { display: false },
         tooltip: {
+          itemSort: (a, b) => b.parsed.y - a.parsed.y,  // 높은 값 순 정렬
           callbacks: {
-            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y != null ? (ctx.parsed.y * 100).toFixed(0) + '%' : '-'}`,
+            label: ctx => {
+              const val = ctx.parsed.y;
+              return ` ${ctx.dataset.label}: ${val != null ? (val * 100).toFixed(0) + '%' : '-'}`;
+            },
           },
         },
+      },
+      onHover: (event, elements) => {
+        // 터치 환경에서는 onHover 무시 (touch 이벤트로 별도 처리)
+        if (isTouch()) return;
+        if (elements && elements.length > 0) {
+          const mouseY = event.y;
+          let closestIdx = null, minDist = Infinity;
+          elements.forEach(el => {
+            const dist = Math.abs(el.element.y - mouseY);
+            if (dist < minDist) { minDist = dist; closestIdx = el.datasetIndex; }
+          });
+          applyHoverFocus(bbMapChart, closestIdx);
+        } else {
+          applyHoverFocus(bbMapChart, null);
+        }
       },
       scales: {
         x: {
           ticks: {
-            color:    '#94a3b8',
-            maxTicksLimit: 10,
-            maxRotation: 0,
+            color:         '#94a3b8',
+            maxTicksLimit: 12,
+            maxRotation:   0,
           },
           grid: { color: '#1e293b' },
         },
         y: {
-          min:  -0.1,
-          max:   1.1,
+          min:  -0.05,
+          max:   1.05,
           ticks: {
             color:    '#94a3b8',
             callback: v => (v * 100).toFixed(0) + '%',
@@ -789,5 +862,53 @@ function renderBbMap(data) {
       },
     },
     plugins: [refLinePlugin],
+  });
+
+  // ── 데스크탑: 레전드 mouseenter/leave
+  if (legendEl) {
+    legendEl.querySelectorAll('.bb-map-legend-item').forEach((el, i) => {
+      el.style.cursor = 'pointer';
+      el.addEventListener('mouseenter', () => {
+        if (!isTouch()) applyHoverFocus(bbMapChart, i);
+      });
+      el.addEventListener('mouseleave', () => {
+        if (!isTouch()) applyHoverFocus(bbMapChart, null);
+      });
+      // 터치: 레전드 탭으로 고정/해제
+      el.addEventListener('touchend', (e) => {
+        e.preventDefault();
+        if (pinnedIdx === i) {
+          pinnedIdx = null;
+          applyHoverFocus(bbMapChart, null);
+        } else {
+          pinnedIdx = i;
+          applyHoverFocus(bbMapChart, i);
+        }
+      });
+    });
+  }
+
+  // ── 데스크탑: 캔버스 마우스 이탈 → 원상복귀
+  canvas.addEventListener('mouseleave', () => {
+    if (!isTouch()) applyHoverFocus(bbMapChart, null);
+  });
+
+  // ── 터치: 캔버스 탭으로 가장 가까운 라인 고정/해제
+  canvas.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    const touch = e.changedTouches[0];
+    const idx = findClosestDataset(bbMapChart, touch.clientX, touch.clientY);
+    if (idx === null) {
+      // 빈 영역 탭 → 해제
+      pinnedIdx = null;
+      applyHoverFocus(bbMapChart, null);
+    } else if (pinnedIdx === idx) {
+      // 같은 라인 재탭 → 해제
+      pinnedIdx = null;
+      applyHoverFocus(bbMapChart, null);
+    } else {
+      pinnedIdx = idx;
+      applyHoverFocus(bbMapChart, idx);
+    }
   });
 }
