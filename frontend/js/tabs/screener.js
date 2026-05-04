@@ -9,6 +9,21 @@ import { fmt } from '../fmt.js';
 import { drillTo } from './structure.js';
 import { goToTab } from '../tabs.js';
 
+// Chart.js 동적 로드 (전역 Chart 없을 때 CDN에서 가져옴)
+let _chartJsReady = null;
+async function ensureChart() {
+  if (typeof Chart !== 'undefined') return;
+  if (_chartJsReady) return _chartJsReady;
+  _chartJsReady = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js';
+    s.onload  = resolve;
+    s.onerror = () => reject(new Error('Chart.js 로드 실패'));
+    document.head.appendChild(s);
+  });
+  return _chartJsReady;
+}
+
 // ── 내부 상태
 let allResults     = [];
 let sectorFilter   = 'all';
@@ -247,7 +262,10 @@ function updateCollectUI(data) {
       document.getElementById('sc-progress-fill').style.width  = pct + '%';
       document.getElementById('sc-progress-label').textContent =
         `${progress.done} / ${progress.total}${progress.errors > 0 ? ` (오류: ${progress.errors})` : ''}`;
-      setCollectMsg(`수집 중… ${progress.done}/${progress.total}건`, 'running');
+      const stageLabel = progress.stage === 'bb_map'
+        ? 'BB맵 가격 수집 중'
+        : `옵션 수집 중… ${progress.done}/${progress.total}건`;
+      setCollectMsg(stageLabel, 'running');
     }
 
     // 폴링
@@ -274,8 +292,11 @@ function updateCollectUI(data) {
       const isToday = last_run.date === today;
       if (last_run.ok) {
         const ts = last_run.ts ? new Date(last_run.ts).toLocaleTimeString('ko-KR') : '';
+        const bbPart = last_run.bb_count != null
+          ? ` · BB맵 ${last_run.bb_count}종목`
+          : '';
         setCollectMsg(
-          `마지막 수집: ${last_run.date} (${last_run.count}종목${last_run.errors > 0 ? `, 오류: ${last_run.errors}` : ''}) ${ts}`,
+          `마지막 수집: ${last_run.date} (옵션 ${last_run.count}종목${bbPart}${last_run.errors > 0 ? `, 오류: ${last_run.errors}` : ''}) ${ts}`,
           'ok'
         );
         if (isToday) {
@@ -646,6 +667,7 @@ async function loadBbMap() {
   if (loading) { loading.style.display = 'flex'; loading.textContent = 'BB 맵 데이터 불러오는 중...'; }
 
   try {
+    await ensureChart();
     const res  = await fetch(`${CF_API}/api/bb-map-chart?range=${bbMapRange}`);
     const data = await res.json();
 
