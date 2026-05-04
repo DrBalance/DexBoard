@@ -581,7 +581,7 @@
 /* 차트 영역 */
 .bb-map-chart-wrap {
   position: relative;
-  height: 220px;
+  height: 440px;
 }
 
 .bb-map-loading {
@@ -606,6 +606,6 @@
 @media (max-width: 600px) {
   .sc-collect-panel { flex-direction: column; }
   .sc-collect-right { width: 100%; }
-  .bb-map-chart-wrap { height: 180px; }
+  .bb-map-chart-wrap { height: 300px; }
   .bb-map-legend { gap: 6px; }
 }
