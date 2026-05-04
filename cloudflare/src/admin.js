@@ -145,7 +145,7 @@ export async function handleAdmin(path, request, env) {
   // ── GET /api/admin/etf-holdings/:sym
   const etfHoldings = path.match(/^\/api\/admin\/etf-holdings\/([A-Z0-9.\-]+)$/);
   if (etfHoldings && request.method === 'GET') {
-    return handleGetETFHoldings(etfHoldings[1]);
+    return handleGetETFHoldings(etfHoldings[1], env);
   }
 
   // ════════════════════════════════════════
@@ -520,28 +520,22 @@ async function backfillPriceIndicators(db, symbol) {
 }
 
 // ============================================
-// ETF 구성종목 조회
+// ETF 구성종목 조회 — Railway 프록시
+// CF Worker IP는 Yahoo에서 차단되므로 Railway로 위임
 // ============================================
-async function handleGetETFHoldings(symbol) {
+async function handleGetETFHoldings(symbol, env) {
+  if (!env.RAILWAY_URL) {
+    return json({ error: 'RAILWAY_URL 환경변수 없음' }, 500);
+  }
   try {
-    const url = `https://query1.finance.yahoo.com/v1/finance/quoteSummary/${symbol}`
-      + `?modules=topHoldings`;
+    const url = `${env.RAILWAY_URL}/etf-holdings/${encodeURIComponent(symbol)}`;
     const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      signal: AbortSignal.timeout(10000),
+      headers: { 'x-cron-secret': env.CRON_SECRET || '' },
+      signal: AbortSignal.timeout(15000),
     });
-    if (!res.ok) return json({ error: `Yahoo: ${res.status}` }, 502);
-
-    const data     = await res.json();
-    const holdings = data?.quoteSummary?.result?.[0]?.topHoldings?.holdings ?? [];
-
-    const result = holdings.map(h => ({
-      symbol: h.symbol,
-      name:   h.holdingName,
-      pct:    h.holdingPercent ? +(h.holdingPercent * 100).toFixed(2) : null,
-    }));
-
-    return json({ etf: symbol, holdings: result });
+    const data = await res.json();
+    if (!res.ok) return json(data, res.status);
+    return json(data);
   } catch (err) {
     return json({ error: err.message }, 500);
   }
