@@ -97,9 +97,9 @@ function renderShell() {
   <div id="sc-content" class="sc-content" style="display:none">
 
     <div class="sc-legend">
-      <span class="legend-item"><span class="legend-dot green"></span> 7-10점: 강한 매수 신호</span>
-      <span class="legend-item"><span class="legend-dot amber"></span> 4-6점: 중립 관찰</span>
-      <span class="legend-item"><span class="legend-dot red"></span> 0-3점: 약한 신호</span>
+      <span class="legend-item"><span class="legend-dot green"></span> 8-10점: 강한 매수 신호</span>
+      <span class="legend-item"><span class="legend-dot amber"></span> 5-7점: 중립 관찰</span>
+      <span class="legend-item"><span class="legend-dot red"></span> 0-4점: 약한 신호</span>
       <span class="legend-item"><span class="legend-dot flash"></span> BREAKDOWN: -2σ 이탈</span>
     </div>
 
@@ -112,7 +112,7 @@ function renderShell() {
             <th class="sc-th sortable" data-col="total_score">총점 ↕</th>
             <th class="sc-th sortable" data-col="score_skew">A 스큐</th>
             <th class="sc-th sortable" data-col="score_bb">B BB</th>
-            <th class="sc-th sortable" data-col="score_vol_squeeze">D 변동</th>
+            <th class="sc-th sortable" data-col="score_vol_squeeze">C 변동</th>
             <th class="sc-th sortable" data-col="bb_position">BB위치</th>
             <th class="sc-th sortable" data-col="iv_skew">IV스큐</th>
             <th class="sc-th sortable" data-col="close">현재가</th>
@@ -446,9 +446,9 @@ function renderSummary(data) {
   const el = document.getElementById('sc-summary');
   if (!el) return;
 
-  const strong     = data.filter(r => r.total_score >= 7).length;
-  const moderate   = data.filter(r => r.total_score >= 4 && r.total_score < 7).length;
-  const weak       = data.filter(r => r.total_score < 4).length;
+  const strong     = data.filter(r => r.total_score >= 8).length;
+  const moderate   = data.filter(r => r.total_score >= 5 && r.total_score < 8).length;
+  const weak       = data.filter(r => r.total_score < 5).length;
   const breakdowns = data.filter(r => r.bb_flag === 'BREAKDOWN').length;
   const avgScore   = data.length
     ? (data.reduce((s, r) => s + (r.total_score || 0), 0) / data.length).toFixed(1)
@@ -457,15 +457,15 @@ function renderSummary(data) {
   el.innerHTML = `
     <div class="sc-sum-card">
       <div class="sc-sum-num green">${strong}</div>
-      <div class="sc-sum-label">강한 신호 (7+)</div>
+      <div class="sc-sum-label">강한 신호 (8+)</div>
     </div>
     <div class="sc-sum-card">
       <div class="sc-sum-num amber">${moderate}</div>
-      <div class="sc-sum-label">중립 관찰 (4~6)</div>
+      <div class="sc-sum-label">중립 관찰 (5~7)</div>
     </div>
     <div class="sc-sum-card">
       <div class="sc-sum-num muted">${weak}</div>
-      <div class="sc-sum-label">약한 신호 (~3)</div>
+      <div class="sc-sum-label">약한 신호 (~4)</div>
     </div>
     <div class="sc-sum-card">
       <div class="sc-sum-num red">${breakdowns}</div>
@@ -505,7 +505,7 @@ function renderTable() {
   }
 
   tbody.innerHTML = rows.map((r) => {
-    const scoreColor = r.total_score >= 7 ? 'green' : r.total_score >= 4 ? 'amber' : 'red';
+    const scoreColor = r.total_score >= 8 ? 'green' : r.total_score >= 5 ? 'amber' : 'red';
     const bbPct      = r.bb_position != null ? (r.bb_position * 100).toFixed(0) + '%' : '-';
     const ivSkewStr  = r.iv_skew != null
       ? `<span style="color:${r.iv_skew > 0 ? '#22c55e' : '#ef4444'}">${r.iv_skew > 0 ? '+' : ''}${(r.iv_skew * 100).toFixed(1)}%</span>`
