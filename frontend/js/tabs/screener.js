@@ -9,21 +9,6 @@ import { fmt } from '../fmt.js';
 import { drillTo } from './structure.js';
 import { goToTab } from '../tabs.js';
 
-// Chart.js 동적 로드 (전역 Chart 없을 때 CDN에서 가져옴)
-let _chartJsReady = null;
-async function ensureChart() {
-  if (typeof Chart !== 'undefined') return;
-  if (_chartJsReady) return _chartJsReady;
-  _chartJsReady = new Promise((resolve, reject) => {
-    const s = document.createElement('script');
-    s.src = 'https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js';
-    s.onload  = resolve;
-    s.onerror = () => reject(new Error('Chart.js 로드 실패'));
-    document.head.appendChild(s);
-  });
-  return _chartJsReady;
-}
-
 // ── 내부 상태
 let allResults     = [];
 let sectorFilter   = 'all';
@@ -33,9 +18,7 @@ let isLoading      = false;
 let lastDate       = null;
 let statusPollTimer = null;
 
-// ── BB 맵 상태
-let bbMapChart    = null;
-let bbMapRange    = '3m';
+
 
 // ============================================
 // 진입점
@@ -90,23 +73,13 @@ function renderShell() {
     </div>
   </div>
 
-  <!-- ── BB 맵 차트 ── -->
+  <!-- ── BB 히트맵 ── -->
   <div class="bb-map-section" id="bb-map-section">
     <div class="bb-map-header">
-      <span class="bb-map-title">섹터 ETF BB 위치 맵</span>
-      <div class="bb-map-range-pills" id="bb-map-range-pills">
-        <button class="pill" data-r="2w">2W</button>
-        <button class="pill" data-r="1m">1M</button>
-        <button class="pill active" data-r="3m">3M</button>
-        <button class="pill" data-r="6m">6M</button>
-        <button class="pill" data-r="1y">1Y</button>
-        <button class="pill" data-r="all">ALL</button>
-      </div>
+      <span class="bb-map-title">섹터 ETF BB 위치 히트맵 <span class="bb-map-sub">최근 3주 · 우측 숫자 = 최신값</span></span>
     </div>
-    <div class="bb-map-legend" id="bb-map-legend"></div>
-    <div class="bb-map-chart-wrap">
-      <canvas id="bb-map-canvas"></canvas>
-      <div class="bb-map-loading" id="bb-map-loading">BB 맵 데이터 불러오는 중...</div>
+    <div class="bb-map-heatmap" id="bb-map-heatmap">
+      <div class="bb-map-loading" id="bb-map-loading">BB 히트맵 데이터 불러오는 중...</div>
     </div>
   </div>
 
@@ -641,274 +614,121 @@ function showContent() {
 // ============================================
 // BB 맵 차트
 // ============================================
+// BB 히트맵
+// ============================================
 
-// 섹터별 색상 팔레트
-const BB_MAP_COLORS = [
-  '#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#06b6d4',
-  '#a855f7', '#f97316', '#10b981', '#ec4899', '#84cc16',
-  '#14b8a6', '#f43f5e', '#8b5cf6', '#0ea5e9', '#d946ef',
-];
+// bb_position → 색상 변환 (0=빨강, 0.5=노랑, 1=초록)
+function bbColor(val) {
+  if (val == null) return '#1e293b'; // 데이터 없음 → 어두운 회색
+  const v = Math.max(0, Math.min(1, val));
+  let r, g, b;
+  if (v <= 0.5) {
+    // 빨강(0) → 노랑(0.5)
+    const t = v / 0.5;
+    r = 220;
+    g = Math.round(60 + t * (200 - 60));  // 60→200
+    b = 30;
+  } else {
+    // 노랑(0.5) → 초록(1)
+    const t = (v - 0.5) / 0.5;
+    r = Math.round(220 - t * (220 - 34)); // 220→34
+    g = Math.round(200 + t * (197 - 200)); // 200→197 (거의 고정)
+    b = Math.round(30 + t * (94 - 30));   // 30→94
+  }
+  return `rgb(${r},${g},${b})`;
+}
+
+// 텍스트 가독성 위한 대비색 (밝으면 어둡게, 어두우면 밝게)
+function bbTextColor(val) {
+  if (val == null) return '#475569';
+  const v = Math.max(0, Math.min(1, val));
+  // 0.3~0.7 구간은 어두운 텍스트, 나머지는 밝은 텍스트
+  return (v > 0.25 && v < 0.75) ? 'rgba(0,0,0,0.75)' : 'rgba(255,255,255,0.9)';
+}
 
 function initBbMap() {
-  // 기간 pills 이벤트
-  document.getElementById('bb-map-range-pills')?.addEventListener('click', e => {
-    const btn = e.target.closest('.pill');
-    if (!btn) return;
-    document.querySelectorAll('#bb-map-range-pills .pill').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    bbMapRange = btn.dataset.r;
-    loadBbMap();
-  });
-
   loadBbMap();
 }
 
 async function loadBbMap() {
-  const loading = document.getElementById('bb-map-loading');
-  if (loading) { loading.style.display = 'flex'; loading.textContent = 'BB 맵 데이터 불러오는 중...'; }
+  const heatmapEl = document.getElementById('bb-map-heatmap');
+  const loading   = document.getElementById('bb-map-loading');
+  if (loading) { loading.style.display = 'flex'; loading.textContent = 'BB 히트맵 데이터 불러오는 중...'; }
 
   try {
-    await ensureChart();
-    const res  = await fetch(`${CF_API}/api/bb-map-chart?range=${bbMapRange}`);
+    // 3주 고정
+    const res  = await fetch(`${CF_API}/api/bb-map-chart?range=3w`);
     const data = await res.json();
 
     if (!data.dates?.length || !data.symbols?.length) {
-      if (loading) { loading.textContent = 'BB 맵 데이터 없음 (bb_map_symbols 등록 필요)'; }
+      if (loading) { loading.textContent = 'BB 히트맵 데이터 없음 (bb_map_symbols 등록 필요)'; }
       return;
     }
 
-    renderBbMap(data);
     if (loading) loading.style.display = 'none';
+    renderBbHeatmap(heatmapEl, data);
   } catch (err) {
     console.error('[bbmap] load error:', err);
-    if (loading) { loading.textContent = 'BB 맵 로드 실패: ' + err.message; }
+    if (loading) { loading.textContent = 'BB 히트맵 로드 실패: ' + err.message; }
   }
 }
 
-function renderBbMap(data) {
-  const canvas = document.getElementById('bb-map-canvas');
-  if (!canvas) return;
-
+function renderBbHeatmap(container, data) {
   const { symbols, dates, series } = data;
 
-  // 레전드 렌더 — 호버 시 해당 심볼 강조 연동
-  const legendEl = document.getElementById('bb-map-legend');
-  if (legendEl) {
-    legendEl.innerHTML = symbols.map((s, i) => `
-      <span class="bb-map-legend-item" data-idx="${i}">
-        <span class="bb-map-legend-dot" style="background:${BB_MAP_COLORS[i % BB_MAP_COLORS.length]}"></span>
-        <span class="bb-map-legend-sym">${s.symbol}</span>
-      </span>
-    `).join('');
-  }
-
-  // Chart.js 데이터셋 — 초기 상태: 모두 보통 밝기
-  const datasets = symbols.map((s, i) => ({
-    label:            s.symbol,
-    data:             series[s.symbol] ?? [],
-    borderColor:      BB_MAP_COLORS[i % BB_MAP_COLORS.length],
-    backgroundColor:  BB_MAP_COLORS[i % BB_MAP_COLORS.length] + '18',
-    borderWidth:      2,
-    pointRadius:      0,
-    pointHoverRadius: 5,
-    tension:          0.3,
-    spanGaps:         true,
-  }));
-
-  // ── 호버 강조 헬퍼 ──────────────────────────────────────────────
-  // ── 터치 환경 감지
-  const isTouch = () => window.matchMedia('(hover: none)').matches;
-
-  // pinnedIdx: 터치로 고정된 데이터셋 인덱스 (null = 고정 없음)
-  let pinnedIdx = null;
-
-  function applyHoverFocus(chart, activeIdx) {
-    chart.data.datasets.forEach((ds, i) => {
-      const color = BB_MAP_COLORS[i % BB_MAP_COLORS.length];
-      if (activeIdx === null) {
-        ds.borderColor = color;
-        ds.borderWidth = 2;
-      } else if (i === activeIdx) {
-        ds.borderColor = color;
-        ds.borderWidth = 3.5;
-      } else {
-        ds.borderColor = color + '30';
-        ds.borderWidth = 1;
-      }
-    });
-    chart.update('none');
-
-    // 레전드 동기화
-    if (legendEl) {
-      legendEl.querySelectorAll('.bb-map-legend-item').forEach((el, i) => {
-        el.style.opacity = (activeIdx === null || i === activeIdx) ? '1' : '0.25';
-        el.querySelector('.bb-map-legend-sym').style.fontWeight = (i === activeIdx) ? '800' : '700';
-      });
-    }
-  }
-
-  // 터치: 가장 가까운 데이터셋 인덱스 찾기
-  function findClosestDataset(chart, touchX, touchY) {
-    const rect = chart.canvas.getBoundingClientRect();
-    const relX = touchX - rect.left;
-    const relY = touchY - rect.top;
-    // Chart.js getElementsAtEventForMode 대신 scales로 직접 계산
-    const xScale = chart.scales.x;
-    const yScale = chart.scales.y;
-    const dataIdx = xScale.getValueForPixel(relX);
-    const clampedDataIdx = Math.max(0, Math.min(Math.round(dataIdx), chart.data.labels.length - 1));
-    let closestIdx = null, minDist = Infinity;
-    chart.data.datasets.forEach((ds, i) => {
-      const val = ds.data[clampedDataIdx];
-      if (val == null) return;
-      const yPx = yScale.getPixelForValue(val);
-      const dist = Math.abs(yPx - relY);
-      if (dist < minDist) { minDist = dist; closestIdx = i; }
-    });
-    return closestIdx;
-  }
-
-  // 기준선 플러그인 (0.2 / 0.4 / 0.8)
-  const refLinePlugin = {
-    id: 'bbRefLines',
-    afterDraw(chart) {
-      const { ctx, scales: { x, y } } = chart;
-      const lines = [
-        { val: 0.8, color: '#ef444488', label: '0.8' },
-        { val: 0.4, color: '#f59e0b88', label: '0.4' },
-        { val: 0.2, color: '#22c55e88', label: '0.2' },
-      ];
-      ctx.save();
-      lines.forEach(({ val, color, label }) => {
-        const yPx = y.getPixelForValue(val);
-        ctx.beginPath();
-        ctx.strokeStyle = color;
-        ctx.lineWidth   = 1;
-        ctx.setLineDash([4, 4]);
-        ctx.moveTo(x.left, yPx);
-        ctx.lineTo(x.right, yPx);
-        ctx.stroke();
-        ctx.setLineDash([]);
-        ctx.fillStyle  = color;
-        ctx.font       = '10px sans-serif';
-        ctx.textAlign  = 'right';
-        ctx.fillText(label, x.right - 4, yPx - 3);
-      });
-      ctx.restore();
-    },
-  };
-
-  // 기존 차트 파괴
-  if (bbMapChart) { bbMapChart.destroy(); bbMapChart = null; }
-
-  // 날짜 레이블
-  const labels = dates.map(d => {
+  // 날짜 레이블 (M/D 형식)
+  const dateLabels = dates.map(d => {
     const [, m, day] = d.split('-');
-    return `${m}/${day}`;
+    return `${+m}/${+day}`;
   });
 
-  bbMapChart = new Chart(canvas, {
-    type: 'line',
-    data: { labels, datasets },
-    options: {
-      responsive:          true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          itemSort: (a, b) => b.parsed.y - a.parsed.y,  // 높은 값 순 정렬
-          callbacks: {
-            label: ctx => {
-              const val = ctx.parsed.y;
-              return ` ${ctx.dataset.label}: ${val != null ? (val * 100).toFixed(0) + '%' : '-'}`;
-            },
-          },
-        },
-      },
-      onHover: (event, elements) => {
-        // 터치 환경에서는 onHover 무시 (touch 이벤트로 별도 처리)
-        if (isTouch()) return;
-        if (elements && elements.length > 0) {
-          const mouseY = event.y;
-          let closestIdx = null, minDist = Infinity;
-          elements.forEach(el => {
-            const dist = Math.abs(el.element.y - mouseY);
-            if (dist < minDist) { minDist = dist; closestIdx = el.datasetIndex; }
-          });
-          applyHoverFocus(bbMapChart, closestIdx);
-        } else {
-          applyHoverFocus(bbMapChart, null);
-        }
-      },
-      scales: {
-        x: {
-          ticks: {
-            color:         '#94a3b8',
-            maxTicksLimit: 12,
-            maxRotation:   0,
-          },
-          grid: { color: '#1e293b' },
-        },
-        y: {
-          min:  -0.05,
-          max:   1.05,
-          ticks: {
-            color:    '#94a3b8',
-            callback: v => (v * 100).toFixed(0) + '%',
-          },
-          grid: { color: '#1e293b' },
-        },
-      },
-    },
-    plugins: [refLinePlugin],
-  });
+  // 날짜 헤더 표시 간격 — 셀이 많으면 일부만 표시
+  const totalCols = dateLabels.length;
+  // 약 7개 레이블만 표시 (첫날, 마지막날 포함)
+  const labelStep = Math.max(1, Math.floor(totalCols / 6));
 
-  // ── 데스크탑: 레전드 mouseenter/leave
-  if (legendEl) {
-    legendEl.querySelectorAll('.bb-map-legend-item').forEach((el, i) => {
-      el.style.cursor = 'pointer';
-      el.addEventListener('mouseenter', () => {
-        if (!isTouch()) applyHoverFocus(bbMapChart, i);
-      });
-      el.addEventListener('mouseleave', () => {
-        if (!isTouch()) applyHoverFocus(bbMapChart, null);
-      });
-      // 터치: 레전드 탭으로 고정/해제
-      el.addEventListener('touchend', (e) => {
-        e.preventDefault();
-        if (pinnedIdx === i) {
-          pinnedIdx = null;
-          applyHoverFocus(bbMapChart, null);
-        } else {
-          pinnedIdx = i;
-          applyHoverFocus(bbMapChart, i);
-        }
-      });
-    });
-  }
+  const rows = symbols.map(s => {
+    const vals = series[s.symbol] ?? [];
+    const lastVal = [...vals].reverse().find(v => v != null);
+    const lastPct = lastVal != null ? (lastVal * 100).toFixed(0) : '-';
 
-  // ── 데스크탑: 캔버스 마우스 이탈 → 원상복귀
-  canvas.addEventListener('mouseleave', () => {
-    if (!isTouch()) applyHoverFocus(bbMapChart, null);
-  });
+    const cells = vals.map((v, i) => {
+      const bg   = bbColor(v);
+      const show = (i === totalCols - 1); // 마지막 셀에만 숫자 표시
+      return `<div class="bb-hm-cell" style="background:${bg}" title="${dateLabels[i]}: ${v != null ? (v*100).toFixed(0)+'%' : '-'}">${show ? `<span class="bb-hm-last" style="color:${bbTextColor(lastVal)}">${lastPct}%</span>` : ''}</div>`;
+    }).join('');
 
-  // ── 터치: 캔버스 탭으로 가장 가까운 라인 고정/해제
-  canvas.addEventListener('touchend', (e) => {
-    e.preventDefault();
-    const touch = e.changedTouches[0];
-    const idx = findClosestDataset(bbMapChart, touch.clientX, touch.clientY);
-    if (idx === null) {
-      // 빈 영역 탭 → 해제
-      pinnedIdx = null;
-      applyHoverFocus(bbMapChart, null);
-    } else if (pinnedIdx === idx) {
-      // 같은 라인 재탭 → 해제
-      pinnedIdx = null;
-      applyHoverFocus(bbMapChart, null);
-    } else {
-      pinnedIdx = idx;
-      applyHoverFocus(bbMapChart, idx);
-    }
-  });
+    // 점수 색상
+    const scoreColor = lastVal == null ? '#64748b'
+      : lastVal >= 0.8 ? '#ef4444'
+      : lastVal <= 0.2 ? '#22c55e'
+      : '#f59e0b';
+
+    return `
+      <div class="bb-hm-row">
+        <div class="bb-hm-sym">${s.symbol}</div>
+        <div class="bb-hm-cells">${cells}</div>
+        <div class="bb-hm-score" style="color:${scoreColor}">${lastPct}%</div>
+      </div>`;
+  }).join('');
+
+  // 날짜 헤더 행
+  const headerCells = dateLabels.map((lbl, i) => {
+    const show = (i === 0 || i === totalCols - 1 || i % labelStep === 0);
+    return `<div class="bb-hm-cell bb-hm-header-cell">${show ? lbl : ''}</div>`;
+  }).join('');
+
+  container.innerHTML = `
+    <div class="bb-hm-row bb-hm-header">
+      <div class="bb-hm-sym"></div>
+      <div class="bb-hm-cells">${headerCells}</div>
+      <div class="bb-hm-score" style="font-size:10px;color:var(--text3)">최신</div>
+    </div>
+    ${rows}
+    <div class="bb-hm-legend-bar">
+      <span style="color:#dc3c1e">0% (BB 하단)</span>
+      <div class="bb-hm-gradient"></div>
+      <span style="color:#22c55e">100% (BB 상단)</span>
+    </div>
+  `;
 }
