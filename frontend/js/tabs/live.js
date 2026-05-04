@@ -254,40 +254,46 @@ async function _fetchVold() {
   try {
     if (!TWELVE_KEY) return;
     const url =
-      `https://api.twelvedata.com/obv?symbol=RSP&interval=1min` +
+      `https://api.twelvedata.com/time_series?symbol=RSP&interval=1min` +
       `&outputsize=390&apikey=${TWELVE_KEY}`;
     const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
     if (!res.ok) return;
     const data = await res.json();
     if (data.status === 'error' || !Array.isArray(data.values)) return;
 
-    // values: [{ datetime, obv }, ...] (최신이 앞 → 역순으로 오래된 것부터 처리)
-    const values = data.values;
+    const values = data.values; // 최신이 앞
     if (!values.length) return;
 
-    // ── 1분단위 누적 VOLD 시리즈 생성 ───────────────────
-    // values[i].obv = 해당 봉의 OBV 델타값
-    // 오래된 봉부터 순서대로 누적 → [ts, cumValue] 시리즈
-    let cum = 0;
+    // ── 1분봉 캔들로 OBV 직접 계산 (0에서 시작) ─────────
+    // 오래된 것부터 순서대로 처리
+    let obv = 0;
     const series = [];
 
     for (let i = values.length - 1; i >= 0; i--) {
-      cum += parseFloat(values[i].obv);
-      // ts는 ET 문자열 그대로 — 변환은 vc-chart.js의 _etStrToKstMs()가 담당
-      series.push({ ts: values[i].datetime, v: cum });
+      const vol   = parseFloat(values[i].volume) || 0;
+      const close = parseFloat(values[i].close);
+      const prev  = i < values.length - 1 ? parseFloat(values[i + 1].close) : null;
+
+      if (prev === null)        obv += vol;  // 첫 봉
+      else if (close > prev)    obv += vol;  // 상승봉
+      else if (close < prev)    obv -= vol;  // 하락봉
+      // 보합이면 변화 없음
+
+      series.push({ ts: values[i].datetime, v: obv });
     }
 
     // ── 차트: 시리즈 전체 교체 (렌더 1회) ───────────────
     setVoldSeries(series);
 
     // ── 최종 누적값 → 메트릭 카드 ───────────────────────
-    _state.vold = cum;
+    _state.vold = obv;
     renderVOLD();
 
   } catch (e) {
-    console.warn('[Live] VOLD OBV 폴링 실패:', e.message);
+    console.warn('[Live] VOLD 폴링 실패:', e.message);
   }
 }
+
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 통합 폴링 — startPolling(marketState)
