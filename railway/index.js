@@ -603,6 +603,7 @@ const server = http.createServer(async (req, res) => {
     (async () => {
       try {
         // ── 1. BB 맵 전용 종목 price_indicators 수집
+        let bbCount = 0;
         try {
           const bbRes = await fetch(`${CF_WORKER_URL}/api/bb-map-symbols`, {
             headers: { 'x-cron-secret': CRON_SECRET },
@@ -614,8 +615,12 @@ const server = http.createServer(async (req, res) => {
             const bbOnly = (bbData.symbols ?? []).filter(s => !optionSymSet.has(s.symbol));
 
             console.log(`[Screener] BB 맵 전용 종목 ${bbOnly.length}개 가격 수집`);
+            // BB 맵 단계 표시 (screener-status에서 stage:'bb_map' 반환)
+            collectState.progress = { stage: 'bb_map', done: 0, total: bbOnly.length, errors: 0 };
             for (const { symbol: sym } of bbOnly) {
               await collectPriceIndicators(sym, CF_WORKER_URL, CRON_SECRET);
+              bbCount++;
+              collectState.progress = { stage: 'bb_map', done: bbCount, total: bbOnly.length, errors: 0 };
               await sleep(200);
             }
           }
@@ -706,11 +711,12 @@ const server = http.createServer(async (req, res) => {
           progress:  null,
           lastRun: {
             date,
-            ok:     true,
-            count:  allResults.length,
-            errors: allErrors.length,
+            ok:       true,
+            count:    allResults.length,
+            bb_count: bbCount,
+            errors:   allErrors.length,
             error_list: allErrors.slice(0, 10),
-            ts:     new Date().toISOString(),
+            ts:       new Date().toISOString(),
           },
         };
 
