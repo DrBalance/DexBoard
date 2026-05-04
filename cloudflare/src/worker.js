@@ -652,16 +652,22 @@ async function fetchVIX(env) {
   const result = data?.chart?.result?.[0];
   if (!result) throw new Error("Yahoo VIX: no result");
 
-  const meta      = result.meta;
-  const quotes    = result.indicators?.quote?.[0]?.close ?? [];
-  const price     = quotes.filter(Boolean).pop();
+  const meta       = result.meta;
+  const timestamps = result.timestamp ?? [];
+  const quotes     = result.indicators?.quote?.[0]?.close ?? [];
+  const price      = quotes.filter(Boolean).pop();
   if (!price) throw new Error("Yahoo VIX: no close data");
 
   const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? null;
   const change    = prevClose != null ? round2(price - prevClose) : null;
   const changePct = prevClose != null ? round2((price - prevClose) / prevClose * 100) : null;
 
-  return { price: round2(price), change, changePct };
+  // 1분봉 시리즈 생성 (차트용)
+  const series = timestamps
+    .map((ts, i) => ({ ts: new Date(ts * 1000).toISOString(), v: quotes[i] }))
+    .filter(d => d.v != null);
+
+  return { price: round2(price), change, changePct, prevClose, series };
 }
 
 // ─────────────────────────────────────────────────────────────────
