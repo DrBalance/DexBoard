@@ -694,7 +694,8 @@ function renderBbHeatmap(container, data) {
 
     const cells = vals.map((v, i) => {
       const bg   = bbColor(v);
-      const show = (i === totalCols - 1); // 마지막 셀에만 숫자 표시
+      //const show = (i === totalCols - 1); // 마지막 셀에만 숫자 표시
+      const show = false;
       return `<div class="bb-hm-cell" style="background:${bg}" title="${dateLabels[i]}: ${v != null ? (v*100).toFixed(0)+'%' : '-'}">${show ? `<span class="bb-hm-last" style="color:${bbTextColor(lastVal)}">${lastPct}%</span>` : ''}</div>`;
     }).join('');
 
