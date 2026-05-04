@@ -18,6 +18,10 @@ let isLoading      = false;
 let lastDate       = null;
 let statusPollTimer = null;
 
+// ── BB 맵 상태
+let bbMapChart    = null;
+let bbMapRange    = '3m';
+
 // ============================================
 // 진입점
 // ============================================
@@ -25,6 +29,7 @@ export function initScreener() {
   renderShell();
   checkCollectionStatus();
   loadScreener();
+  initBbMap();
 }
 
 export function refreshScreener() {
@@ -67,6 +72,25 @@ function renderShell() {
       </button>
       <button class="sc-btn sc-btn-rescore" id="sc-rescore-btn" title="기존 데이터로 점수만 재계산">⚡ 재평가</button>
       <a href="/admin.html" class="sc-btn" style="text-decoration:none;opacity:.7">⚙ 설정</a>
+    </div>
+  </div>
+
+  <!-- ── BB 맵 차트 ── -->
+  <div class="bb-map-section" id="bb-map-section">
+    <div class="bb-map-header">
+      <span class="bb-map-title">섹터 ETF BB 위치 맵</span>
+      <div class="bb-map-range-pills" id="bb-map-range-pills">
+        <button class="pill" data-r="1m">1M</button>
+        <button class="pill active" data-r="3m">3M</button>
+        <button class="pill" data-r="6m">6M</button>
+        <button class="pill" data-r="1y">1Y</button>
+        <button class="pill" data-r="all">ALL</button>
+      </div>
+    </div>
+    <div class="bb-map-legend" id="bb-map-legend"></div>
+    <div class="bb-map-chart-wrap">
+      <canvas id="bb-map-canvas"></canvas>
+      <div class="bb-map-loading" id="bb-map-loading">BB 맵 데이터 불러오는 중...</div>
     </div>
   </div>
 
@@ -590,4 +614,158 @@ function showState(type, msg) {
 function showContent() {
   document.getElementById('sc-state').style.display   = 'none';
   document.getElementById('sc-content').style.display = 'block';
+}
+
+// ============================================
+// BB 맵 차트
+// ============================================
+
+// 섹터별 색상 팔레트
+const BB_MAP_COLORS = [
+  '#6366f1', '#22c55e', '#f59e0b', '#ef4444', '#06b6d4',
+  '#a855f7', '#f97316', '#10b981', '#ec4899', '#84cc16',
+  '#14b8a6', '#f43f5e', '#8b5cf6', '#0ea5e9', '#d946ef',
+];
+
+function initBbMap() {
+  // 기간 pills 이벤트
+  document.getElementById('bb-map-range-pills')?.addEventListener('click', e => {
+    const btn = e.target.closest('.pill');
+    if (!btn) return;
+    document.querySelectorAll('#bb-map-range-pills .pill').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    bbMapRange = btn.dataset.r;
+    loadBbMap();
+  });
+
+  loadBbMap();
+}
+
+async function loadBbMap() {
+  const loading = document.getElementById('bb-map-loading');
+  if (loading) { loading.style.display = 'flex'; loading.textContent = 'BB 맵 데이터 불러오는 중...'; }
+
+  try {
+    const res  = await fetch(`${CF_API}/api/bb-map-chart?range=${bbMapRange}`);
+    const data = await res.json();
+
+    if (!data.dates?.length || !data.symbols?.length) {
+      if (loading) { loading.textContent = 'BB 맵 데이터 없음 (bb_map_symbols 등록 필요)'; }
+      return;
+    }
+
+    renderBbMap(data);
+    if (loading) loading.style.display = 'none';
+  } catch (err) {
+    console.error('[bbmap] load error:', err);
+    if (loading) { loading.textContent = 'BB 맵 로드 실패: ' + err.message; }
+  }
+}
+
+function renderBbMap(data) {
+  const canvas = document.getElementById('bb-map-canvas');
+  if (!canvas) return;
+
+  const { symbols, dates, series } = data;
+
+  // 레전드 렌더
+  const legendEl = document.getElementById('bb-map-legend');
+  if (legendEl) {
+    legendEl.innerHTML = symbols.map((s, i) => `
+      <span class="bb-map-legend-item">
+        <span class="bb-map-legend-dot" style="background:${BB_MAP_COLORS[i % BB_MAP_COLORS.length]}"></span>
+        <span class="bb-map-legend-sym">${s.symbol}</span>
+      </span>
+    `).join('');
+  }
+
+  // Chart.js 데이터셋
+  const datasets = symbols.map((s, i) => ({
+    label:           s.symbol,
+    data:            series[s.symbol] ?? [],
+    borderColor:     BB_MAP_COLORS[i % BB_MAP_COLORS.length],
+    backgroundColor: BB_MAP_COLORS[i % BB_MAP_COLORS.length] + '18',
+    borderWidth:     2,
+    pointRadius:     0,
+    pointHoverRadius: 4,
+    tension:         0.3,
+    spanGaps:        true,
+  }));
+
+  // 기준선 플러그인 (0.2 / 0.4 / 0.8)
+  const refLinePlugin = {
+    id: 'bbRefLines',
+    afterDraw(chart) {
+      const { ctx, scales: { x, y } } = chart;
+      const lines = [
+        { val: 0.8, color: '#ef4444', label: '0.8 (BB 상단)' },
+        { val: 0.4, color: '#f59e0b', label: '0.4' },
+        { val: 0.2, color: '#22c55e', label: '0.2 (저점)' },
+      ];
+      ctx.save();
+      lines.forEach(({ val, color, label }) => {
+        const yPx = y.getPixelForValue(val);
+        ctx.beginPath();
+        ctx.strokeStyle = color;
+        ctx.lineWidth   = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.moveTo(x.left, yPx);
+        ctx.lineTo(x.right, yPx);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle  = color;
+        ctx.font       = '10px sans-serif';
+        ctx.textAlign  = 'right';
+        ctx.fillText(label, x.right - 4, yPx - 3);
+      });
+      ctx.restore();
+    },
+  };
+
+  // 기존 차트 파괴
+  if (bbMapChart) { bbMapChart.destroy(); bbMapChart = null; }
+
+  // 날짜 레이블: 월별로 축약
+  const labels = dates.map(d => {
+    const [, m, day] = d.split('-');
+    return `${m}/${day}`;
+  });
+
+  bbMapChart = new Chart(canvas, {
+    type: 'line',
+    data: { labels, datasets },
+    options: {
+      responsive:          true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },  // 커스텀 레전드 사용
+        tooltip: {
+          callbacks: {
+            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y != null ? (ctx.parsed.y * 100).toFixed(0) + '%' : '-'}`,
+          },
+        },
+      },
+      scales: {
+        x: {
+          ticks: {
+            color:    '#94a3b8',
+            maxTicksLimit: 10,
+            maxRotation: 0,
+          },
+          grid: { color: '#1e293b' },
+        },
+        y: {
+          min:  -0.1,
+          max:   1.1,
+          ticks: {
+            color:    '#94a3b8',
+            callback: v => (v * 100).toFixed(0) + '%',
+          },
+          grid: { color: '#1e293b' },
+        },
+      },
+    },
+    plugins: [refLinePlugin],
+  });
 }
