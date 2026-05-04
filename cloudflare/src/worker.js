@@ -408,6 +408,72 @@ export default {
       return json({ ok: true, inserted }, 200, corsHeaders);
     }
 
+  // ── GET /api/bb-map-chart ───────────────────────────────────────
+  // BB 위치 시계열 차트 데이터 (스크리너 탭 BB맵용)
+  // ?range=1m|3m|6m|1y|all  (기본: 3m)
+  // Response: { symbols: [...], dates: [...], series: { SYMBOL: [bb_position, ...] } }
+  if (request.method === "GET" && path === "/api/bb-map-chart") {
+    const range = url.searchParams.get("range") || "3m";
+
+    // 기간 → 날짜 계산
+    const now = new Date();
+    let fromDate = null;
+    if (range !== "all") {
+      const d = new Date(now);
+      if      (range === "1m") d.setMonth(d.getMonth() - 1);
+      else if (range === "3m") d.setMonth(d.getMonth() - 3);
+      else if (range === "6m") d.setMonth(d.getMonth() - 6);
+      else if (range === "1y") d.setFullYear(d.getFullYear() - 1);
+      fromDate = d.toISOString().slice(0, 10);
+    }
+
+    // bb_map_symbols 목록 조회
+    const symRows = await env.DB.prepare(
+      "SELECT symbol, name FROM bb_map_symbols WHERE is_active=1 ORDER BY sort_order, symbol"
+    ).all();
+    const symbols = symRows.results ?? [];
+    if (!symbols.length) return json({ symbols: [], dates: [], series: {} }, 200, corsHeaders);
+
+    const symList = symbols.map(s => s.symbol);
+
+    // price_indicators에서 시계열 조회
+    const placeholders = symList.map(() => "?").join(",");
+    const binds = fromDate
+      ? [...symList, fromDate]
+      : symList;
+    const whereDate = fromDate ? "AND date >= ?" : "";
+
+    const rows = await env.DB.prepare(`
+      SELECT date, symbol, bb_position
+      FROM price_indicators
+      WHERE symbol IN (${placeholders}) ${whereDate}
+        AND bb_position IS NOT NULL
+      ORDER BY date ASC
+    `).bind(...binds).all();
+
+    // date 목록 (중복 제거)
+    const dateSet = [...new Set((rows.results ?? []).map(r => r.date))].sort();
+
+    // symbol별 시계열 맵 구성
+    const seriesMap = {};
+    for (const sym of symList) seriesMap[sym] = {};
+    for (const r of (rows.results ?? [])) {
+      if (seriesMap[r.symbol]) seriesMap[r.symbol][r.date] = r.bb_position;
+    }
+
+    // 날짜 배열 기준으로 각 심볼 시계열 정렬 (없는 날짜는 null)
+    const series = {};
+    for (const sym of symList) {
+      series[sym] = dateSet.map(d => seriesMap[sym][d] ?? null);
+    }
+
+    return json({
+      symbols: symbols.map(s => ({ symbol: s.symbol, name: s.name })),
+      dates:   dateSet,
+      series,
+    }, 200, corsHeaders);
+  }
+
   // ── GET /api/rescore-data (Railway → 재평가용 원본 데이터 조회) ──
     if (request.method === "GET" && path === "/api/rescore-data") {
       const secret = request.headers.get("x-cron-secret");
