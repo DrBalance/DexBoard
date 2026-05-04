@@ -701,8 +701,8 @@ function renderBbHeatmap(container, data) {
 
     // 점수 색상
     const scoreColor = lastVal == null ? '#64748b'
-      : lastVal >= 0.8 ? '#ef4444'
-      : lastVal <= 0.2 ? '#22c55e'
+      : lastVal >= 0.8 ? '#22c55e'
+      : lastVal <= 0.2 ? '#ef4444'
       : '#f59e0b';
 
     return `
