@@ -13,6 +13,7 @@ const CRON_SECRET = process.env.CRON_SECRET || "";
 const GEMINI_KEY  = process.env.GEMINI_KEY  || "";
 const CF_WORKER_URL = process.env.CF_WORKER_URL || "";
 const CF_KV_SECRET  = process.env.CF_KV_SECRET  || "";
+const TWELVE_KEY_SPY = process.env.TWELVE_KEY_SPY || "";
 
 // ─────────────────────────────────────────────────────────────────
 // 가격 수집 + BB 계산 → CF Worker D1 저장
@@ -619,144 +620,8 @@ const server = http.createServer(async (req, res) => {
       started_at: collectState.startedAt,
     });
 
-    // 백그라운드 수집
-    (async () => {
-      try {
-        // ── 1. BB 맵 전용 종목 price_indicators 수집
-        let bbCount = 0;
-        try {
-          const bbRes = await fetch(`${CF_WORKER_URL}/api/bb-map-symbols`, {
-            headers: { 'x-cron-secret': CRON_SECRET },
-            signal: AbortSignal.timeout(10000),
-          });
-          if (bbRes.ok) {
-            const bbData = await bbRes.json();
-            const optionSymSet = new Set(symbols.map(s => s.symbol));
-            const bbOnly = (bbData.symbols ?? []).filter(s => !optionSymSet.has(s.symbol));
-
-            console.log(`[Screener] BB 맵 전용 종목 ${bbOnly.length}개 가격 수집`);
-            // BB 맵 단계 표시 (screener-status에서 stage:'bb_map' 반환)
-            collectState.progress = { stage: 'bb_map', done: 0, total: bbOnly.length, errors: 0 };
-            for (const { symbol: sym } of bbOnly) {
-              await collectPriceIndicators(sym, CF_WORKER_URL, CRON_SECRET);
-              bbCount++;
-              collectState.progress = { stage: 'bb_map', done: bbCount, total: bbOnly.length, errors: 0 };
-              await sleep(200);
-            }
-          }
-        } catch (bbErr) {
-          console.warn('[Screener] BB 맵 수집 실패 (계속 진행):', bbErr.message);
-        }
-
-        // ── 2. 옵션 수집 종목 처리
-        const symbolsWithDate = symbols.map(s => ({ ...s, date }));
-        const BATCH = 5;
-        const allResults = [];
-        const allErrors  = [];
-
-        for (let i = 0; i < symbolsWithDate.length; i += BATCH) {
-          const batch = symbolsWithDate.slice(i, i + BATCH);
-          const settled = await Promise.allSettled(
-            batch.map(s => collectSymbol(s.symbol, date))
-          );
-
-          for (let j = 0; j < settled.length; j++) {
-            const r = settled[j];
-            if (r.status === "fulfilled") {
-              allResults.push({ ...r.value, meta: batch[j] });
-            } else {
-              allErrors.push({ symbol: batch[j].symbol, error: r.reason?.message });
-            }
-          }
-
-          collectState.progress = {
-            done:   Math.min(i + BATCH, symbolsWithDate.length),
-            total:  symbolsWithDate.length,
-            errors: allErrors.length,
-          };
-
-          if (i + BATCH < symbolsWithDate.length) await sleep(300);
-        }
-
-        // ── 3. 옵션 수집 종목 price_indicators 수집 (결과를 Map으로 보관)
-        console.log(`[Screener] 옵션 종목 ${symbols.length}개 가격 수집`);
-        const priceMap = new Map(); // symbol → { bbPosition, volRatio }
-        for (const { symbol: sym } of symbols) {
-          const pi = await collectPriceIndicators(sym, CF_WORKER_URL, CRON_SECRET);
-          if (pi) {
-            priceMap.set(sym, {
-              bb_position: pi.bbPosition ?? null,
-              vol_squeeze: pi.volRatio   ?? null,
-            });
-          }
-          await sleep(200);
-        }
-
-        // ── 4. D1 저장
-        if (allResults.length) {
-          console.log(`[Screener] ${allResults.length}개 종목 수집 완료 → D1 저장 시작`);
-
-          const dexRows   = [];
-          const scoreRows = [];
-
-          for (const { symbol, rows, meta } of allResults) {
-            for (const r of rows) {
-              dexRows.push({ date, symbol, ...r });
-            }
-            // price_indicators에서 수집한 BB/변동성 데이터를 점수 계산에 반영
-            const priceData = priceMap.get(symbol) ?? {};
-            const scoreData = calcScreenerScore(rows, priceData);
-            if (scoreData) {
-              scoreRows.push({
-                date,
-                symbol,
-                name:       meta?.name       ?? symbol,
-                type:       meta?.type       ?? "stock",
-                sector:     meta?.sector     ?? null,
-                sector_etf: meta?.sector_etf ?? null,
-                ...scoreData,
-              });
-            }
-          }
-
-          await d1Write("/d1/options-dex",    { rows: dexRows });
-          await d1Write("/d1/screener-scores", { rows: scoreRows });
-
-          console.log(`[Screener] D1 저장 완료 — DEX: ${dexRows.length}행, Scores: ${scoreRows.length}행`);
-        }
-
-        collectState = {
-          running:   false,
-          startedAt: null,
-          progress:  null,
-          lastRun: {
-            date,
-            ok:       true,
-            count:    allResults.length,
-            bb_count: bbCount,
-            errors:   allErrors.length,
-            error_list: allErrors.slice(0, 10),
-            ts:       new Date().toISOString(),
-          },
-        };
-
-        console.log(`[Screener] 완료 — 성공: ${allResults.length}, 실패: ${allErrors.length}`);
-
-      } catch (err) {
-        console.error("[Screener] 수집 중 치명적 오류:", err.message);
-        collectState = {
-          running:   false,
-          startedAt: null,
-          progress:  null,
-          lastRun: {
-            date,
-            ok:    false,
-            error: err.message,
-            ts:    new Date().toISOString(),
-          },
-        };
-      }
-    })();
+    // 백그라운드 수집 실행
+    runCollect(symbols, date).catch(e => console.error('[collect-screener] error:', e.message));
 
     return;
   }
@@ -882,62 +747,106 @@ async function fetchYahoo(symbol) {
   const data = await res.json();
   const result = data?.chart?.result?.[0];
   if (!result) throw new Error(`Yahoo ${symbol}: no result`);
-  const meta = result.meta;
-  const quotes = result.indicators?.quote?.[0]?.close ?? [];
-  const price = quotes.filter(Boolean).pop();
+  const meta       = result.meta;
+  const timestamps = result.timestamp ?? [];
+  const quotes     = result.indicators?.quote?.[0]?.close ?? [];
+  const price      = quotes.filter(Boolean).pop();
   if (!price) throw new Error(`Yahoo ${symbol}: no close data`);
   const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? meta.regularMarketPreviousClose ?? null;
   const change    = prevClose != null ? Math.round((price - prevClose) * 100) / 100 : null;
   const changePct = prevClose != null ? Math.round((price - prevClose) / prevClose * 10000) / 100 : null;
-  return { price: Math.round(price * 100) / 100, change, changePct, prevClose };
+  // 1분봉 시리즈 (VIX 차트용)
+  const series = timestamps
+    .map((ts, i) => ({ ts: new Date(ts * 1000).toISOString(), v: quotes[i] }))
+    .filter(d => d.v != null);
+  return { price: Math.round(price * 100) / 100, change, changePct, prevClose, series };
 }
 
+// ─────────────────────────────────────────────────────────────────
+// 스냅샷 메모리 캐시 (정규장 30초 루프용)
+// SPY: Twelve Data 30초, VIX: Yahoo 1분 — 각자 독립 갱신, KV는 30초마다 합산 저장
+// ─────────────────────────────────────────────────────────────────
+const _cache = {
+  spy: { price: null, change: null, changePct: null, prevClose: null },
+  vix: { price: null, change: null, changePct: null, prevClose: null, series: [] },
+};
+
+// SPY 현재가 — Twelve Data /quote (정규장 30초)
+async function fetchSpyTwelve() {
+  try {
+    if (!TWELVE_KEY_SPY) return;
+    const url = `https://api.twelvedata.com/quote?symbol=SPY&apikey=${TWELVE_KEY_SPY}`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(6000),
+    });
+    if (!res.ok) return;
+    const td = await res.json();
+    const price = parseFloat(td.close);
+    if (isNaN(price) || price <= 0) return;
+    const prevClose = parseFloat(td.previous_close);
+    const change    = !isNaN(prevClose) ? Math.round((price - prevClose) * 100) / 100 : null;
+    const changePct = !isNaN(prevClose) ? Math.round((price - prevClose) / prevClose * 10000) / 100 : null;
+    _cache.spy = { ..._cache.spy, price, change, changePct, prevClose };
+    console.log(`[spy] Twelve Data: $${price} (${changePct}%)`);
+  } catch (e) {
+    console.warn('[spy] Twelve Data 실패 (직전값 유지):', e.message);
+  }
+}
+
+// VIX 현재가 — Yahoo Finance (1분)
+async function fetchVixYahoo() {
+  try {
+    const data = await fetchYahoo('%5EVIX');
+    _cache.vix = {
+      price:     data.price,
+      change:    data.change,
+      changePct: data.changePct,
+      prevClose: data.prevClose,
+      series:    data.series ?? [],
+    };
+    console.log(`[vix] Yahoo: ${data.price} (${data.changePct}%)`);
+  } catch (e) {
+    console.warn('[vix] Yahoo 실패 (직전값 유지):', e.message);
+  }
+}
+
+// KV 저장 — _cache.spy + _cache.vix 합산 → snapshot:1min
+async function saveSnapshot() {
+  if (!_cache.spy.price && !_cache.vix.price) return; // 둘 다 없으면 스킵
+  try {
+    const snapshot = {
+      spy: _cache.spy,
+      vix: _cache.vix,
+      ts:  new Date().toISOString(),
+    };
+    await fetch(`${CF_WORKER_URL}/kv-write`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'x-kv-secret': CF_KV_SECRET },
+      body:    JSON.stringify({ key: 'snapshot:1min', value: JSON.stringify(snapshot) }),
+      signal:  AbortSignal.timeout(5000),
+    });
+    console.log(`[snapshot] saved SPY=${_cache.spy.price} VIX=${_cache.vix.price}`);
+  } catch (e) {
+    console.error('[snapshot] KV 저장 실패:', e.message);
+  }
+}
+
+// PRE/AFTER — Yahoo SPY+VIX 묶음 (기존 방식 유지)
 async function fetchSnapshot() {
   try {
     const [spy, vix] = await Promise.all([
       fetchYahoo('SPY'),
       fetchYahoo('%5EVIX'),
     ]);
-    const snapshot = { spy, vix, ts: new Date().toISOString() };
-
-    // CF KV에 저장
-    await fetch(`${CF_WORKER_URL}/kv-write`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-kv-secret': CF_KV_SECRET },
-      body: JSON.stringify({ key: 'snapshot:1min', value: JSON.stringify(snapshot) }),
-      signal: AbortSignal.timeout(5000),
-    });
-    console.log(`[snapshot] SPY=${spy.price} (${spy.changePct}%) VIX=${vix.price} (${vix.changePct}%)`);
+    _cache.spy = { price: spy.price, change: spy.change, changePct: spy.changePct, prevClose: spy.prevClose };
+    _cache.vix = { price: vix.price, change: vix.change, changePct: vix.changePct, prevClose: vix.prevClose, series: vix.series ?? [] };
+    await saveSnapshot();
   } catch (e) {
     console.error('[snapshot] error:', e.message);
   }
 }
 
-// 장 마감 시 SPY/VIX 종가 KV 저장 (다음 거래일 프리마켓 baseline용)
-async function savePrevClose() {
-  try {
-    const res = await fetch(`${CF_WORKER_URL}/api/snapshot`);
-    if (!res.ok) return;
-    const snap = await res.json();
-    if (!snap?.spy?.price || !snap?.vix?.price) return;
-    // ET 기준 날짜 (장 마감 기준)
-    const etDate = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-    const prevClose = {
-      spy:  snap.spy.price,
-      vix:  snap.vix.price,
-      date: etDate,
-    };
-    await fetch(`${CF_WORKER_URL}/kv-write`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-kv-secret': CF_KV_SECRET },
-      body: JSON.stringify({ key: 'snapshot:prevclose', value: JSON.stringify(prevClose) }),
-      signal: AbortSignal.timeout(5000),
-    });
-    console.log(`[prevClose] saved SPY=${prevClose.spy} VIX=${prevClose.vix} (${prevClose.date})`);
-  } catch (e) {
-    console.error('[prevClose] error:', e.message);
-  }
-}
 
 async function saveSnapshotOpen() {
   try {
@@ -959,6 +868,145 @@ async function saveSnapshotOpen() {
 }
 
 // ─────────────────────────────────────────────────────────────────
+// 스크리너 백그라운드 수집 (HTTP 핸들러·스케줄러 공용)
+// ─────────────────────────────────────────────────────────────────
+async function runCollect(symbols, date) {
+  try {
+    // ── 1. BB 맵 전용 종목 price_indicators 수집
+    let bbCount = 0;
+    try {
+      const bbRes = await fetch(`${CF_WORKER_URL}/api/bb-map-symbols`, {
+        headers: { 'x-cron-secret': CRON_SECRET },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (bbRes.ok) {
+        const bbData = await bbRes.json();
+        const optionSymSet = new Set(symbols.map(s => s.symbol));
+        const bbOnly = (bbData.symbols ?? []).filter(s => !optionSymSet.has(s.symbol));
+
+        console.log(`[Screener] BB 맵 전용 종목 ${bbOnly.length}개 가격 수집`);
+        collectState.progress = { stage: 'bb_map', done: 0, total: bbOnly.length, errors: 0 };
+        for (const { symbol: sym } of bbOnly) {
+          await collectPriceIndicators(sym, CF_WORKER_URL, CRON_SECRET);
+          bbCount++;
+          collectState.progress = { stage: 'bb_map', done: bbCount, total: bbOnly.length, errors: 0 };
+          await sleep(200);
+        }
+      }
+    } catch (bbErr) {
+      console.warn('[Screener] BB 맵 수집 실패 (계속 진행):', bbErr.message);
+    }
+
+    // ── 2. 옵션 수집 종목 처리
+    const symbolsWithDate = symbols.map(s => ({ ...s, date }));
+    const BATCH = 5;
+    const allResults = [];
+    const allErrors  = [];
+
+    for (let i = 0; i < symbolsWithDate.length; i += BATCH) {
+      const batch = symbolsWithDate.slice(i, i + BATCH);
+      const settled = await Promise.allSettled(
+        batch.map(s => collectSymbol(s.symbol, date))
+      );
+
+      for (let j = 0; j < settled.length; j++) {
+        const r = settled[j];
+        if (r.status === "fulfilled") {
+          allResults.push({ ...r.value, meta: batch[j] });
+        } else {
+          allErrors.push({ symbol: batch[j].symbol, error: r.reason?.message });
+        }
+      }
+
+      collectState.progress = {
+        done:   Math.min(i + BATCH, symbolsWithDate.length),
+        total:  symbolsWithDate.length,
+        errors: allErrors.length,
+      };
+
+      if (i + BATCH < symbolsWithDate.length) await sleep(300);
+    }
+
+    // ── 3. 옵션 수집 종목 price_indicators 수집
+    console.log(`[Screener] 옵션 종목 ${symbols.length}개 가격 수집`);
+    const priceMap = new Map();
+    for (const { symbol: sym } of symbols) {
+      const pi = await collectPriceIndicators(sym, CF_WORKER_URL, CRON_SECRET);
+      if (pi) {
+        priceMap.set(sym, {
+          bb_position: pi.bbPosition ?? null,
+          vol_squeeze: pi.volRatio   ?? null,
+        });
+      }
+      await sleep(200);
+    }
+
+    // ── 4. D1 저장
+    if (allResults.length) {
+      console.log(`[Screener] ${allResults.length}개 종목 수집 완료 → D1 저장 시작`);
+
+      const dexRows   = [];
+      const scoreRows = [];
+
+      for (const { symbol, rows, meta } of allResults) {
+        for (const r of rows) {
+          dexRows.push({ date, symbol, ...r });
+        }
+        const priceData = priceMap.get(symbol) ?? {};
+        const scoreData = calcScreenerScore(rows, priceData);
+        if (scoreData) {
+          scoreRows.push({
+            date,
+            symbol,
+            name:       meta?.name       ?? symbol,
+            type:       meta?.type       ?? "stock",
+            sector:     meta?.sector     ?? null,
+            sector_etf: meta?.sector_etf ?? null,
+            ...scoreData,
+          });
+        }
+      }
+
+      await d1Write("/d1/options-dex",    { rows: dexRows });
+      await d1Write("/d1/screener-scores", { rows: scoreRows });
+
+      console.log(`[Screener] D1 저장 완료 — DEX: ${dexRows.length}행, Scores: ${scoreRows.length}행`);
+    }
+
+    collectState = {
+      running:   false,
+      startedAt: null,
+      progress:  null,
+      lastRun: {
+        date,
+        ok:         true,
+        count:      allResults.length,
+        bb_count:   bbCount,
+        errors:     allErrors.length,
+        error_list: allErrors.slice(0, 10),
+        ts:         new Date().toISOString(),
+      },
+    };
+
+    console.log(`[Screener] 완료 — 성공: ${allResults.length}, 실패: ${allErrors.length}`);
+
+  } catch (err) {
+    console.error("[Screener] 수집 중 치명적 오류:", err.message);
+    collectState = {
+      running:   false,
+      startedAt: null,
+      progress:  null,
+      lastRun: {
+        date,
+        ok:    false,
+        error: err.message,
+        ts:    new Date().toISOString(),
+      },
+    };
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
 // 스케줄러
 // ─────────────────────────────────────────────────────────────────
 function startScheduler() {
@@ -975,9 +1023,12 @@ function startScheduler() {
 
   // 1분마다 세션 체크 → 폴링 주기 동적 조정
   let snapshotTimer = null;
+  let vixTimer      = null;  // VIX 1분 독립 루프 (REGULAR 전용)
 
   function scheduleSnapshot() {
     if (snapshotTimer) clearInterval(snapshotTimer);
+    if (vixTimer)      { clearInterval(vixTimer); vixTimer = null; }
+
     const session = getMarketSession();
 
     if (session === 'CLOSED') {
@@ -986,10 +1037,31 @@ function startScheduler() {
       return;
     }
 
-    const interval = session === 'REGULAR' ? 60_000 : 3 * 60_000;
-    console.log(`[scheduler] ${session} — snapshot ${interval / 1000}초 주기 시작`);
-    fetchSnapshot(); // 즉시 1회 실행
-    snapshotTimer = setInterval(fetchSnapshot, interval);
+    if (session === 'REGULAR') {
+      // ── REGULAR: SPY 30초(Twelve Data) + VIX 1분(Yahoo) → KV 30초 저장
+      console.log('[scheduler] REGULAR — SPY 30초(Twelve) + VIX 1분(Yahoo)');
+
+      // 즉시 1회 (SPY+VIX 동시 조회 후 KV 저장)
+      (async () => {
+        await Promise.all([fetchSpyTwelve(), fetchVixYahoo()]);
+        await saveSnapshot();
+      })();
+
+      // SPY 30초마다 조회 → KV 저장 (직전 VIX 캐시 포함)
+      snapshotTimer = setInterval(async () => {
+        await fetchSpyTwelve();
+        await saveSnapshot();
+      }, 30_000);
+
+      // VIX 1분마다 독립 조회 (KV 저장은 snapshotTimer가 다음 :30에 담당)
+      vixTimer = setInterval(fetchVixYahoo, 60_000);
+
+    } else {
+      // ── PRE / AFTER: Yahoo SPY+VIX 묶음 3분
+      console.log(`[scheduler] ${session} — snapshot 3분 주기`);
+      fetchSnapshot(); // 즉시 1회
+      snapshotTimer = setInterval(fetchSnapshot, 3 * 60_000);
+    }
   }
 
   // 세션 변화 감지 (1분마다)
@@ -1008,10 +1080,9 @@ function startScheduler() {
         saveSnapshotOpen();
       }
 
-      // 장 마감(AFTER 첫 진입) → 전날 종가 저장 + 스크리너 수집
+      // 장 마감(AFTER 첫 진입) → 스크리너 수집
       if (session === 'AFTER' && !screenerDone) {
         screenerDone = true;
-        savePrevClose();
         console.log('[scheduler] 장 마감 → 스크리너 수집 트리거');
 
         // D1에서 수집 대상 심볼 조회 후 수집 트리거
@@ -1031,12 +1102,19 @@ function startScheduler() {
             }
 
             console.log(`[scheduler] ${symbols.length}개 심볼 수집 시작`);
-            await fetch(`http://localhost:${PORT}/collect-screener`, {
-              method:  'POST',
-              headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
-              body:    JSON.stringify({ symbols, force: false }),
-              signal:  AbortSignal.timeout(10000),
-            });
+            // 직접 백그라운드 수집 실행 (localhost HTTP 우회)
+            if (collectState.running) {
+              console.warn('[scheduler] 수집 이미 진행 중 — 스킵');
+              return;
+            }
+            const date = getTodayET();
+            collectState = {
+              running:   true,
+              startedAt: new Date().toISOString(),
+              progress:  { done: 0, total: symbols.length, errors: 0 },
+              lastRun:   collectState.lastRun,
+            };
+            runCollect(symbols, date).catch(e => console.error('[scheduler] collect error:', e.message));
           } catch (e) {
             console.error('[scheduler] screener trigger error:', e.message);
           }
@@ -1048,14 +1126,11 @@ function startScheduler() {
     if (session === 'REGULAR' && h !== lastDexHour && h % 1 === 0) {
       const now = new Date();
       const min = now.getMinutes();
-      if (min % 15 === 0) {
+      if (min % 15 === 1) {
         lastDexHour = h + '_' + min;
         console.log('[scheduler] 15분 DEX 계산 트리거');
-        fetch(`http://localhost:${PORT}/calculate`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
-          body: JSON.stringify({}),
-        }).catch(e => console.error('[scheduler] calculate trigger error:', e.message));
+        // 직접 calculateAndStore 호출 (localhost HTTP 우회)
+        calculateAndStore().catch(e => console.error('[scheduler] calculateAndStore error:', e.message));
       }
     }
   }, 60_000);
