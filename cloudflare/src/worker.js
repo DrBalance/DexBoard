@@ -426,6 +426,7 @@ export default {
         SELECT symbol, expiry_date, dte,
                call_oi, put_oi, iv_skew, atm_iv,
                otm_call_iv, otm_put_iv, atm_put_oi_ratio,
+               otm_call_theo, otm_call_delta,
                dex, gex, vanna, charm
         FROM options_dex
         WHERE date = ?
