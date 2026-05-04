@@ -420,7 +420,8 @@ export default {
     let fromDate = null;
     if (range !== "all") {
       const d = new Date(now);
-      if      (range === "2w") d.setDate(d.getDate() - 14);
+      if      (range === "3w") d.setDate(d.getDate() - 21);
+      else if (range === "2w") d.setDate(d.getDate() - 14);
       else if (range === "1m") d.setMonth(d.getMonth() - 1);
       else if (range === "3m") d.setMonth(d.getMonth() - 3);
       else if (range === "6m") d.setMonth(d.getMonth() - 6);
