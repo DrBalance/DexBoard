@@ -886,10 +886,10 @@ async function fetchYahoo(symbol) {
   const quotes = result.indicators?.quote?.[0]?.close ?? [];
   const price = quotes.filter(Boolean).pop();
   if (!price) throw new Error(`Yahoo ${symbol}: no close data`);
-  const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? null;
+  const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? meta.regularMarketPreviousClose ?? null;
   const change    = prevClose != null ? Math.round((price - prevClose) * 100) / 100 : null;
   const changePct = prevClose != null ? Math.round((price - prevClose) / prevClose * 10000) / 100 : null;
-  return { price: Math.round(price * 100) / 100, change, changePct };
+  return { price: Math.round(price * 100) / 100, change, changePct, prevClose };
 }
 
 async function fetchSnapshot() {
@@ -910,6 +910,32 @@ async function fetchSnapshot() {
     console.log(`[snapshot] SPY=${spy.price} (${spy.changePct}%) VIX=${vix.price} (${vix.changePct}%)`);
   } catch (e) {
     console.error('[snapshot] error:', e.message);
+  }
+}
+
+// 장 마감 시 SPY/VIX 종가 KV 저장 (다음 거래일 프리마켓 baseline용)
+async function savePrevClose() {
+  try {
+    const res = await fetch(`${CF_WORKER_URL}/api/snapshot`);
+    if (!res.ok) return;
+    const snap = await res.json();
+    if (!snap?.spy?.price || !snap?.vix?.price) return;
+    // ET 기준 날짜 (장 마감 기준)
+    const etDate = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+    const prevClose = {
+      spy:  snap.spy.price,
+      vix:  snap.vix.price,
+      date: etDate,
+    };
+    await fetch(`${CF_WORKER_URL}/kv-write`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-kv-secret': CF_KV_SECRET },
+      body: JSON.stringify({ key: 'snapshot:prevclose', value: JSON.stringify(prevClose) }),
+      signal: AbortSignal.timeout(5000),
+    });
+    console.log(`[prevClose] saved SPY=${prevClose.spy} VIX=${prevClose.vix} (${prevClose.date})`);
+  } catch (e) {
+    console.error('[prevClose] error:', e.message);
   }
 }
 
@@ -982,9 +1008,10 @@ function startScheduler() {
         saveSnapshotOpen();
       }
 
-      // 장 마감(AFTER 첫 진입) → 스크리너 수집
+      // 장 마감(AFTER 첫 진입) → 전날 종가 저장 + 스크리너 수집
       if (session === 'AFTER' && !screenerDone) {
         screenerDone = true;
+        savePrevClose();
         console.log('[scheduler] 장 마감 → 스크리너 수집 트리거');
 
         // D1에서 수집 대상 심볼 조회 후 수집 트리거
