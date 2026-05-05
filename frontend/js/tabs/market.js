@@ -102,6 +102,8 @@ async function _load() {
     const dexData  = dexRes.ok  ? await dexRes.json()  : null;
     const snapData = snapRes.ok ? await snapRes.json()  : null;
 
+    console.log('[Market] snapData:', snapData)
+
     // 스냅샷 메트릭 업데이트
    
     if (!dexData?.expirations) {
@@ -289,9 +291,13 @@ function _renderChart(weighted, byExpiry, spot) {
   if (!wrap) return;
 
   // 현재가 ±30 범위 기본 표시
-  const visible = weighted.filter(s =>
-    s.strike >= spot - 30 && s.strike <= spot + 30
+    let visible = weighted.filter(s =>
+  s.strike >= spot - 30 && s.strike <= spot + 30
   );
+  if (!visible.length) {
+    const mid = Math.floor(weighted.length / 2);
+    visible = weighted.slice(Math.max(0, mid - 50), mid + 50);
+  }
   if (!visible.length) return;
 
   const labels   = visible.map(s => `$${s.strike}`);
