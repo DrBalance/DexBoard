@@ -131,7 +131,7 @@ async function _load() {
 }
 
 // ── 렌더링 마스터 ─────────────────────────────────────────
-function _render(data) {
+function _render(data, spot = 0) {
   const weighted = _buildWeighted(data);
   const byExpiry = _buildByExpiry(data);
   if (!spot) spot = parseFloat(_el('mk-spy').textContent.replace('$', '')) || 0;
