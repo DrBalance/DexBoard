@@ -270,20 +270,23 @@ async function _fetchVold() {
     if (!values.length) return;
 
     // ── 1분봉 캔들로 OBV 직접 계산 (0에서 시작) ─────────
-    // 오래된 것부터 순서대로 처리
+    // 오래된 것부터 순서대로 처리 (values는 최신이 앞)
+    // prev를 values[i+1]로 참조하면 더 오래된 봉을 가리키는 오류가 있어
+    // 직전 처리봉의 close를 별도 변수로 추적하는 방식으로 변경
     let obv = 0;
+    let prevClose = null;
     const series = [];
 
     for (let i = values.length - 1; i >= 0; i--) {
       const vol   = parseFloat(values[i].volume) || 0;
       const close = parseFloat(values[i].close);
-      const prev  = i < values.length - 1 ? parseFloat(values[i + 1].close) : null;
 
-      if (prev === null)        obv += vol;  // 첫 봉
-      else if (close > prev)    obv += vol;  // 상승봉
-      else if (close < prev)    obv -= vol;  // 하락봉
+      if (prevClose === null)      obv += vol;  // 첫 봉
+      else if (close > prevClose)  obv += vol;  // 상승봉
+      else if (close < prevClose)  obv -= vol;  // 하락봉
       // 보합이면 변화 없음
 
+      prevClose = close;
       series.push({ ts: values[i].datetime, v: obv });
     }
 
