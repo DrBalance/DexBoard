@@ -69,27 +69,12 @@ export default {
       return json(data, 200, corsHeaders);
     }
 
-    // ── GET /api/dex/:group ─────────────────────────────────────
-    const dexMatch = path.match(/^\/api\/dex\/(0dte|weekly|monthly|quarterly|structure)$/);
+    // ── GET /api/dex/:date (YYYY-MM-DD) ────────────────────────
+    const dexMatch = path.match(/^\/api\/dex\/(\d{4}-\d{2}-\d{2})$/);
     if (request.method === "GET" && dexMatch) {
-      const group = dexMatch[1];
-      const data  = await env.DEX_KV.get(`dex:spy:${group}`, { type: "json" });
-      if (!data) return json({ error: `No data for ${group}` }, 200, corsHeaders);
-      return json(data, 200, corsHeaders);
-    }
-
-    // ── GET /api/dex/open ───────────────────────────────────────
-    if (request.method === "GET" && path === "/api/dex/open") {
-      const data = await env.DEX_KV.get("options:spy:open", { type: "json" });
-      if (!data) return json({ error: "No open snapshot" }, 200, corsHeaders);
-      return json(data, 200, corsHeaders);
-    }
-
-    // ── GET /api/dex/0dte/prev ──────────────────────────────────
-    // 15분 전 0dte 스냅샷 — delta15m 계산용
-    if (request.method === "GET" && path === "/api/dex/0dte/prev") {
-      const data = await env.DEX_KV.get("dex:spy:0dte:prev", { type: "json" });
-      if (!data) return json({ error: "No prev 0dte data" }, 200, corsHeaders);
+      const date = dexMatch[1];
+      const data = await env.DEX_KV.get(`dex:spy:${date}`, { type: "json" });
+      if (!data) return json({ error: `No data for ${date}` }, 200, corsHeaders);
       return json(data, 200, corsHeaders);
     }
 
@@ -145,6 +130,54 @@ export default {
         return json({ ...snap.spy, source: "kv", ts: snap.ts }, 200, corsHeaders);
       }
       return json({ error: "SPY 가격 없음" }, 503, corsHeaders);
+    }
+
+    // ── GET /api/trading-date ──────────────────────────────────
+    // 현재 거래일 날짜 반환 (장 중 → 오늘, 장 마감 → 다음 거래일)
+    // { date: "YYYY-MM-DD" }
+    if (request.method === "GET" && path === "/api/trading-date") {
+      try {
+        const url = `https://api.twelvedata.com/market_state?exchange=NYSE&apikey=${env.TWELVE_KEY_SPY}`;
+        const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+        const data = await res.json();
+        const nyse = Array.isArray(data)
+          ? (data.find(e => e.code === "XNYS") ?? data[0])
+          : data;
+        if (!nyse) throw new Error("NYSE 데이터 없음");
+
+        const nowET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+        const fmt = (d) => {
+          const y = d.getFullYear();
+          const m = String(d.getMonth() + 1).padStart(2, "0");
+          const dd = String(d.getDate()).padStart(2, "0");
+          return `${y}-${m}-${dd}`;
+        };
+
+        if (nyse.is_market_open) {
+          return json({ date: fmt(nowET) }, 200, corsHeaders);
+        }
+
+        // 장 마감 → time_to_open으로 다음 거래일 계산
+        const hms = nyse.time_to_open;
+        if (!hms) throw new Error("time_to_open 없음");
+        const parts = hms.split(":").map(Number);
+        const totalSec = parts[0] * 3600 + parts[1] * 60 + parts[2];
+        const nextOpenET = new Date(nowET.getTime() + totalSec * 1000);
+        return json({ date: fmt(nextOpenET) }, 200, corsHeaders);
+
+      } catch (e) {
+        // 폴백: ET 오늘 날짜 (주말이면 다음 월요일)
+        const nowET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
+        const dow = nowET.getDay();
+        if (dow === 0) nowET.setDate(nowET.getDate() + 1);
+        if (dow === 6) nowET.setDate(nowET.getDate() + 2);
+        const y = nowET.getFullYear();
+        const m = String(nowET.getMonth() + 1).padStart(2, "0");
+        const d = String(nowET.getDate()).padStart(2, "0");
+        return json({ date: `${y}-${m}-${d}`, fallback: true }, 200, corsHeaders);
+      }
     }
 
     // ── GET /api/prevclose ─────────────────────────────────────
