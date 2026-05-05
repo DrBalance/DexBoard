@@ -1,6 +1,7 @@
 // DexBoard – vanna_analyzer.js
 // Runs on Railway: fetch CBOE → filter → Black-Scholes → DEX/GEX/Vanna/Charm → CF KV
 // v2: 개별종목 스크리너 수집 엔진 추가
+// v3: 0DTE KV 별도 저장 (dex:spy:0dte) + oi15m/oiOpen 계산
 
 // ─────────────────────────────────────────────────────────────────
 // Environment
@@ -211,6 +212,24 @@ async function kvPut(key, value) {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────
+// Read from CF KV
+// ─────────────────────────────────────────────────────────────────
+async function kvGet(key) {
+  if (!CF_KV_URL) return null;
+  try {
+    const res = await fetch(`${CF_KV_URL}/kv-read?key=${encodeURIComponent(key)}`, {
+      headers: { "x-kv-secret": CF_KV_SECRET },
+      signal: AbortSignal.timeout(8_000),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.value ? JSON.parse(data.value) : null;
+  } catch {
+    return null;
+  }
+}
+
 function sum(arr, field) {
   return arr.reduce((acc, item) => acc + (item[field] || 0), 0);
 }
@@ -228,6 +247,7 @@ export function aggregateByExpiry(options, spot) {
   for (const o of filtered) {
     const parsed = parseOption(o.option);
     if (!parsed) continue;
+
     const { strike, dte, type, expiry } = parsed;
 
     if (!expiryMap[expiry]) {
@@ -279,13 +299,11 @@ export function aggregateByExpiry(options, spot) {
     const atmPutIV  = atmStrike.putIVCount  > 0 ? atmStrike.putIV  / atmStrike.putIVCount  : 0;
     const atmIV     = (atmCallIV + atmPutIV) / 2 || 0;
 
-    // OI 극소 만기(콜+풋 합산 1000 미만)는 iv_skew 신뢰 불가 → 0 처리
     const callOI  = strikes.reduce((s, r) => s + r.callOI,  0);
     const putOI   = strikes.reduce((s, r) => s + r.putOI,   0);
     const totalOI = callOI + putOI;
     const ivSkew  = (atmIV > 0 && totalOI >= 1000) ? (atmCallIV - atmPutIV) / atmIV : 0;
 
-    // OTM IV (ATM±5%)
     const otmRange = spot * 0.05;
     const otmCallStrikes = strikes.filter(s => s.strike > spot && s.strike <= spot + otmRange);
     const otmPutStrikes  = strikes.filter(s => s.strike < spot && s.strike >= spot - otmRange);
@@ -293,7 +311,6 @@ export function aggregateByExpiry(options, spot) {
     const avgOTMCallIV = _avgIV(otmCallStrikes, "call");
     const avgOTMPutIV  = _avgIV(otmPutStrikes,  "put");
 
-    // OTM 콜 theo/delta 평균 (ATM+5% 이내 콜 스트라이크)
     const otmCallTheoVals  = otmCallStrikes
       .map(s => s.callTheoCount  > 0 ? s.callTheo  / s.callTheoCount  : null)
       .filter(v => v != null && v > 0);
@@ -311,14 +328,12 @@ export function aggregateByExpiry(options, spot) {
     const pcrOI  = callOI  > 0 ? putOI  / callOI  : null;
     const pcrVol = callVol > 0 ? putVol / callVol : null;
 
-    // ATM±5% 풋 OI 집중도
     const atmPutRange  = spot * 0.05;
     const atmPutOI     = strikes
       .filter(s => Math.abs(s.strike - spot) <= atmPutRange)
       .reduce((acc, s) => acc + s.putOI, 0);
     const atmPutRatio  = putOI > 0 ? atmPutOI / putOI : 0;
 
-    // Greeks 합산 (DEX/GEX/Vanna/Charm)
     let dex = 0, gex = 0, vanna = 0, charm = 0;
 
     for (const s of strikes) {
@@ -380,18 +395,10 @@ function _strikeAvgIV(s) {
 
 // ─────────────────────────────────────────────────────────────────
 // 스크리너 점수 계산 (바닥 반등 후보 탐색)
-// A. OTM 콜 베팅 강도 (최대 5점) — 스마트머니 선행 신호
-// B. BB 위치           (최대 3점) — 가격 바닥권 여부
-// D. 변동성 수축       (최대 2점) — 에너지 축적 여부
-// 총점 10점
 // ─────────────────────────────────────────────────────────────────
 export function calcScreenerScore(rows, priceData = {}) {
   if (!rows || !rows.length) return null;
 
-  // A. OTM 콜 베팅 강도 (최대 5점)
-  // 전체 만기 중 OTM 스큐 양수인 만기의 최대 베팅 강도
-  // skew_strength = otm_call_theo × call_oi × 100
-  // OTM 스큐 양수 조건: otm_call_iv > otm_put_iv (단, 둘 다 존재해야 함)
   let skewStrength = 0;
   for (const r of rows) {
     if (
@@ -410,20 +417,16 @@ export function calcScreenerScore(rows, priceData = {}) {
   else if (skewStrength >=   1_000_000) score_skew = 2;
   else if (skewStrength >            0) score_skew = 1;
 
-  // B. 볼린저 위치 (최대 3점)
-  // bb_position: 0=하단2σ, 0.5=중간(SMA), 1=상단2σ, 음수=BREAKDOWN
   const bb = priceData.bb_position ?? null;
   const bb_flag = (bb != null && bb < 0) ? 'BREAKDOWN' : null;
   let score_bb = 0;
   if (bb != null && !bb_flag) {
-    if      (bb < 0.2) score_bb = 3;  // 하단 바닥권
-    else if (bb < 0.4) score_bb = 2;  // 반등 초입
-    else if (bb < 0.8) score_bb = 1;  // 중립
-    else               score_bb = 0;  // 상단 과열
+    if      (bb < 0.2) score_bb = 3;
+    else if (bb < 0.4) score_bb = 2;
+    else if (bb < 0.8) score_bb = 1;
+    else               score_bb = 0;
   }
 
-  // D. 변동성 수축 (최대 2점)
-  // vol_ratio = ATR5 / ATR20: 1 미만이면 최근 변동폭 수축
   const squeeze = priceData.vol_squeeze ?? null;
   let score_vol_squeeze = 0;
   if (squeeze != null) {
@@ -434,11 +437,11 @@ export function calcScreenerScore(rows, priceData = {}) {
   const total_score = score_skew + score_bb + score_vol_squeeze;
 
   return {
-    score_skew,          // A항목 점수 (0~5)
-    score_bb,            // B항목 점수 (0~3)
-    score_vol_squeeze,   // D항목 점수 (0~2)
-    total_score,         // 합계 (0~10)
-    skew_strength: skewStrength,  // 베팅 강도 원값
+    score_skew,
+    score_bb,
+    score_vol_squeeze,
+    total_score,
+    skew_strength: skewStrength,
     bb_position:   bb,
     bb_flag,
     iv_skew: rows.length ? rows[0].iv_skew : null,
@@ -463,7 +466,9 @@ export async function collectSymbol(symbol, date) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// Main: calculateAndStore (SPY DEX — 기존 로직 유지)
+// Main: calculateAndStore (SPY DEX)
+// 1. 기존 dex:spy KV 유지 (전체 만기)
+// 2. 신규 dex:spy:0dte KV 저장 (0DTE만, oi15m/oiOpen 포함)
 // ─────────────────────────────────────────────────────────────────
 async function fetchCBOE() {
   const url = `${CBOE_BASE}/SPY.json`;
@@ -478,16 +483,16 @@ export async function calculateAndStore() {
   const all = raw?.data?.options ?? [];
   if (all.length === 0) throw new Error("CBOE returned empty options array");
 
-  // spot: CBOE current_price 사용
   const spot = raw?.data?.current_price;
   if (!spot) throw new Error("CBOE current_price 없음");
   console.log(`[Calc] spot=${spot}`);
 
-  // 저장 기준일: 오늘 ET 날짜
-  const todayET = getTodayET();
-  console.log(`[Calc] 기준일: ${todayET}`);
+  // 저장 기준일: Twelve Data 기준 다음 거래일 (= 0DTE 만기일)
+  const nextTradingDate = await getNextTradingDate();
+  const todayET         = getTodayET();
+  console.log(`[Calc] 기준일: ${todayET}, 0DTE 만기일: ${nextTradingDate}`);
 
-  // 2. 필터링 (nextTradingDate 없이 — 만기일 그대로 사용)
+  // 2. 필터링
   const filtered = all.filter((o) => {
     const parsed = parseOption(o.option);
     if (!parsed) return false;
@@ -556,19 +561,88 @@ export async function calculateAndStore() {
     }
   }
 
-  // 5. KV 저장 — 오늘 날짜 키에 덮어씀
+  // 5. 기존 dex:spy KV 저장 (전체 만기 — 날짜조회 탭용, 변경 없음)
   const updatedAt = new Date().toISOString();
-  const payload = {
+  const fullPayload = {
     updated_at:  updatedAt,
     date:        todayET,
     expirations,
   };
+  await kvPut('dex:spy', fullPayload);
+  console.log(`[KV] dex:spy 저장 완료 — 만기일 ${Object.keys(expirations).length}개`);
 
-  await kvPut('dex:spy', payload);
+  // 6. 0DTE strikes 추출 (nextTradingDate 기준)
+  const zeroStrikes = expirations[nextTradingDate] ?? [];
+  if (zeroStrikes.length === 0) {
+    console.warn(`[KV] 0DTE strikes 없음 (만기일: ${nextTradingDate}) — dex:spy:0dte 저장 생략`);
+  } else {
+    // 7. 직전 dex:spy:0dte KV 읽기 (oi15m, oiOpen 계산용)
+    const prev0dte = await kvGet('dex:spy:0dte');
 
-  const expiryCount   = Object.keys(expirations).length;
-  const totalStrikes  = Object.values(expirations).reduce((a, b) => a + b.length, 0);
-  console.log(`[KV] dex:spy 저장 완료 — 만기일 ${expiryCount}개, 스트라이크 ${totalStrikes}건`);
+    // 직전 스냅샷이 같은 만기일 데이터인지 확인
+    const prevStrikes = (prev0dte?.expiry === nextTradingDate && Array.isArray(prev0dte?.strikes))
+      ? prev0dte.strikes
+      : null;
 
-  return { ok: true, updated_at: updatedAt, date: todayET, expirations: expiryCount, strikes: totalStrikes };
+    // 직전 스냅샷을 strike 키맵으로 변환
+    const prevMap = {};
+    if (prevStrikes) {
+      for (const s of prevStrikes) {
+        prevMap[s.strike] = { callOI: s.callOI, putOI: s.putOI };
+      }
+    }
+
+    // 8. oi15m / oiOpen 계산하여 새 strikes 배열 구성
+    const newStrikes = zeroStrikes.map(s => {
+      const prev = prevMap[s.strike];
+
+      // oi15m: 직전 스냅샷 대비 증감
+      const callOi15m = prev != null ? s.callOI - prev.callOI : 0;
+      const putOi15m  = prev != null ? s.putOI  - prev.putOI  : 0;
+
+      // oiOpen: 누적 증감 = 직전 oiOpen + 이번 oi15m
+      // 직전 스냅샷이 없으면 oiOpen = 0 (기준점)
+      const prevEntry  = prevStrikes ? prevStrikes.find(p => p.strike === s.strike) : null;
+      const callOiOpen = prevEntry != null ? (prevEntry.callOiOpen ?? 0) + callOi15m : 0;
+      const putOiOpen  = prevEntry != null ? (prevEntry.putOiOpen  ?? 0) + putOi15m  : 0;
+
+      return {
+        strike:      s.strike,
+        expiry:      s.expiry,
+        callOI:      s.callOI,
+        putOI:       s.putOI,
+        callOi15m,   // 15분 증감 (계약수)
+        putOi15m,    // 15분 증감 (계약수)
+        callOiOpen,  // 장 시작 대비 누적 증감 (계약수)
+        putOiOpen,   // 장 시작 대비 누적 증감 (계약수)
+        dex:         s.dex,
+        gex:         s.gex,
+        vanna:       s.vanna,
+        charm:       s.charm,
+      };
+    });
+
+    // 9. dex:spy:0dte 저장
+    const payload0dte = {
+      updated_at: updatedAt,
+      date:       todayET,
+      expiry:     nextTradingDate,  // 0DTE 만기일 명시
+      strikes:    newStrikes,
+    };
+    await kvPut('dex:spy:0dte', payload0dte);
+    console.log(`[KV] dex:spy:0dte 저장 완료 — 만기일 ${nextTradingDate}, ${newStrikes.length}건`);
+  }
+
+  const expiryCount  = Object.keys(expirations).length;
+  const totalStrikes = Object.values(expirations).reduce((a, b) => a + b.length, 0);
+
+  return {
+    ok:          true,
+    updated_at:  updatedAt,
+    date:        todayET,
+    expiry_0dte: nextTradingDate,
+    expirations: expiryCount,
+    strikes:     totalStrikes,
+    strikes_0dte: zeroStrikes.length,
+  };
 }
