@@ -19,9 +19,10 @@
  */
 
 import { bindToggle } from '../tabs.js';
+import { CF_API } from '../config.js';
 
 // ── 설정 ──────────────────────────────────────────────────
-const WORKER_URL = import.meta.env?.VITE_WORKER_URL ?? '';
+const WORKER_URL = CF_API;
 
 const WEIGHTS = {
   '0dte':      1.0,
