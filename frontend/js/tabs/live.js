@@ -23,20 +23,16 @@ const _state = {
   gex:     null,
   vanna:   null,
   charm:   null,
-  strikes: [],
-  spot:    null,   // 0dte KV의 spot (폴백)
+  strikes: [],   // dex:spy:0dte 의 strikes 배열 (oi15m/oiOpen 포함)
+  spot:    null,
 
-  // SPY 폴링 상태
-  spyLive:         null,   // 최신 SPY 현재가
-
-  // VOLD (OBV 기반)
-  vold:            0,
+  spyLive: null,
+  vold:    0,
 
   putWall:  null,
   callWall: null,
   flipZone: null,
   pcr:      null,
-  oiOpen:   null,  // 장 시작 OI 맵 { oiMap: { [strike]: { c, p } }, saved_at }
 };
 
 // OI 차트 인스턴스 (탭 재방문 시 재생성 방지)
@@ -44,8 +40,7 @@ let _chartInst = null;
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-
-let _tradingDate = null;  // 오늘 거래일 날짜 캐시
+let _tradingDate = null;
 
 async function _getTradingDate() {
   if (_tradingDate) return _tradingDate;
@@ -60,7 +55,6 @@ async function _getTradingDate() {
   } catch (e) {
     console.warn('[Live] trading-date 조회 실패:', e.message);
   }
-  // 폴백: ET 오늘 날짜 직접 계산
   _tradingDate = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
   return _tradingDate;
 }
@@ -88,8 +82,8 @@ async function _triggerCalculate() {
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // KV 통합 fetch
-//   - SPY/VIX 메트릭 카드 + VIX 차트 (매 폴링 주기)
-//   - DEX/그릭스/OI (15분 주기, 정규장)
+//   fullUpdate=true  → snapshot + dex:spy:0dte (15분 주기)
+//   fullUpdate=false → snapshot만 (1분/30초 주기)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 let _lastKvTs = 0;
 
@@ -97,12 +91,9 @@ async function fetchKV({ fullUpdate = true } = {}) {
   try {
     const requests = [fetch(`${CF_API}/api/snapshot`)];
     if (fullUpdate) {
-      requests.push(
-        fetch(`${CF_API}/api/dex/spy`),
-        fetch(`${CF_API}/api/oi/open`),
-      );
+      requests.push(fetch(`${CF_API}/api/dex/0dte`));
     }
-    const [snapRes, dexRes, oiOpenRes] = await Promise.all(requests);
+    const [snapRes, dex0dteRes] = await Promise.all(requests);
 
     // ── snapshot: SPY/VIX ────────────────────────────────
     if (snapRes.ok) {
@@ -112,7 +103,6 @@ async function fetchKV({ fullUpdate = true } = {}) {
         if (snapTs > _lastKvTs) {
           _lastKvTs = snapTs;
 
-          // VIX: 메트릭 카드 + 차트
           if (snap.vix?.price) {
             _state.vix = snap.vix;
             renderVIX();
@@ -121,7 +111,6 @@ async function fetchKV({ fullUpdate = true } = {}) {
             }
           }
 
-          // SPY: 메트릭 카드 업데이트
           if (snap.spy?.price) {
             _updateSpy({ ...snap.spy, source: 'kv', ts: snap.ts });
           }
@@ -131,45 +120,33 @@ async function fetchKV({ fullUpdate = true } = {}) {
 
     if (!fullUpdate) return;
 
-    // ── DEX/그릭스 ───────────────────────────────────────
-    if (dexRes?.ok) {
-      const dex = await dexRes.json();
-      if (dex.error) {
-        // 데이터 없음 → Railway 트리거 (비동기, 응답 안 기다림)
+    // ── dex:spy:0dte ─────────────────────────────────────
+    // strikes 배열에 callOI, putOI, oi15m, oiOpen, greeks 모두 포함
+    if (dex0dteRes?.ok) {
+      const dex0dte = await dex0dteRes.json();
+
+      if (dex0dte.error) {
+        // 데이터 없음 → Railway 트리거 (비동기)
         _triggerCalculate();
       } else {
-        // expirations에서 오늘 날짜(0DTE) strikes 추출
-        const expirations = dex.expirations ?? {};
-
-        // 가장 가까운 만기일(0DTE) strikes 우선, 없으면 전체 합산
-        const sortedExpiries = Object.keys(expirations).sort();
-        const nearestExpiry  = sortedExpiries[0] ?? null;
-        const todayStrikes   = nearestExpiry ? expirations[nearestExpiry] : [];
-        const allStrikes     = Object.values(expirations).flat();
-
-        _state.strikes = todayStrikes.length > 0 ? todayStrikes : allStrikes;
+        const strikes = dex0dte.strikes ?? [];
+        _state.strikes = strikes;
 
         // 합산 그릭스
-        const sum = (arr, field) => arr.reduce((a, b) => a + (b[field] || 0), 0);
-        _state.dex   = sum(_state.strikes, 'dex');
-        _state.gex   = sum(_state.strikes, 'gex');
-        _state.vanna = sum(_state.strikes, 'vanna');
-        _state.charm = sum(_state.strikes, 'charm');
+        const sum = (field) => strikes.reduce((a, s) => a + (s[field] || 0), 0);
+        _state.dex   = sum('dex');
+        _state.gex   = sum('gex');
+        _state.vanna = sum('vanna');
+        _state.charm = sum('charm');
 
-        _state.putWall  = _calcPutWall(_state.strikes, _state.spot);
-        _state.callWall = _calcCallWall(_state.strikes, _state.spot);
-        _state.flipZone = _calcFlipZone(_state.strikes);
-        _state.pcr      = _calcPCR(_state.strikes);
+        const spot = _state.spyLive ?? _state.spy.price ?? _state.spot;
+        _state.putWall  = _calcPutWall(strikes, spot);
+        _state.callWall = _calcCallWall(strikes, spot);
+        _state.flipZone = _calcFlipZone(strikes);
+        _state.pcr      = _calcPCR(strikes);
       }
     }
 
-    // ── OI open ──────────────────────────────────────────
-    if (oiOpenRes?.ok) {
-      const oiOpen = await oiOpenRes.json();
-      if (!oiOpen.error && oiOpen.oiMap) {
-        _state.oiOpen = oiOpen;
-      }
-    }
   } catch (e) {
     console.warn('[Live] KV fetch 실패:', e.message);
   }
@@ -178,7 +155,7 @@ async function fetchKV({ fullUpdate = true } = {}) {
 
   if (!fullUpdate) return;
 
-  // 옵션체인 갱신: 히트맵 전체 재렌더
+  // 옵션체인 갱신
   const spotForHeatmap = _state.spyLive ?? _state.spy.price ?? _state.spot;
   if (_state.strikes.length > 0 && spotForHeatmap) {
     renderHeatmap('heatmap-canvas', _state.strikes, spotForHeatmap);
@@ -186,8 +163,10 @@ async function fetchKV({ fullUpdate = true } = {}) {
 
   _onSpotUpdated();
 
+  // Top5 급등 OI 패널
+  // strikes에 oi15m/oiOpen 필드가 직접 내장되어 있으므로 추가 계산 불필요
   if (_state.strikes.length > 0) {
-    renderTop5Panel('top5-panel', _state.strikes, 'delta15m');
+    renderTop5Panel('top5-panel', _state.strikes);
   }
 
   renderNarrative();
@@ -200,10 +179,8 @@ function _onSpotUpdated() {
   const spotPrice = _state.spyLive ?? _state.spy.price ?? _state.spot;
   if (!spotPrice) return;
 
-  // SPY 메트릭 카드
   renderSPY();
 
-  // Put Wall / Call Wall 재계산
   if (_state.strikes.length > 0) {
     _state.putWall  = _calcPutWall(_state.strikes, spotPrice);
     _state.callWall = _calcCallWall(_state.strikes, spotPrice);
@@ -211,11 +188,8 @@ function _onSpotUpdated() {
     renderCallWall();
   }
 
-  // 히트맵 — 가격 갱신 시에는 spot 강조만 업데이트 (DOM 교체 없음)
-  // 옵션체인 갱신(15분) 시에는 fetchKV()에서 renderHeatmap() 호출
   updateHeatmapSpot('heatmap-canvas', spotPrice);
 
-  // OI 차트
   if (_state.strikes.length > 0) {
     if (!_chartInst) {
       _chartInst = renderOIChart('live-chart-wrap', _state.strikes, spotPrice, { mode: '0dte' });
@@ -224,7 +198,6 @@ function _onSpotUpdated() {
     }
   }
 
-  // Strike 테이블
   if (_state.strikes.length > 0) {
     const countEl = document.getElementById('strike-count');
     if (countEl) countEl.textContent = `${_state.strikes.length}건`;
@@ -234,16 +207,16 @@ function _onSpotUpdated() {
       flipZone:  _state.flipZone  ?? null,
       putWall:   _state.putWall   ?? null,
       callWall:  _state.callWall  ?? null,
-      openOI:    _state.oiOpen?.oiMap ?? null,
+      // openOI: 불필요 — strikes에 callOiOpen/putOiOpen 직접 내장
       isRegular: window._marketState === 'REGULAR',
     });
   }
 
-  // 내러티브 패널 (SPY 기반 조건 변화 시만)
   _renderNarrativeIfChanged();
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
 function _updateSpy(data) {
   _state.spyLive           = data.price;
   _state.spy.price         = data.price;
@@ -266,31 +239,28 @@ async function _fetchVold() {
     const data = await res.json();
     if (data.status === 'error' || !Array.isArray(data.values)) return;
 
-    const values = data.values; // 최신이 앞
+    const values = data.values;
     if (!values.length) return;
 
-    // ── 1분봉 캔들로 OBV 직접 계산 (0에서 시작) ─────────
-    // 오래된 것부터 순서대로 처리
+    // prev를 values[i+1]로 참조하면 더 오래된 봉을 가리키는 오류가 있어
+    // 직전 처리봉의 close를 별도 변수로 추적하는 방식으로 변경
     let obv = 0;
+    let prevClose = null;
     const series = [];
 
     for (let i = values.length - 1; i >= 0; i--) {
       const vol   = parseFloat(values[i].volume) || 0;
       const close = parseFloat(values[i].close);
-      const prev  = i < values.length - 1 ? parseFloat(values[i + 1].close) : null;
 
-      if (prev === null)        obv += vol;  // 첫 봉
-      else if (close > prev)    obv += vol;  // 상승봉
-      else if (close < prev)    obv -= vol;  // 하락봉
-      // 보합이면 변화 없음
+      if (prevClose === null)      obv += vol;  // 첫 봉
+      else if (close > prevClose)  obv += vol;  // 상승봉
+      else if (close < prevClose)  obv -= vol;  // 하락봉
 
+      prevClose = close;
       series.push({ ts: values[i].datetime, v: obv });
     }
 
-    // ── 차트: 시리즈 전체 교체 (렌더 1회) ───────────────
     setVoldSeries(series);
-
-    // ── 최종 누적값 → 메트릭 카드 ───────────────────────
     _state.vold = obv;
     renderVOLD();
 
@@ -299,10 +269,8 @@ async function _fetchVold() {
   }
 }
 
-
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 장 상태 변경 시 차트 표시/숨김 처리
-// (폴링은 clock.js tick()이 담당 — setInterval 없음)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function _onMarketStateChanged(marketState) {
   // CLOSED 포함 항상 표시 — 초기화 타이밍 문제로 숨김 처리 제거
@@ -414,7 +382,6 @@ const LEVEL_STYLE = {
   info:   { bg: 'rgba(107,114,128,.10)', border: '#6b7280', icon: '💬' },
 };
 
-// 내러티브 패널 — 내용이 바뀔 때만 DOM 업데이트
 let _lastNarrativeHtml = '';
 
 function _renderNarrativeIfChanged() {
@@ -434,7 +401,7 @@ function _renderNarrativeIfChanged() {
         <span>${msg}</span>
       </div>`;
   }).join('');
-  if (html === _lastNarrativeHtml) return;  // 변경 없으면 스킵
+  if (html === _lastNarrativeHtml) return;
   _lastNarrativeHtml = html;
   el.innerHTML = html;
 }
@@ -514,7 +481,6 @@ function renderAIResult(data) {
 
 let _aiLoading = false;
 
-// AI 분석 결과 렌더 + 안내문구
 function _renderAIWithNotice(analysis, noticeMsg = null, noticeColor = '#8b949e') {
   const result   = document.getElementById('ai-analysis-result');
   const scrollEl = document.getElementById('ai-result-scroll');
@@ -529,14 +495,12 @@ function _renderAIWithNotice(analysis, noticeMsg = null, noticeColor = '#8b949e'
 
   renderAIResult(analysis);
 
-  // 안내문구를 결과 위에 삽입
   if (noticeMsg) {
     result.insertAdjacentHTML('afterbegin', noticeHTML);
   }
   if (scrollEl) scrollEl.scrollTop = 0;
 }
 
-// N분 전 포맷
 function _minutesAgo(ts) {
   const mins = Math.floor((Date.now() - new Date(ts).getTime()) / 60_000);
   if (mins < 1)  return '방금 전';
@@ -556,7 +520,6 @@ async function requestAIAnalysis(auto = false) {
 
   if (wrap) wrap.style.display = 'block';
 
-  // ── 1. KV 캐시 확인 ──────────────────────────────────────────
   let cached = null;
   try {
     const cacheRes = await fetch(`${CF_API}/api/ai-analysis`, {
@@ -571,9 +534,8 @@ async function requestAIAnalysis(auto = false) {
   } catch (_) {}
 
   const cacheAgeMs  = cached ? Date.now() - new Date(cached.ts).getTime() : Infinity;
-  const cacheValid  = cacheAgeMs < 15 * 60_000;  // 15분 이내
+  const cacheValid  = cacheAgeMs < 15 * 60_000;
 
-  // 수동 버튼 클릭 시 캐시가 15분 이내면 캐시 결과 표시 후 종료
   if (!auto && cacheValid) {
     _renderAIWithNotice(
       cached.analysis,
@@ -584,14 +546,12 @@ async function requestAIAnalysis(auto = false) {
     return;
   }
 
-  // 자동 분석이고 캐시가 유효하면 조용히 캐시 렌더 후 종료
   if (auto && cacheValid) {
     _renderAIWithNotice(cached.analysis);
     _aiLoading = false;
     return;
   }
 
-  // ── 2. Railway 호출 (캐시 없거나 만료) ──────────────────────
   if (!auto && btn) {
     btn.disabled    = true;
     btn.textContent = '분석 중…';
@@ -612,30 +572,22 @@ async function requestAIAnalysis(auto = false) {
     const data = await res.json();
 
     if (data.ok && typeof data.analysis === 'object') {
-      // 성공 — 안내문구 없이 렌더
       _renderAIWithNotice(data.analysis);
     } else {
-      // Railway 응답은 왔지만 분석 실패
       throw new Error(data.error ?? '알 수 없는 오류');
     }
   } catch (e) {
-    // ── 3. 에러 시 캐시 폴백 ──────────────────────────────────
-    const is429 = e.message?.includes('429') || e.message?.includes('한도');
+    const is429    = e.message?.includes('429') || e.message?.includes('한도');
     const isTimeout = e.name === 'TimeoutError' || e.message?.includes('timeout');
 
     if (cached?.analysis) {
       const noticeColor = is429 ? '#f59e0b' : '#ef4444';
       let noticeMsg = '';
-      if (is429) {
-        noticeMsg = `⚠️ API 한도 초과 — ${_minutesAgo(cached.ts)} 결과를 표시합니다`;
-      } else if (isTimeout) {
-        noticeMsg = `⚠️ 응답 시간 초과 — ${_minutesAgo(cached.ts)} 결과를 표시합니다`;
-      } else {
-        noticeMsg = `⚠️ 분석 오류 — ${_minutesAgo(cached.ts)} 결과를 표시합니다`;
-      }
+      if (is429)          noticeMsg = `⚠️ API 한도 초과 — ${_minutesAgo(cached.ts)} 결과를 표시합니다`;
+      else if (isTimeout) noticeMsg = `⚠️ 응답 시간 초과 — ${_minutesAgo(cached.ts)} 결과를 표시합니다`;
+      else                noticeMsg = `⚠️ 분석 오류 — ${_minutesAgo(cached.ts)} 결과를 표시합니다`;
       _renderAIWithNotice(cached.analysis, noticeMsg, noticeColor);
     } else {
-      // 캐시도 없음
       result.innerHTML = `
         <div style="color:#ef4444;font-size:12px;padding:8px">
           ⚠️ 분석 결과를 불러올 수 없습니다<br>
@@ -712,13 +664,10 @@ export async function initLive() {
 
   initNarrativePanel();
 
-  // VC 차트 초기화
   initVCChart('vc-chart-wrap');
 
-  // 장 상태에 따라 차트 표시/숨김
   _onMarketStateChanged(window._marketState ?? 'CLOSED');
 
-  // 초기 데이터 즉시 로드 (fullUpdate=true → DEX 포함)
   await fetchKV();
   if (window._marketState === 'REGULAR') {
     _state.vold = 0;
@@ -727,7 +676,6 @@ export async function initLive() {
 
   window.addEventListener('marketStateChanged', ({ detail }) => {
     _onMarketStateChanged(detail.marketState);
-    // 장 상태 전환 시 즉시 1회 갱신
     fetchKV();
     if (detail.marketState === 'REGULAR') {
       _state.vold = 0;
@@ -746,7 +694,6 @@ export async function initLive() {
     }
   });
 
-  // tick 콜백 등록 — initLive() 완료 후에 등록하므로 초기화 순서 보장
   registerTickCallback(onLiveTick);
 }
 
@@ -755,6 +702,9 @@ export function refreshLive() {
   fetchKV();
 }
 
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 계산 헬퍼
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function _calcPutWall(strikes, spot) {
   if (!strikes?.length || !spot) return null;
   const near = strikes.filter(s => Math.abs(s.strike - spot) / spot < 0.10);
@@ -796,7 +746,6 @@ function _calcFlipZone(strikes) {
   return null;
 }
 
-
 function _calcPCR(strikes) {
   if (!strikes?.length) return null;
   let totalCall = 0, totalPut = 0;
@@ -808,8 +757,7 @@ function _calcPCR(strikes) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// onLiveTick — clock.js tick()에서 매초 호출 (registerTickCallback으로 등록)
-// 헤더 시계 기준으로 갱신 타이밍 결정 (setInterval 없음)
+// onLiveTick — clock.js tick()에서 매초 호출
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function onLiveTick({ h, m, s }) {
   const state = window._marketState;
@@ -817,30 +765,29 @@ function onLiveTick({ h, m, s }) {
   if (state === 'REGULAR') {
     if (s === 5) {
       if (m % 15 === 2) {
-        // ── 15분: 옵션 데이터 풀업데이트 (CBOE :00 → Railway :01 → 프론트 :02:05)
+        // 15분: 옵션 데이터 풀업데이트 (CBOE :00 → Railway :01 → 프론트 :02:05)
         fetchKV({ fullUpdate: true });
       } else {
-        // ── 1분: SPY+VIX 메트릭 카드 갱신 (snapshot만)
+        // 1분: SPY+VIX 메트릭 카드 갱신
         fetchKV({ fullUpdate: false });
       }
 
-      // ── 1분: VOLD + VIX 차트 (매 :05초, 풀업데이트와 무관하게 실행)
+      // 1분: VOLD + VIX 차트
       _fetchVold();
 
-      // ── 30분: AI 분석
+      // 30분: AI 분석
       if (m % 30 === 2) {
         requestAIAnalysis(true);
       }
     }
 
     if (s === 35) {
-      // ── 30초: SPY+VIX 메트릭 카드 갱신 (snapshot만)
+      // 30초: SPY+VIX 메트릭 카드 갱신
       fetchKV({ fullUpdate: false });
     }
   }
 
   if (state === 'PRE' || state === 'AFTER') {
-    // ── 3분: SPY+VIX 메트릭 카드 + VIX 차트 갱신
     if (s === 5 && m % 3 === 0) {
       fetchKV({ fullUpdate: false });
     }
