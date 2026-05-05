@@ -305,12 +305,9 @@ async function _fetchVold() {
 // (폴링은 clock.js tick()이 담당 — setInterval 없음)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function _onMarketStateChanged(marketState) {
+  // CLOSED 포함 항상 표시 — 초기화 타이밍 문제로 숨김 처리 제거
   const vcWrap = document.getElementById('vc-chart-wrap');
-  if (marketState === 'CLOSED') {
-    if (vcWrap) vcWrap.style.display = 'none';
-  } else {
-    if (vcWrap) vcWrap.style.display = '';
-  }
+  if (vcWrap) vcWrap.style.display = '';
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
