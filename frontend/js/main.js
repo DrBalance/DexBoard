@@ -6,7 +6,7 @@ import { loadAll, loadSnapshot } from './api.js';
 import { startClock }         from './clock.js';
 import { initTabs, bindToggle } from './tabs.js';
 import { INTERVAL_SNAP, INTERVAL_FULL } from './config.js';
-import { initLive }           from './live.js';
+import { initLive }           from './tabs/live.js';
 
 // ── clock.js 가 찾는 id와 index.html id 브리지 ────────────
 // clock.js: market-state-badge / market-state-dot / market-state-label
