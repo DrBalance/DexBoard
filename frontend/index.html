@@ -215,10 +215,6 @@
           <button class="toggle-btn" data-group="QQQ">QQQ</button>
           <button class="toggle-btn" data-group="IWM">IWM</button>
         </div>
-        <div class="toggle-group" id="market-weight-toggle">
-          <button class="toggle-btn active" data-group="weighted">가중합산</button>
-          <button class="toggle-btn" data-group="raw">단순합산</button>
-        </div>
         <span class="ts" id="market-ts">—</span>
       </div>
 
@@ -237,17 +233,17 @@
         <div class="metric">
           <div class="metric-label">Total DEX</div>
           <div class="metric-value" id="mk-dex">—</div>
-          <div class="metric-sub">all expiries</div>
+          <div class="metric-sub">선택만기 합산</div>
         </div>
         <div class="metric">
           <div class="metric-label">Call Wall</div>
           <div class="metric-value" id="mk-call-wall" style="color:var(--green)">—</div>
-          <div class="metric-sub">전만기 기준</div>
+          <div class="metric-sub">선택만기 기준</div>
         </div>
         <div class="metric">
           <div class="metric-label">Put Wall</div>
           <div class="metric-value" id="mk-put-wall" style="color:var(--red)">—</div>
-          <div class="metric-sub">전만기 기준</div>
+          <div class="metric-sub">선택만기 기준</div>
         </div>
         <div class="metric">
           <div class="metric-label">Flip Zone</div>
@@ -256,50 +252,78 @@
         </div>
       </div>
 
-      <!-- 만기 레이어 DEX 바 차트 -->
+      <!-- 만기 선택 패널 -->
       <div class="card">
         <div class="card-header">
-          <span class="card-title">Total DEX by Expiry — <span id="mk-chart-title">SPY</span></span>
+          <span class="card-title">만기 선택 — <span id="mk-chart-title">SPY</span></span>
+          <div style="display:flex;gap:6px;align-items:center">
+            <button class="toggle-btn" id="mk-select-all-btn">전체선택</button>
+            <button class="toggle-btn" id="mk-deselect-btn">전체해제</button>
+            <button class="toggle-btn" id="mk-reset-btn">기본값</button>
+            <button class="btn" id="mk-apply-btn" style="padding:4px 14px;font-size:12px">Apply</button>
+          </div>
+        </div>
+        <div id="mk-expiry-panel"
+          style="padding:10px 16px;display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:2px">
+          <div class="loading"><div class="spinner"></div>Loading…</div>
+        </div>
+      </div>
+
+      <!-- 멀티행 히트맵 + 차트 카드 -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">DEX Heatmap + Chart</span>
           <div class="heatmap-legend">
             <span><span class="swatch" style="background:var(--green)"></span> Call DEX</span>
             <span><span class="swatch" style="background:var(--red)"></span> Put DEX</span>
           </div>
         </div>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px;color:var(--text3)">
+
+        <!-- 히트맵 (Canvas) -->
+        <div style="overflow-x:auto;border-bottom:1px solid var(--border);padding:8px 14px">
+          <canvas id="mk-heatmap-canvas"></canvas>
+        </div>
+
+        <!-- 차트 -->
+        <div style="display:flex;align-items:center;gap:10px;padding:8px 14px 4px;
+                    font-size:12px;color:var(--text3)">
           <span>확대</span>
           <input type="range" id="mk-zoom-slider" min="1" max="6" step="0.5" value="1"
             style="width:140px;accent-color:var(--blue,#58a6ff)">
           <span id="mk-zoom-val" style="color:var(--blue,#58a6ff);font-family:var(--mono);min-width:28px">1×</span>
           <span>← 가로 스크롤 →</span>
         </div>
-        <div id="mk-chart-scroll" style="overflow-x:auto;overflow-y:hidden;border:1px solid var(--border);border-radius:6px">
-          <div id="mk-chart-wrap" style="height:360px"></div>
+        <div id="mk-chart-scroll"
+          style="overflow-x:auto;overflow-y:hidden;border:1px solid var(--border);
+                 border-radius:6px;margin:0 14px 14px">
+          <div id="mk-chart-wrap" style="height:280px"></div>
         </div>
       </div>
 
-      <!-- 만기별 DEX 합산 요약 -->
+      <!-- 만기별 DEX 분포 바 -->
       <div class="card">
         <div class="card-header">
           <span class="card-title">만기별 DEX 분포</span>
           <span style="font-size:11px;color:var(--text3)">딜러 헤지 압력 구조</span>
         </div>
-        <div id="mk-expiry-bars" style="padding:12px 16px;display:flex;flex-direction:column;gap:10px">
+        <div id="mk-expiry-bars"
+          style="padding:12px 16px;display:flex;flex-direction:column;gap:10px">
           <div class="loading"><div class="spinner"></div>Loading…</div>
         </div>
       </div>
 
-      <!-- 키레벨 추적 테이블 -->
+      <!-- 키레벨 비교 테이블 -->
       <div class="card">
         <div class="card-header">
           <span class="card-title">Key Level Tracker</span>
-          <span style="font-size:11px;color:var(--text3)">0DTE vs 전만기 비교</span>
+          <span style="font-size:11px;color:var(--text3)">0DTE vs 선택만기 합산 비교</span>
         </div>
         <div style="overflow-x:auto">
           <table class="data-table">
             <thead><tr>
               <th>레벨</th>
               <th style="color:var(--green)">0DTE</th>
-              <th style="color:var(--blue)">전만기 합산</th>
+              <th style="color:var(--blue)">선택만기 합산</th>
               <th>괴리</th>
               <th>해석</th>
             </tr></thead>
@@ -310,30 +334,19 @@
         </div>
       </div>
 
-      <!-- Strike 상세 테이블 -->
+      <!-- 전체 Strike 원본 테이블 (2개월 이내) -->
       <div class="card">
         <div class="card-header">
-          <span class="card-title">Strike Detail — 전만기 합산</span>
-          <div class="toggle-group" id="mk-expiry-filter">
-            <button class="toggle-btn active" data-group="all">All</button>
-            <button class="toggle-btn" data-group="0dte">0DTE</button>
-            <button class="toggle-btn" data-group="weekly">Weekly</button>
-            <button class="toggle-btn" data-group="monthly">Monthly</button>
-            <button class="toggle-btn" data-group="quarterly">Quarterly+</button>
-          </div>
+          <span class="card-title">Strike 원본 — 전 만기 (2개월 이내)</span>
+          <span style="font-size:11px;color:var(--text3)">가중치 미적용 원본값</span>
         </div>
-        <div style="max-height:400px;overflow-y:auto;overflow-x:auto">
+        <div style="max-height:420px;overflow-y:auto;overflow-x:auto">
           <table class="data-table">
             <thead><tr>
-              <th>Strike</th>
-              <th style="color:var(--green)">Call DEX</th>
-              <th style="color:var(--red)">Put DEX</th>
-              <th>Net DEX</th>
-              <th>GEX</th>
-              <th>Vanna</th>
-              <th>Charm</th>
+              <th>만기</th><th>DTE</th><th>Strike</th>
+              <th>DEX</th><th>GEX</th><th>Vanna</th><th>Charm</th>
             </tr></thead>
-            <tbody id="mk-strike-tbody">
+            <tbody id="mk-raw-tbody">
               <tr><td colspan="7"><div class="loading"><div class="spinner"></div>Loading…</div></td></tr>
             </tbody>
           </table>
