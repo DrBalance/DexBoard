@@ -10,19 +10,21 @@
  */
 
 import { initLive,      refreshLive }      from './tabs/live.js';
+import { initMarket,    refreshMarket }    from './tabs/market.js';
 import { initStructure, refreshStructure } from './tabs/structure.js';
 import { initScreener,  refreshScreener }  from './tabs/screener.js';
 import { initChart,     refreshChart }     from './tabs/chart.js';
 
 const TAB_HANDLERS = {
   live:      { init: initLive,      refresh: refreshLive      },
+  market:    { init: initMarket,    refresh: refreshMarket    },
   structure: { init: initStructure, refresh: refreshStructure },
   screener:  { init: initScreener,  refresh: refreshScreener  },
   chart:     { init: initChart,     refresh: refreshChart     },
 };
 
 const _initialized = {
-  live: false, structure: false, screener: false, chart: false,
+  live: false, market: false, structure: false, screener: false, chart: false,
 };
 
 let _activeTab = 'live';
@@ -42,8 +44,6 @@ export function initTabs() {
 
 /**
  * bindToggle — toggle-group 안의 버튼들에 active 클래스 토글 + 콜백 호출
- * @param {string} groupId   - toggle-group 요소의 id
- * @param {function} onChange - 선택된 data-group 값을 받는 콜백
  */
 export function bindToggle(groupId, onChange) {
   const group = document.getElementById(groupId);
@@ -53,7 +53,6 @@ export function bindToggle(groupId, onChange) {
     const btn = e.target.closest('.toggle-btn');
     if (!btn) return;
 
-    // active 클래스 이동
     group.querySelectorAll('.toggle-btn').forEach(b =>
       b.classList.remove('active')
     );
