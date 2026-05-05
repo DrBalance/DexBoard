@@ -2,6 +2,7 @@
 // live.js — Tab1: DEX Live
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 import { CF_API, TWELVE_KEY, RAILWAY_URL }                    from '../config.js';
+import { registerTickCallback }                               from '../clock.js';
 import {
   fmtPrice, fmtChange, fmtChangePct,
   fmtM, fmtVold,
@@ -10,7 +11,7 @@ import {
 import { renderHeatmap, updateHeatmapSpot }           from '../heatmap.js';
 import { buildNarrative, buildAnalysisPayload }       from '../narrative.js';
 import { renderOIChart, updateOIChart, renderStrikeTable, renderTop5Panel } from '../oi-chart.js';
-import { initVCChart, pushVixPoint, setVixPrevClose, setVoldSeries } from '../vc-chart.js';
+import { initVCChart, setVixSeries, setVoldSeries } from '../vc-chart.js';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 내부 상태
@@ -27,7 +28,6 @@ const _state = {
 
   // SPY 폴링 상태
   spyLive:         null,   // 최신 SPY 현재가
-  lastSpyTs:       0,      // 마지막 Twelve Data 성공 timestamp(ms)
 
   // VOLD (OBV 기반)
   vold:            0,
@@ -42,23 +42,47 @@ const _state = {
 // OI 차트 인스턴스 (탭 재방문 시 재생성 방지)
 let _chartInst = null;
 
-// 폴링 타이머 핸들 (startPolling에서 관리)
-let _pollTimers = [];  // 모든 타이머 핸들
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// VIX 전날 종가 로드 (차트 baseline용)
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-async function _loadPrevClose() {
+
+let _tradingDate = null;  // 오늘 거래일 날짜 캐시
+
+async function _getTradingDate() {
+  if (_tradingDate) return _tradingDate;
   try {
-    const res = await fetch(`${CF_API}/api/prevclose`, {
-      signal: AbortSignal.timeout(6000),
-    });
-    if (!res.ok) return;
+    const res = await fetch(`${CF_API}/api/trading-date`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
-    if (data.error || !data.vix) return;
-    setVixPrevClose(data.vix);
+    if (data.date) {
+      _tradingDate = data.date;
+      return _tradingDate;
+    }
   } catch (e) {
-    console.warn('[Live] prevClose 로드 실패:', e.message);
+    console.warn('[Live] trading-date 조회 실패:', e.message);
+  }
+  // 폴백: ET 오늘 날짜 직접 계산
+  _tradingDate = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+  return _tradingDate;
+}
+
+async function _triggerCalculate() {
+  try {
+    console.log('[Live] 옵션 데이터 없음 → Railway calculate 트리거');
+    const res = await fetch(`${RAILWAY_URL}/calculate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(60_000),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      console.log('[Live] calculate 완료 → KV 재조회', data.date);
+      await fetchKV({ fullUpdate: true });
+    } else {
+      console.warn('[Live] calculate 실패:', data.error);
+    }
+  } catch (e) {
+    console.warn('[Live] Railway calculate 트리거 실패:', e.message);
   }
 }
 
@@ -73,8 +97,9 @@ async function fetchKV({ fullUpdate = true } = {}) {
   try {
     const requests = [fetch(`${CF_API}/api/snapshot`)];
     if (fullUpdate) {
+      const date = await _getTradingDate();
       requests.push(
-        fetch(`${CF_API}/api/dex/0dte`),
+        fetch(`${CF_API}/api/dex/${date}`),
         fetch(`${CF_API}/api/oi/open`),
       );
     }
@@ -92,12 +117,13 @@ async function fetchKV({ fullUpdate = true } = {}) {
           if (snap.vix?.price) {
             _state.vix = snap.vix;
             renderVIX();
-            pushVixPoint(snap.ts, snap.vix.price);
+            if (snap.vix.series?.length) {
+              setVixSeries(snap.vix.series, snap.vix.prevClose ?? null);
+            }
           }
 
-          // SPY: PRE/AFTER에서만 KV로 업데이트
-          // (정규장은 _fetchSpySpy()가 30초마다 담당)
-          if (window._marketState !== 'REGULAR' && snap.spy?.price) {
+          // SPY: 메트릭 카드 업데이트
+          if (snap.spy?.price) {
             _updateSpy({ ...snap.spy, source: 'kv', ts: snap.ts });
           }
         }
@@ -109,13 +135,26 @@ async function fetchKV({ fullUpdate = true } = {}) {
     // ── DEX/그릭스 ───────────────────────────────────────
     if (dexRes?.ok) {
       const dex = await dexRes.json();
-      if (!dex.error) {
-        _state.dex     = dex.dex_total   ?? null;
-        _state.gex     = dex.gex_total   ?? null;
-        _state.vanna   = dex.vanna_total ?? null;
-        _state.charm   = dex.charm_total ?? null;
-        _state.strikes = dex.strikes     ?? [];
-        _state.spot    = dex.spot        ?? null;
+      if (dex.error) {
+        // 데이터 없음 → Railway 트리거 (비동기, 응답 안 기다림)
+        _triggerCalculate();
+      } else {
+        // expirations에서 오늘 날짜(0DTE) strikes 추출
+        const date = await _getTradingDate();
+        const expirations = dex.expirations ?? {};
+        const todayStrikes = expirations[date] ?? [];
+
+        // 전체 strikes (모든 만기일 합산)
+        const allStrikes = Object.values(expirations).flat();
+
+        _state.strikes = todayStrikes.length > 0 ? todayStrikes : allStrikes;
+
+        // 합산 그릭스
+        const sum = (arr, field) => arr.reduce((a, b) => a + (b[field] || 0), 0);
+        _state.dex   = sum(_state.strikes, 'dex');
+        _state.gex   = sum(_state.strikes, 'gex');
+        _state.vanna = sum(_state.strikes, 'vanna');
+        _state.charm = sum(_state.strikes, 'charm');
 
         _state.putWall  = _calcPutWall(_state.strikes, _state.spot);
         _state.callWall = _calcCallWall(_state.strikes, _state.spot);
@@ -152,11 +191,6 @@ async function fetchKV({ fullUpdate = true } = {}) {
   }
 
   renderNarrative();
-
-  // 정규장일 때만 AI 자동 분석
-  if (window._marketState === 'REGULAR') {
-    requestAIAnalysis(true);
-  }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -210,35 +244,6 @@ function _onSpotUpdated() {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// SPY 폴링 — Twelve Data REST (정규장: 30초, 실패시 KV 폴백)
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-async function _fetchSpySpy() {
-  try {
-    const res = await fetch(`${CF_API}/api/spy-price`, {
-      signal: AbortSignal.timeout(6000),
-    });
-    if (!res.ok) return;
-    const data = await res.json();
-    if (data.error || !data.price) return;
-
-    const nowMs = Date.now();
-
-    if (data.source === 'twelvedata') {
-      // Twelve Data 성공
-      _state.lastSpyTs = nowMs;
-      _updateSpy(data);
-    } else {
-      // KV 폴백: ts 비교 후 최신일 때만 반영
-      const kvTs = data.ts ? new Date(data.ts).getTime() : 0;
-      if (kvTs > _state.lastSpyTs) {
-        _updateSpy(data);
-      }
-    }
-  } catch (e) {
-    console.warn('[Live] SPY 폴링 실패:', e.message);
-  }
-}
-
 function _updateSpy(data) {
   _state.spyLive           = data.price;
   _state.spy.price         = data.price;
@@ -296,55 +301,15 @@ async function _fetchVold() {
 
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 통합 폴링 — startPolling(marketState)
+// 장 상태 변경 시 차트 표시/숨김 처리
+// (폴링은 clock.js tick()이 담당 — setInterval 없음)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-function _stopAllPolling() {
-  _pollTimers.forEach(clearInterval);
-  _pollTimers = [];
-}
-
-async function startPolling(marketState) {
-  _stopAllPolling();
-
-  if (marketState === 'CLOSED') {
-    // 차트 숨김
-    const vcWrap = document.getElementById('vc-chart-wrap');
-    if (vcWrap) vcWrap.style.display = 'none';
-    return;
-  }
-
-  // 차트 표시
+function _onMarketStateChanged(marketState) {
   const vcWrap = document.getElementById('vc-chart-wrap');
-  if (vcWrap) vcWrap.style.display = '';
-
-  if (marketState === 'PRE' || marketState === 'AFTER') {
-    // ── PRE / AFTER: 3분마다 KV 폴링 (SPY/VIX 카드 + DEX 초기 로드)
-    await fetchKV();  // 즉시 1회 (fullUpdate=true → DEX 포함)
-    _pollTimers.push(setInterval(
-      () => fetchKV({ fullUpdate: false }),  // 이후: snapshot만 (SPY/VIX)
-      3 * 60_000
-    ));
-
-  } else if (marketState === 'REGULAR') {
-    // ── REGULAR ───────────────────────────────────────────
-    _state.vold = 0;
-
-    // 즉시 1회 (fullUpdate=true → DEX 포함)
-    await Promise.all([_fetchSpySpy(), fetchKV(), _fetchVold()]);
-
-    // 30초: SPY 실시간 (실패시 KV 폴백 내장)
-    _pollTimers.push(setInterval(_fetchSpySpy, 30_000));
-
-    // 1분: VIX 카드+차트 + VOLD
-    _pollTimers.push(setInterval(async () => {
-      await Promise.all([
-        fetchKV({ fullUpdate: false }),  // snapshot만 (VIX)
-        _fetchVold(),
-      ]);
-    }, 60_000));
-
-    // 15분: DEX/그릭스 + OI + 히트맵 + 내러티브 + AI
-    _pollTimers.push(setInterval(fetchKV, 15 * 60_000));
+  if (marketState === 'CLOSED') {
+    if (vcWrap) vcWrap.style.display = 'none';
+  } else {
+    if (vcWrap) vcWrap.style.display = '';
   }
 }
 
@@ -753,15 +718,25 @@ export async function initLive() {
   // VC 차트 초기화
   initVCChart('vc-chart-wrap');
 
-  // VIX 전날 종가 먼저 로드 (차트 baseline — pushVixPoint보다 먼저 완료 필요)
-  await _loadPrevClose();
+  // 장 상태에 따라 차트 표시/숨김
+  _onMarketStateChanged(window._marketState ?? 'CLOSED');
 
-  // 장 상태에 따라 폴링 시작 (prevClose 로드 완료 후)
-  startPolling(window._marketState ?? 'CLOSED');
+  // 초기 데이터 즉시 로드 (fullUpdate=true → DEX 포함)
+  await fetchKV();
+  if (window._marketState === 'REGULAR') {
+    _state.vold = 0;
+    _fetchVold();
+  }
 
-  window.addEventListener('marketStateChanged', ({ detail }) =>
-    startPolling(detail.marketState)
-  );
+  window.addEventListener('marketStateChanged', ({ detail }) => {
+    _onMarketStateChanged(detail.marketState);
+    // 장 상태 전환 시 즉시 1회 갱신
+    fetchKV();
+    if (detail.marketState === 'REGULAR') {
+      _state.vold = 0;
+      _fetchVold();
+    }
+  });
 
   document.getElementById('oi-zoom-slider')?.addEventListener('input', (e) => {
     const zoom = parseFloat(e.target.value);
@@ -773,6 +748,9 @@ export async function initLive() {
       if (_chartInst) _chartInst.resize();
     }
   });
+
+  // tick 콜백 등록 — initLive() 완료 후에 등록하므로 초기화 순서 보장
+  registerTickCallback(onLiveTick);
 }
 
 export function refreshLive() {
@@ -830,4 +808,46 @@ function _calcPCR(strikes) {
     totalPut  += s.putOI  ?? 0;
   }
   return totalCall > 0 ? totalPut / totalCall : null;
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// onLiveTick — clock.js tick()에서 매초 호출 (registerTickCallback으로 등록)
+// 헤더 시계 기준으로 갱신 타이밍 결정 (setInterval 없음)
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function onLiveTick({ h, m, s }) {
+  const state = window._marketState;
+
+  if (state === 'REGULAR') {
+    if (s === 5) {
+      if (m % 15 === 2) {
+        // ── 15분: 옵션 데이터 풀업데이트 (CBOE :00 → Railway :01 → 프론트 :02:05)
+        fetchKV({ fullUpdate: true });
+      } else {
+        // ── 1분: SPY+VIX 메트릭 카드 갱신 (snapshot만)
+        fetchKV({ fullUpdate: false });
+      }
+
+      // ── 1분: VOLD + VIX 차트 (매 :05초, 풀업데이트와 무관하게 실행)
+      _fetchVold();
+
+      // ── 30분: AI 분석
+      if (m % 30 === 2) {
+        requestAIAnalysis(true);
+      }
+    }
+
+    if (s === 35) {
+      // ── 30초: SPY+VIX 메트릭 카드 갱신 (snapshot만)
+      fetchKV({ fullUpdate: false });
+    }
+  }
+
+  if (state === 'PRE' || state === 'AFTER') {
+    // ── 3분: SPY+VIX 메트릭 카드 + VIX 차트 갱신
+    if (s === 5 && m % 3 === 0) {
+      fetchKV({ fullUpdate: false });
+    }
+  }
+
+  // CLOSED: 갱신 없음
 }
