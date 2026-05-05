@@ -234,7 +234,7 @@ function _buildShell() {
             position:absolute;left:2px;top:4px;
             font-size:9px;font-weight:700;color:#8b949e;
             pointer-events:none;letter-spacing:.5px;
-          ">VOLD</span>
+          ">OBV</span>
         </div>
         <!-- x축 페인 빈 공간 -->
         <div style="height:${XAXIS_H}px"></div>
