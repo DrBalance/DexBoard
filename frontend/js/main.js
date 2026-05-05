@@ -29,14 +29,9 @@ function _patchClockIds() {
 // ── 전체 데이터 로드 → state 업데이트 ────────────────────
 async function fetchAndRender() {
   const data = await loadAll();
-  state.snapshot         = data.snap;
-  state.snapPrev         = data.snapPrev;
-  state.dex0             = data.dex0;
-  state.dexOpen          = data.dexOpen;
-  state.oiOpen           = data.oiOpen;       // 장 시작 OI 맵 { oiMap, saved_at }
-  state.struct.weekly    = data.weekly;
-  state.struct.monthly   = data.monthly;
-  state.struct.quarterly = data.quarterly;
+  state.snapshot = data.snap;
+  state.snapPrev = data.snapPrev;
+  state.oiOpen   = data.oiOpen;
 
   // live 탭은 자체 상태(_state)를 가지므로 여기서 직접 렌더 안 함
   // tabs.js의 refresh 메커니즘으로 처리
