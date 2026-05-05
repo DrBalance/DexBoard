@@ -180,6 +180,26 @@ export default {
       }
     }
 
+    // ── POST /api/calculate (Railway 프록시) ───────────────────
+    // 프론트 → Worker → Railway (CORS 우회)
+    if (request.method === "POST" && path === "/api/calculate") {
+      try {
+        const res = await fetch(`${env.RAILWAY_URL}/calculate`, {
+          method:  "POST",
+          headers: {
+            "Content-Type":  "application/json",
+            "x-cron-secret": env.CRON_SECRET || "",
+          },
+          body: JSON.stringify({}),
+          signal: AbortSignal.timeout(60_000),
+        });
+        const data = await res.json();
+        return json(data, res.status, corsHeaders);
+      } catch (e) {
+        return json({ ok: false, error: e.message }, 500, corsHeaders);
+      }
+    }
+
     // ── GET /api/prevclose ─────────────────────────────────────
     // 전날 종가 반환 (프리마켓 VIX 차트 baseline용)
     // { spy: number, vix: number, date: string }
