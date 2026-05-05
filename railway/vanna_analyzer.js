@@ -564,11 +564,11 @@ export async function calculateAndStore() {
     expirations,
   };
 
-  await kvPut(`dex:spy:${todayET}`, payload);
+  await kvPut('dex:spy', payload);
 
   const expiryCount   = Object.keys(expirations).length;
   const totalStrikes  = Object.values(expirations).reduce((a, b) => a + b.length, 0);
-  console.log(`[KV] dex:spy:${todayET} 저장 완료 — 만기일 ${expiryCount}개, 스트라이크 ${totalStrikes}건`);
+  console.log(`[KV] dex:spy 저장 완료 — 만기일 ${expiryCount}개, 스트라이크 ${totalStrikes}건`);
 
   return { ok: true, updated_at: updatedAt, date: todayET, expirations: expiryCount, strikes: totalStrikes };
 }
