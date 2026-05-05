@@ -6,7 +6,6 @@
 <title>DexBoard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<!-- <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"> -->
 <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=Plus+Jakarta+Sans:wght@700&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="./css/base.css">
 <link rel="stylesheet" href="./css/layout.css">
@@ -22,6 +21,7 @@
 
     <nav>
       <button class="tab-btn active" data-tab="live">DEX Live</button>
+      <button class="tab-btn" data-tab="market">Market</button>
       <button class="tab-btn" data-tab="structure">Structure</button>
       <button class="tab-btn" data-tab="screener">Screener</button>
       <button class="tab-btn" data-tab="chart">Chart</button>
@@ -46,7 +46,6 @@
     <!-- ══ Tab 1: DEX Live ══════════════════════════════════ -->
     <div class="tab-panel active" id="tab-live">
 
-      <!-- 1. 메트릭 카드 6개 -->
       <!-- 세션 날짜·상태 배너 -->
       <div id="session-date-banner" style="display:none;
         font-size:11px; margin-bottom:8px;
@@ -115,7 +114,7 @@
         </div>
       </div>
 
-      <!-- 2. 히트맵 카드 (heatmap.js) -->
+      <!-- 히트맵 카드 -->
       <div class="card">
         <div class="card-header">
           <span class="card-title">0DTE Strike Heatmap</span>
@@ -125,7 +124,6 @@
             <span class="ts" id="heatmap-ts">—</span>
           </div>
         </div>
-        <!-- renderHeatmap('heatmap-canvas', strikes, spot) 의 containerId -->
         <div class="heatmap-wrap" id="heatmap-canvas"></div>
         <div class="dex-est">
           <span class="dex-formula">DEX<sub>t</sub> = DEX<sub>t-15</sub> + (ΔSpot·Γ) + (ΔVIX·Vanna)</span>
@@ -133,24 +131,23 @@
         </div>
       </div>
 
-      <!-- 3. 상황진단 박스 (narrative.js) -->
+      <!-- 상황진단 박스 -->
       <div class="card">
         <div id="live-narrative-panel" style="padding:12px"></div>
       </div>
 
-      <!-- 4. VIX / VOLD 차트 (vc-chart.js) -->
+      <!-- VIX / VOLD 차트 -->
       <div class="card">
         <div class="card-header">
           <span class="card-title">VIX · VOLD</span>
           <span class="ts" id="vc-ts">—</span>
         </div>
         <div style="padding:0 14px 10px">
-          <!-- initVCChart('vc-chart-wrap') 의 containerId -->
           <div id="vc-chart-wrap"></div>
         </div>
       </div>
 
-      <!-- 5. OI 차트 + 테이블 (oi-chart.js) -->
+      <!-- OI 차트 + 테이블 -->
       <div class="card">
         <div class="card-header">
           <span class="card-title">0DTE Strike OI / GEX</span>
@@ -161,8 +158,6 @@
             <span class="ts" id="oi-ts">—</span>
           </div>
         </div>
-        <!-- renderOIChart('live-chart-wrap', ...) 의 containerId -->
-        <!-- <div id="live-chart-wrap" style="width:100%;overflow-x:auto;padding:10px 14px"></div> -->
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px;color:var(--text3)">
           <span>확대</span>
           <input type="range" id="oi-zoom-slider" min="1" max="6" step="0.5" value="1"
@@ -175,7 +170,7 @@
         </div>
       </div>
 
-      <!-- Top5 급등 패널 (증감 KV 준비 후 display:'' 로 켬) -->
+      <!-- Top5 급등 패널 -->
       <div class="card" id="live-top5-card" style="display:none">
         <div class="card-header">
           <span class="card-title">OI 급등 Top 5</span>
@@ -187,7 +182,7 @@
         <div class="spike-panel" id="live-top5"></div>
       </div>
 
-      <!-- 6. Strike 테이블 -->
+      <!-- Strike 테이블 -->
       <div class="card">
         <div class="card-header">
           <span class="card-title">0DTE Strikes</span>
@@ -210,7 +205,144 @@
 
     </div><!-- /tab-live -->
 
-    <!-- ══ Tab 2: Structure ══════════════════════════════════ -->
+    <!-- ══ Tab 2: Market ════════════════════════════════════ -->
+    <div class="tab-panel" id="tab-market">
+
+      <!-- 헤더 컨트롤 -->
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px">
+        <div class="toggle-group" id="market-symbol-toggle">
+          <button class="toggle-btn active" data-group="SPY">SPY</button>
+          <button class="toggle-btn" data-group="QQQ">QQQ</button>
+          <button class="toggle-btn" data-group="IWM">IWM</button>
+        </div>
+        <div class="toggle-group" id="market-weight-toggle">
+          <button class="toggle-btn active" data-group="weighted">가중합산</button>
+          <button class="toggle-btn" data-group="raw">단순합산</button>
+        </div>
+        <span class="ts" id="market-ts">—</span>
+      </div>
+
+      <!-- 메트릭 카드 -->
+      <div class="metrics">
+        <div class="metric">
+          <div class="metric-label">SPY</div>
+          <div class="metric-value" id="mk-spy">—</div>
+          <div class="metric-sub">current price</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">VIX</div>
+          <div class="metric-value" id="mk-vix">—</div>
+          <div class="metric-sub">volatility</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Total DEX</div>
+          <div class="metric-value" id="mk-dex">—</div>
+          <div class="metric-sub">all expiries</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Call Wall</div>
+          <div class="metric-value" id="mk-call-wall" style="color:var(--green)">—</div>
+          <div class="metric-sub">전만기 기준</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Put Wall</div>
+          <div class="metric-value" id="mk-put-wall" style="color:var(--red)">—</div>
+          <div class="metric-sub">전만기 기준</div>
+        </div>
+        <div class="metric">
+          <div class="metric-label">Flip Zone</div>
+          <div class="metric-value" id="mk-flip" style="color:var(--amber)">—</div>
+          <div class="metric-sub">DEX zero cross</div>
+        </div>
+      </div>
+
+      <!-- 만기 레이어 DEX 바 차트 -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Total DEX by Expiry — <span id="mk-chart-title">SPY</span></span>
+          <div class="heatmap-legend">
+            <span><span class="swatch" style="background:var(--green)"></span> Call DEX</span>
+            <span><span class="swatch" style="background:var(--red)"></span> Put DEX</span>
+          </div>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:12px;color:var(--text3)">
+          <span>확대</span>
+          <input type="range" id="mk-zoom-slider" min="1" max="6" step="0.5" value="1"
+            style="width:140px;accent-color:var(--blue,#58a6ff)">
+          <span id="mk-zoom-val" style="color:var(--blue,#58a6ff);font-family:var(--mono);min-width:28px">1×</span>
+          <span>← 가로 스크롤 →</span>
+        </div>
+        <div id="mk-chart-scroll" style="overflow-x:auto;overflow-y:hidden;border:1px solid var(--border);border-radius:6px">
+          <div id="mk-chart-wrap" style="height:360px"></div>
+        </div>
+      </div>
+
+      <!-- 만기별 DEX 합산 요약 -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">만기별 DEX 분포</span>
+          <span style="font-size:11px;color:var(--text3)">딜러 헤지 압력 구조</span>
+        </div>
+        <div id="mk-expiry-bars" style="padding:12px 16px;display:flex;flex-direction:column;gap:10px">
+          <div class="loading"><div class="spinner"></div>Loading…</div>
+        </div>
+      </div>
+
+      <!-- 키레벨 추적 테이블 -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Key Level Tracker</span>
+          <span style="font-size:11px;color:var(--text3)">0DTE vs 전만기 비교</span>
+        </div>
+        <div style="overflow-x:auto">
+          <table class="data-table">
+            <thead><tr>
+              <th>레벨</th>
+              <th style="color:var(--green)">0DTE</th>
+              <th style="color:var(--blue)">전만기 합산</th>
+              <th>괴리</th>
+              <th>해석</th>
+            </tr></thead>
+            <tbody id="mk-keylevel-tbody">
+              <tr><td colspan="5"><div class="loading"><div class="spinner"></div>Loading…</div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Strike 상세 테이블 -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Strike Detail — 전만기 합산</span>
+          <div class="toggle-group" id="mk-expiry-filter">
+            <button class="toggle-btn active" data-group="all">All</button>
+            <button class="toggle-btn" data-group="0dte">0DTE</button>
+            <button class="toggle-btn" data-group="weekly">Weekly</button>
+            <button class="toggle-btn" data-group="monthly">Monthly</button>
+            <button class="toggle-btn" data-group="quarterly">Quarterly+</button>
+          </div>
+        </div>
+        <div style="max-height:400px;overflow-y:auto;overflow-x:auto">
+          <table class="data-table">
+            <thead><tr>
+              <th>Strike</th>
+              <th style="color:var(--green)">Call DEX</th>
+              <th style="color:var(--red)">Put DEX</th>
+              <th>Net DEX</th>
+              <th>GEX</th>
+              <th>Vanna</th>
+              <th>Charm</th>
+            </tr></thead>
+            <tbody id="mk-strike-tbody">
+              <tr><td colspan="7"><div class="loading"><div class="spinner"></div>Loading…</div></td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div><!-- /tab-market -->
+
+    <!-- ══ Tab 3: Structure ══════════════════════════════════ -->
     <div class="tab-panel" id="tab-structure">
 
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
@@ -279,7 +411,6 @@
             <span><span class="swatch" style="background:var(--amber)"></span> GEX</span>
           </div>
         </div>
-        <!-- renderOIChart('structure-chart-wrap', ...) -->
         <div id="structure-chart-wrap" style="width:100%;overflow-x:auto;padding:10px 14px"></div>
       </div>
 
@@ -302,12 +433,11 @@
 
     </div><!-- /tab-structure -->
 
-    <!-- ══ Tab 3: Screener ═══════════════════════════════════ -->
+    <!-- ══ Tab 4: Screener ═══════════════════════════════════ -->
     <div class="tab-panel" id="tab-screener">
-      <!-- screener.js의 initScreener() → renderShell()이 여기를 채움 -->
     </div><!-- /tab-screener -->
 
-    <!-- ══ Tab 4: Chart ══════════════════════════════════════ -->
+    <!-- ══ Tab 5: Chart ══════════════════════════════════════ -->
     <div class="tab-panel" id="tab-chart">
 
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
@@ -349,7 +479,6 @@
             <span><span class="swatch" style="background:var(--amber)"></span> GEX</span>
           </div>
         </div>
-        <!-- renderOIChart('chart-chart-wrap', ...) -->
         <div id="chart-chart-wrap" style="width:100%;overflow-x:auto;padding:10px 14px"></div>
       </div>
 
