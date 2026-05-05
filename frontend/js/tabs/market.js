@@ -103,11 +103,7 @@ async function _load() {
     const snapData = snapRes.ok ? await snapRes.json()  : null;
 
     // 스냅샷 메트릭 업데이트
-    if (snapData) {
-      _el('mk-spy').textContent = snapData.spy  ? `$${snapData.spy.toFixed(2)}`  : '—';
-      _el('mk-vix').textContent = snapData.vix  ? snapData.vix.toFixed(2)        : '—';
-    }
-
+   
     if (!dexData?.expirations) {
       _showError('데이터 없음 — /api/dex/' + sym);
       return;
@@ -121,7 +117,12 @@ async function _load() {
       _el('market-ts').textContent = t.toLocaleTimeString('ko-KR', { timeZone: 'America/New_York' }) + ' ET';
     }
 
-    _render(dexData);
+    const spyPrice = parseFloat(snapData?.spy ?? snapData?.price ?? 0);
+    const vixPrice = parseFloat(snapData?.vix ?? 0);
+    _el('mk-spy').textContent = spyPrice ? `$${spyPrice.toFixed(2)}` : '—';
+    _el('mk-vix').textContent = vixPrice ? vixPrice.toFixed(2) : '—';
+
+    _render(dexData, spyPrice);
 
   } catch (err) {
     console.error('[Market] 로딩 실패:', err);
@@ -133,7 +134,8 @@ async function _load() {
 function _render(data) {
   const weighted = _buildWeighted(data);
   const byExpiry = _buildByExpiry(data);
-  const spot     = parseFloat(_el('mk-spy').textContent.replace('$', '')) || 0;
+  if (!spot) spot = parseFloat(_el('mk-spy').textContent.replace('$', '')) || 0;
+  // const spot     = parseFloat(_el('mk-spy').textContent.replace('$', '')) || 0;
 
   _renderMetrics(weighted, spot);
   _renderExpiryBars(byExpiry);
