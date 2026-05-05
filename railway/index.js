@@ -457,18 +457,13 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(401);
       return res.end("Unauthorized");
     }
-    const body = await readBody(req);
-    const { spot, vix } = body;
-    if (!spot || !vix) {
-      return sendJSON(res, 400, { error: "spot and vix required" });
-    }
     try {
-      console.log(`[${new Date().toISOString()}] /calculate → spot=${spot} vix=${vix}`);
-      const result = await calculateAndStore(spot, vix);
-      return sendJSON(res, 200, result);
+      console.log(`[${new Date().toISOString()}] /calculate 시작`);
+      const result = await calculateAndStore();
+      return sendJSON(res, 200, { ok: true, date: result.date, updated_at: result.updated_at });
     } catch (err) {
       console.error("calculateAndStore error:", err);
-      return sendJSON(res, 500, { error: err.message });
+      return sendJSON(res, 500, { ok: false, error: err.message });
     }
   }
 
@@ -1011,7 +1006,6 @@ async function runCollect(symbols, date) {
 // ─────────────────────────────────────────────────────────────────
 function startScheduler() {
   let lastSession  = null;
-  let lastDexHour  = null;   // 15분 DEX 계산 추적
   let screenerDone = false;  // 당일 스크리너 수집 여부
   let openDone     = false;  // 당일 장 시작 스냅샷 여부
 
@@ -1122,14 +1116,12 @@ function startScheduler() {
       }
     }
 
-    // 정규장 중 15분마다 DEX 계산 트리거
-    if (session === 'REGULAR' && h !== lastDexHour && h % 1 === 0) {
+    // 평일 ET 09:00~16:59, 15분마다 DEX 계산
+    if (isWeekday()) {
       const now = new Date();
       const min = now.getMinutes();
-      if (min % 15 === 1) {
-        lastDexHour = h + '_' + min;
+      if (h >= 9 && h < 17 && min % 15 === 1) {
         console.log('[scheduler] 15분 DEX 계산 트리거');
-        // 직접 calculateAndStore 호출 (localhost HTTP 우회)
         calculateAndStore().catch(e => console.error('[scheduler] calculateAndStore error:', e.message));
       }
     }
@@ -1138,6 +1130,10 @@ function startScheduler() {
   // 최초 실행
   lastSession = getMarketSession();
   scheduleSnapshot();
+
+  // 서버 시작 시 즉시 1회 DEX 계산
+  console.log('[scheduler] 서버 시작 — DEX 즉시 1회 실행');
+  calculateAndStore().catch(e => console.error('[scheduler] calculateAndStore error (init):', e.message));
 }
 
 // ─────────────────────────────────────────────────────────────────
