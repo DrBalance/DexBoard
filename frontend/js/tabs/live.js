@@ -68,7 +68,7 @@ async function _getTradingDate() {
 async function _triggerCalculate() {
   try {
     console.log('[Live] 옵션 데이터 없음 → Railway calculate 트리거');
-    const res = await fetch(`${RAILWAY_URL}/calculate`, {
+    const res = await fetch(`${CF_API}/api/calculate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({}),
