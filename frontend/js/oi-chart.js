@@ -5,10 +5,21 @@
  *   renderOIChart(containerId, strikes, spotPrice, opts?) → Chart 인스턴스
  *   updateOIChart(inst, strikes, spotPrice, opts?)        → void
  *   renderStrikeTable(tbodyId, strikes, opts?)            → void
+ *   renderTop5Panel(panelId, strikes, opts?)              → void
  *
- * 테이블 구조 (Strike별 Call/Put OI 분리):
- *   Strike | Call OI | Put OI | DEX(합산) | GEX | Vanna | Charm
- *   Call OI → 녹색, Put OI → 빨간색
+ * renderTop5Panel opts:
+ *   mode: 'oi15m' (기본, Live 탭) | 'oiOpen' (누적, Live 탭) | 'none' (날짜조회 탭)
+ *   type: 'call' | 'put' | 'both' (기본)
+ *
+ * Live 탭 strikes 구조 (dex:spy:0dte):
+ *   { strike, expiry, callOI, putOI,
+ *     callOi15m, putOi15m,     ← 15분 OI 증감 (계약수)
+ *     callOiOpen, putOiOpen,   ← 장 시작 대비 누적 OI 증감 (계약수)
+ *     dex, gex, vanna, charm }
+ *
+ * 날짜조회 탭 strikes 구조 (dex:spy expirations):
+ *   { strike, expiry, callOI, putOI, dex, gex, vanna, charm }
+ *   → OI 증감 필드 없음, renderTop5Panel({ mode: 'none' }) 으로 호출
  */
 
 import Chart from 'chart.js/auto';
@@ -35,7 +46,6 @@ export function renderOIChart(containerId, strikes, spotPrice, opts = {}) {
   const container = document.getElementById(containerId);
   if (!container) { console.warn('[oi-chart] container 없음:', containerId); return null; }
 
-  /* canvas 생성 또는 재사용 */
   let canvas = container.querySelector('canvas.oi-chart-canvas');
   if (!canvas) {
     canvas = document.createElement('canvas');
@@ -69,7 +79,9 @@ export function updateOIChart(inst, strikes, spotPrice, opts = {}) {
 
 /* ────────────────────────────────────────────────────────
    renderStrikeTable
-   Strike별 Call OI / Put OI 분리, DEX 합산
+   Strike별 Call/Put OI 분리, DEX 합산
+   Live 탭: openOI 없음 (callOiOpen/putOiOpen 직접 strikes에 내장)
+   날짜조회 탭: isRegular=false, OI증감 컬럼 없음
 ──────────────────────────────────────────────────────── */
 export function renderStrikeTable(tbodyId, strikes, opts = {}) {
   const tbody = document.getElementById(tbodyId);
@@ -83,22 +95,20 @@ export function renderStrikeTable(tbodyId, strikes, opts = {}) {
     flipZone   = null,
     putWall    = null,
     callWall   = null,
-    openOI     = null,   // { [strike]: { c: callOI, p: putOI } } 장 시작 OI 맵
-    isRegular  = false,  // 정규장 여부 — false면 ΔOpen 표시 안 함
+    isRegular  = false,
   } = opts;
 
-  const showDeltaOpen = isRegular && openOI != null;
+  // Live 탭(정규장): strikes에 callOiOpen/putOiOpen 내장 → 직접 사용
+  const showDeltaOpen = isRegular;
 
   /* thead 갱신 */
   const theadId = tbodyId.replace('tbody', 'thead');
   const thead   = document.getElementById(theadId);
   if (thead) {
-    const dteCols   = showDTE ? '<th>DTE</th>' : '';
-    const deltaCols = showDelta
-      ? '<th>Call Δ</th><th>Put Δ</th>'
-      : '';
+    const dteCols      = showDTE   ? '<th>DTE</th>' : '';
+    const deltaCols    = showDelta ? '<th>Call Δ</th><th>Put Δ</th>' : '';
     const deltaOpenCols = showDeltaOpen
-      ? '<th title="장 시작 대비 Call OI 증감">ΔCall</th><th title="장 시작 대비 Put OI 증감">ΔPut</th>'
+      ? '<th title="장 시작 대비 Call OI 누적 증감">ΔCall</th><th title="장 시작 대비 Put OI 누적 증감">ΔPut</th>'
       : '';
     thead.innerHTML = `<tr>
       <th>Strike</th>
@@ -138,26 +148,26 @@ export function renderStrikeTable(tbodyId, strikes, opts = {}) {
       isPW   ? `<span style="font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px;background:rgba(239,68,68,.2);color:#ef4444">Put Wall</span>` : '',
       isCW   ? `<span style="font-size:10px;padding:1px 5px;border-radius:3px;margin-left:4px;background:rgba(34,197,94,.2);color:#22c55e">Call Wall</span>` : '',
     ].join('');
-    const rowBg = isCur ? 'background:rgba(88,166,255,.07)' : isFlip ? 'background:rgba(245,158,11,.05)' : '';
+    const rowBg  = isCur ? 'background:rgba(88,166,255,.07)' : isFlip ? 'background:rgba(245,158,11,.05)' : '';
     const deltaTd = showDelta ? `
       <td class="${row.callDelta >= 0 ? 'up' : 'down'}">${fmt.delta(row.callDelta)}</td>
       <td class="${row.putDelta  >= 0 ? 'up' : 'down'}">${fmt.delta(row.putDelta)}</td>
       ` : '';
 
-    /* ΔOpen 계산 */
+    /* ΔOpen: strikes에 직접 내장된 callOiOpen/putOiOpen 사용 */
     let deltaOpenTd = '';
     if (showDeltaOpen) {
-      const base = openOI[strike];
-      if (base != null) {
-        const dc = row.callOI - (base.c ?? 0);
-        const dp = row.putOI  - (base.p ?? 0);
+      const dc = row.callOiOpen ?? null;
+      const dp = row.putOiOpen  ?? null;
+      if (dc != null || dp != null) {
         const fmtDelta = v => {
+          if (v == null) return '—';
           const sign = v > 0 ? '+' : '';
           return `${sign}${fmt.oi(v)}`;
         };
         deltaOpenTd = `
-          <td class="${dc >= 0 ? 'up' : 'down'}" style="font-size:11px">${fmtDelta(dc)}</td>
-          <td class="${dp >= 0 ? 'up' : 'down'}" style="font-size:11px">${fmtDelta(dp)}</td>`;
+          <td class="${(dc ?? 0) >= 0 ? 'up' : 'down'}" style="font-size:11px">${fmtDelta(dc)}</td>
+          <td class="${(dp ?? 0) >= 0 ? 'up' : 'down'}" style="font-size:11px">${fmtDelta(dp)}</td>`;
       } else {
         deltaOpenTd = `<td style="color:var(--text3)">—</td><td style="color:var(--text3)">—</td>`;
       }
@@ -179,32 +189,71 @@ export function renderStrikeTable(tbodyId, strikes, opts = {}) {
 }
 
 /* ────────────────────────────────────────────────────────
-   Top5 급등 패널
+   renderTop5Panel — 급등 OI 패널
+
+   opts:
+     mode: 'oi15m'  → 15분 증감 기준 (기본, Live 탭)
+           'oiOpen' → 누적 증감 기준 (Live 탭)
+           'none'   → OI 증감 없음 (날짜조회 탭) → 패널 숨김
+     type: 'call' | 'put' | 'both' (기본)
 ──────────────────────────────────────────────────────── */
-export function renderTop5Panel(panelId, strikes, deltaKey = 'delta15m') {
+export function renderTop5Panel(panelId, strikes, opts = {}) {
   const panel = document.getElementById(panelId);
   if (!panel) return;
 
-  const sorted = [...strikes]
-    .filter(s => s[deltaKey] != null)
-    .sort((a, b) => Math.abs(b[deltaKey]) - Math.abs(a[deltaKey]))
+  const { mode = 'oi15m', type = 'both' } = opts;
+
+  // 날짜조회 탭: OI 증감 없음 → 패널 숨김
+  if (mode === 'none') {
+    panel.innerHTML = '';
+    panel.style.display = 'none';
+    return;
+  }
+  panel.style.display = '';
+
+  // strike별로 call/put 증감을 하나의 카드로 펼치기
+  // type=both 이면 call과 put을 각각 별도 항목으로 취급
+  const items = [];
+
+  for (const s of strikes) {
+    if (type === 'call' || type === 'both') {
+      const callVal = mode === 'oi15m' ? (s.callOi15m ?? null) : (s.callOiOpen ?? null);
+      if (callVal != null && callVal !== 0) {
+        items.push({ strike: s.strike, expiry: s.expiry, side: 'Call', val: callVal });
+      }
+    }
+    if (type === 'put' || type === 'both') {
+      const putVal = mode === 'oi15m' ? (s.putOi15m ?? null) : (s.putOiOpen ?? null);
+      if (putVal != null && putVal !== 0) {
+        items.push({ strike: s.strike, expiry: s.expiry, side: 'Put', val: putVal });
+      }
+    }
+  }
+
+  // 절댓값 내림차순 정렬 → 상위 5개
+  const sorted = items
+    .sort((a, b) => Math.abs(b.val) - Math.abs(a.val))
     .slice(0, 5);
 
   if (sorted.length === 0) {
-    panel.innerHTML = '<div class="empty">증감 데이터 준비 중</div>';
+    panel.innerHTML = '<div class="empty">OI 증감 데이터 준비 중</div>';
     return;
   }
 
-  panel.innerHTML = sorted.map(s => {
-    const val  = s[deltaKey];
-    const cls  = val > 0 ? 'up' : 'down';
-    const sign = val > 0 ? '+' : '';
-    const label = deltaKey === 'delta15m' ? 'Δ15m' : 'Δopen';
+  const modeLabel = mode === 'oi15m' ? 'Δ15m' : 'Δ누적';
+
+  panel.innerHTML = sorted.map(item => {
+    const cls     = item.val > 0 ? 'up' : 'down';
+    const sign    = item.val > 0 ? '+' : '';
+    const sideCls = item.side === 'Call' ? 'var(--green)' : 'var(--red)';
     return `
       <div class="spike-card">
-        <div class="spike-strike">$${s.strike} <span style="font-size:10px;color:var(--text3)">${s.type}</span></div>
-        <div class="spike-delta ${cls}">${sign}${fmt.oi(val)}</div>
-        <div class="spike-label">${label} OI</div>
+        <div class="spike-strike">
+          $${item.strike}
+          <span style="font-size:10px;color:${sideCls};margin-left:4px">${item.side}</span>
+        </div>
+        <div class="spike-delta ${cls}">${sign}${fmt.oi(item.val)}</div>
+        <div class="spike-label">${modeLabel} OI</div>
       </div>`;
   }).join('');
 }
@@ -213,59 +262,57 @@ export function renderTop5Panel(panelId, strikes, deltaKey = 'delta15m') {
    내부 헬퍼
 ════════════════════════════════════════════════════════ */
 
-/* Strike별 Call/Put 집계 */
+/* Strike별 Call/Put 집계 — oiOpen 필드도 합산 */
 function _aggregateByStrike(strikes) {
   const map = {};
   for (const s of strikes) {
     const k = s.strike;
     if (!map[k]) {
       map[k] = {
-        strike: k,
-        dte:    s.dte ?? null,
-        callOI: 0, putOI: 0,
+        strike:    k,
+        dte:       s.dte ?? null,
+        callOI:    0, putOI:    0,
+        callOi15m: 0, putOi15m: 0,
+        callOiOpen: 0, putOiOpen: 0,
         dex: 0, gex: 0, vanna: 0, charm: 0,
         callDelta: 0, putDelta: 0,
       };
     }
-    
-    map[k].callOI += s.callOI ?? 0;
-    map[k].putOI  += s.putOI  ?? 0;
-    map[k].dex   += s.dex   ?? 0;
-    map[k].gex   += s.gex   ?? 0;
-    map[k].vanna += s.vanna ?? 0;
-    map[k].charm += s.charm ?? 0;
+
+    map[k].callOI     += s.callOI     ?? 0;
+    map[k].putOI      += s.putOI      ?? 0;
+    map[k].callOi15m  += s.callOi15m  ?? 0;
+    map[k].putOi15m   += s.putOi15m   ?? 0;
+    map[k].callOiOpen += s.callOiOpen ?? 0;
+    map[k].putOiOpen  += s.putOiOpen  ?? 0;
+    map[k].dex        += s.dex        ?? 0;
+    map[k].gex        += s.gex        ?? 0;
+    map[k].vanna      += s.vanna      ?? 0;
+    map[k].charm      += s.charm      ?? 0;
+    map[k].callDelta  += s.callDelta  ?? 0;
+    map[k].putDelta   += s.putDelta   ?? 0;
   }
   return map;
 }
 
-/* 차트용 데이터 빌드 */
 function _buildChartData(strikes, spotPrice) {
-  if (!strikes || strikes.length === 0) {
-    return { labels: [], callOI: [], putOI: [], gex: [], raw: [] };
-  }
-
-  /* Strike별 집계 */
-  const map     = _aggregateByStrike(strikes);
-  const sorted  = Object.values(map).sort((a, b) => a.strike - b.strike);
-
-  /* 현재가 ±8% 필터 */
-  const filtered = spotPrice > 0
-    ? sorted.filter(s => Math.abs(s.strike - spotPrice) / spotPrice < 0.08)
-    : sorted;
+  /* Strike별로 집계 후 정렬 */
+  const strikeMap = _aggregateByStrike(strikes);
+  const sorted    = Object.values(strikeMap).sort((a, b) => a.strike - b.strike);
 
   return {
-    labels : filtered.map(s => s.strike % 5 === 0 ? `$${s.strike}` : ''),
-    callOI : filtered.map(s =>  s.callOI),
-    putOI  : filtered.map(s => -s.putOI),
-    gex    : filtered.map(s => +((s.gex ?? 0)).toFixed(3)),
-    raw    : filtered,
+    labels: sorted.map(s => `$${s.strike}`),
+    callOI: sorted.map(s =>  s.callOI),
+    putOI:  sorted.map(s => -s.putOI),   // 음수: 아래로 뻗는 막대
+    gex:    sorted.map(s =>  s.gex),
+    raw:    sorted,
   };
 }
 
 function _buildConfig(chartData, spotPrice, opts, container) {
   return {
     data: {
-      labels: chartData.labels,
+      labels:   chartData.labels,
       datasets: [
         {
           type: 'bar', label: 'Call OI',
@@ -320,6 +367,9 @@ function _buildConfig(chartData, spotPrice, opts, container) {
               if (!s) return [];
               const lines = [];
               if (s.dte != null) lines.push(`DTE: ${s.dte}`);
+              // OI 증감 정보 (Live 탭에서만 존재)
+              if (s.callOi15m != null) lines.push(`Call Δ15m: ${s.callOi15m > 0 ? '+' : ''}${s.callOi15m.toLocaleString()}`);
+              if (s.putOi15m  != null) lines.push(`Put Δ15m: ${s.putOi15m  > 0 ? '+' : ''}${s.putOi15m.toLocaleString()}`);
               return lines;
             },
           },
@@ -425,7 +475,6 @@ function _stickyYPlugin(container) {
 
       ctx.save();
 
-      // ── 왼쪽 y축 — 스크롤 시에만 표시 ──
       if (scrollX > 0 && yScale) {
         const axisW = yScale.right;
         ctx.fillStyle = '#181c24';
@@ -446,7 +495,6 @@ function _stickyYPlugin(container) {
         ctx.stroke();
       }
 
-      // ── 오른쪽 y2축 — 항상 표시 ──
       if (y2Scale) {
         const rAxisW  = width - y2Scale.left;
         const fixedRX = scrollX + wrapW - rAxisW;
@@ -475,7 +523,6 @@ function _stickyYPlugin(container) {
 
 function _attachScrollHandler(container, inst) {
   if (!container) return;
-  // 실제 스크롤은 부모 컨테이너(live-chart-scroll 등)에서 발생
   const scrollEl = container.parentElement ?? container;
   scrollEl._scrollHandler && scrollEl.removeEventListener('scroll', scrollEl._scrollHandler);
   scrollEl._scrollHandler = () => inst?.draw?.();
