@@ -742,12 +742,21 @@ async function fetchYahoo(symbol) {
   const data = await res.json();
   const result = data?.chart?.result?.[0];
   if (!result) throw new Error(`Yahoo ${symbol}: no result`);
-  const meta       = result.meta;
   const timestamps = result.timestamp ?? [];
   const quotes     = result.indicators?.quote?.[0]?.close ?? [];
   const price      = quotes.filter(Boolean).pop();
   if (!price) throw new Error(`Yahoo ${symbol}: no close data`);
-  const prevClose = meta.chartPreviousClose ?? meta.previousClose ?? meta.regularMarketPreviousClose ?? null;
+
+  // 전날 종가(prevClose) — interval=1d&range=2d로 별도 조회
+  // meta.chartPreviousClose가 2일 전 값을 반환하는 오류가 있어 조회 방식 변경
+  let prevClose = null;
+  const dayRes = await fetch(`${YAHOO_BASE}/${symbol}?interval=1d&range=2d`, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+  if (dayRes.ok) {
+    const dayData  = await dayRes.json();
+    const dayClose = dayData?.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [];
+    if (dayClose.length >= 2) prevClose = Math.round(dayClose[0] * 100) / 100;
+  }
+
   const change    = prevClose != null ? Math.round((price - prevClose) * 100) / 100 : null;
   const changePct = prevClose != null ? Math.round((price - prevClose) / prevClose * 10000) / 100 : null;
   // 1분봉 시리즈 (VIX 차트용)
