@@ -119,8 +119,8 @@ async function _load() {
       _el('market-ts').textContent = t.toLocaleTimeString('ko-KR', { timeZone: 'America/New_York' }) + ' ET';
     }
 
-    const spyPrice = parseFloat(snapData?.spy ?? snapData?.price ?? 0);
-    const vixPrice = parseFloat(snapData?.vix ?? 0);
+  const spyPrice = parseFloat(snapData?.spy?.price ?? 0);
+  const vixPrice = parseFloat(snapData?.vix?.price ?? 0);
     _el('mk-spy').textContent = spyPrice ? `$${spyPrice.toFixed(2)}` : '—';
     _el('mk-vix').textContent = vixPrice ? vixPrice.toFixed(2) : '—';
 
