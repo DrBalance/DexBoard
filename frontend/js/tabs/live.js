@@ -97,9 +97,8 @@ async function fetchKV({ fullUpdate = true } = {}) {
   try {
     const requests = [fetch(`${CF_API}/api/snapshot`)];
     if (fullUpdate) {
-      const date = await _getTradingDate();
       requests.push(
-        fetch(`${CF_API}/api/dex/${date}`),
+        fetch(`${CF_API}/api/dex/spy`),
         fetch(`${CF_API}/api/oi/open`),
       );
     }
@@ -140,12 +139,13 @@ async function fetchKV({ fullUpdate = true } = {}) {
         _triggerCalculate();
       } else {
         // expirations에서 오늘 날짜(0DTE) strikes 추출
-        const date = await _getTradingDate();
         const expirations = dex.expirations ?? {};
-        const todayStrikes = expirations[date] ?? [];
 
-        // 전체 strikes (모든 만기일 합산)
-        const allStrikes = Object.values(expirations).flat();
+        // 가장 가까운 만기일(0DTE) strikes 우선, 없으면 전체 합산
+        const sortedExpiries = Object.keys(expirations).sort();
+        const nearestExpiry  = sortedExpiries[0] ?? null;
+        const todayStrikes   = nearestExpiry ? expirations[nearestExpiry] : [];
+        const allStrikes     = Object.values(expirations).flat();
 
         _state.strikes = todayStrikes.length > 0 ? todayStrikes : allStrikes;
 
