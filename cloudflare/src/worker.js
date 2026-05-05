@@ -69,12 +69,12 @@ export default {
       return json(data, 200, corsHeaders);
     }
 
-    // ── GET /api/dex/:date (YYYY-MM-DD) ────────────────────────
-    const dexMatch = path.match(/^\/api\/dex\/(\d{4}-\d{2}-\d{2})$/);
+    // ── GET /api/dex/:symbol ────────────────────────────────────
+    const dexMatch = path.match(/^\/api\/dex\/([a-zA-Z]+)$/);
     if (request.method === "GET" && dexMatch) {
-      const date = dexMatch[1];
-      const data = await env.DEX_KV.get(`dex:spy:${date}`, { type: "json" });
-      if (!data) return json({ error: `No data for ${date}` }, 200, corsHeaders);
+      const symbol = dexMatch[1].toLowerCase();
+      const data = await env.DEX_KV.get(`dex:${symbol}`, { type: "json" });
+      if (!data) return json({ error: `No data for ${symbol}` }, 200, corsHeaders);
       return json(data, 200, corsHeaders);
     }
 
