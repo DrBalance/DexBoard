@@ -243,31 +243,47 @@ function _renderMetrics(weighted) {
 
 // ── 만기별 키레벨 추출 헬퍼 ──────────────────────────────
 function _extractKeyLevels(strikes, spot) {
+  const sorted = [...strikes].sort((a, b) => a.strike - b.strike);
+
   // M: Call DEX 최대 스트라이크 (현재가 위)
-  const above   = strikes.filter(s => s.dex > 0 && s.strike > (spot || 0));
-  const M       = above.length ? above.reduce((a, b) => a.dex > b.dex ? a : b) : null;
+  const above = strikes.filter(s => s.dex > 0 && s.strike > (spot || 0));
+  const M     = above.length ? above.reduce((a, b) => a.dex > b.dex ? a : b) : null;
 
   // m: Put DEX 최대 스트라이크 (현재가 아래, 절대값 기준)
-  const below   = strikes.filter(s => s.dex < 0 && s.strike <= (spot || Infinity));
-  const m       = below.length ? below.reduce((a, b) => Math.abs(a.dex) > Math.abs(b.dex) ? a : b) : null;
+  const below = strikes.filter(s => s.dex < 0 && s.strike <= (spot || Infinity));
+  const m     = below.length ? below.reduce((a, b) => Math.abs(a.dex) > Math.abs(b.dex) ? a : b) : null;
 
-  // F: DEX 부호 전환점 (Gamma Flip)
-  const sorted  = [...strikes].sort((a, b) => a.strike - b.strike);
+  // F: DEX 개별 부호 전환점 (기존 방식)
   let F = null;
   for (let i = 0; i < sorted.length - 1; i++) {
     if ((sorted[i].dex >= 0 && sorted[i+1].dex < 0) ||
         (sorted[i].dex < 0  && sorted[i+1].dex >= 0)) {
-      // 현재가에 더 가까운 쪽
       F = sorted[i].dex >= 0 ? sorted[i].strike : sorted[i+1].strike;
-      if (spot && Math.abs(sorted[i].strike - spot) > 25) continue; // 너무 먼 건 스킵
+      if (spot && Math.abs(sorted[i].strike - spot) > 25) continue;
       break;
     }
+  }
+
+  // G: GEX 누적합 부호 전환점 (표준 Flip Zone)
+  // 낮은 스트라이크부터 누적 — 음수→양수 전환점이 Flip
+  let G = null;
+  let cumGex = 0;
+  let prevSign = null;
+  for (const s of sorted) {
+    cumGex += (s.gex ?? 0);
+    const sign = cumGex >= 0 ? 1 : -1;
+    if (prevSign !== null && sign !== prevSign) {
+      G = s.strike;
+      break;
+    }
+    prevSign = sign;
   }
 
   return {
     M: M?.strike ?? null,
     m: m?.strike ?? null,
-    F,
+    F,   // DEX 개별 부호 전환 (기존)
+    G,   // GEX 누적합 부호 전환 (표준)
   };
 }
 
@@ -415,6 +431,11 @@ function _renderHeatmap(expirations, weighted) {
           'rgba(210,153,34,1)',
           'rgba(210,153,34,1)');
       }
+      if (strike === kl.G) {
+        _drawMarker(ctx, 'G', x, y + 2, CELL_W, ROW_H - 4,
+          'rgba(139,92,246,1)',
+          'rgba(139,92,246,1)');
+      }
     });
   });
 
@@ -480,6 +501,10 @@ function _renderHeatmap(expirations, weighted) {
       _drawMarker(ctx, 'F', x, sumY + 2, CELL_W, SUM_H - 4,
         'rgba(210,153,34,1)', 'rgba(210,153,34,1)');
     }
+    if (strike === sumKl.G) {
+      _drawMarker(ctx, 'G', x, sumY + 2, CELL_W, SUM_H - 4,
+        'rgba(139,92,246,1)', 'rgba(139,92,246,1)');
+    }
   });
 
   // ── 범례
@@ -487,7 +512,8 @@ function _renderHeatmap(expirations, weighted) {
   const items = [
     { label: 'M = Call DEX 최대',  color: `rgb(${C_CALL.r},${C_CALL.g},${C_CALL.b})` },
     { label: 'm = Put DEX 최대',   color: `rgb(${C_PUT.r},${C_PUT.g},${C_PUT.b})` },
-    { label: 'F = Gamma Flip',     color: 'rgb(210,153,34)' },
+    { label: 'F = DEX Flip',       color: 'rgb(210,153,34)' },
+    { label: 'G = GEX Flip (표준)', color: 'rgb(139,92,246)' },
   ];
   let legX = LABEL_W;
   ctx.font      = '9px monospace';
