@@ -110,7 +110,7 @@ function _initExpiryConfig(expirations) {
     if (_expiryConfig[expiry]) return;
     const dte = _calcDTE(expiry, new Date());
     _expiryConfig[expiry] = {
-      enabled: true,
+      enabled: dte <= 60,
       weight:  1.0,
       dte,
       color: ROW_COLORS[i % ROW_COLORS.length],
@@ -426,10 +426,10 @@ function _renderHeatmap(expirations, weighted) {
           `rgba(${C_PUT.r},${C_PUT.g},${C_PUT.b},1)`,
           '#fff');
       }
-      if (strike === kl.F) {
+     /* if (strike === kl.F) {
         _drawMarker(ctx, 'F', x, y + 2, CELL_W, ROW_H - 4,
           'rgba(210,153,34,1)',
-          'rgba(210,153,34,1)');
+          'rgba(210,153,34,1)'); */
       }
       if (strike === kl.G) {
         _drawMarker(ctx, 'G', x, y + 2, CELL_W, ROW_H - 4,
@@ -497,9 +497,9 @@ function _renderHeatmap(expirations, weighted) {
       _drawMarker(ctx, 'm', x, sumY + 2, CELL_W, SUM_H - 4,
         `rgba(${C_PUT.r},${C_PUT.g},${C_PUT.b},1)`, '#fff');
     }
-    if (strike === sumKl.F) {
+  /*  if (strike === sumKl.F) {
       _drawMarker(ctx, 'F', x, sumY + 2, CELL_W, SUM_H - 4,
-        'rgba(210,153,34,1)', 'rgba(210,153,34,1)');
+        'rgba(210,153,34,1)', 'rgba(210,153,34,1)'); */
     }
     if (strike === sumKl.G) {
       _drawMarker(ctx, 'G', x, sumY + 2, CELL_W, SUM_H - 4,
@@ -512,7 +512,7 @@ function _renderHeatmap(expirations, weighted) {
   const items = [
     { label: 'M = Call DEX 최대',  color: `rgb(${C_CALL.r},${C_CALL.g},${C_CALL.b})` },
     { label: 'm = Put DEX 최대',   color: `rgb(${C_PUT.r},${C_PUT.g},${C_PUT.b})` },
-    { label: 'F = DEX Flip',       color: 'rgb(210,153,34)' },
+   // { label: 'F = DEX Flip',       color: 'rgb(210,153,34)' },
     { label: 'G = GEX Flip (표준)', color: 'rgb(139,92,246)' },
   ];
   let legX = LABEL_W;
