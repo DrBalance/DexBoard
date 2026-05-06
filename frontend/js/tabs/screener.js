@@ -123,10 +123,12 @@ function renderShell() {
             <th class="sc-th sortable" data-col="symbol">종목</th>
             <th class="sc-th">섹터 ETF</th>
             <th class="sc-th sortable" data-col="total_score">총점 ↕</th>
-            <th class="sc-th sortable" data-col="score_skew">A 스큐</th>
-            <th class="sc-th sortable" data-col="score_bb">B BB</th>
-            <th class="sc-th sortable" data-col="score_vol_squeeze">C 변동</th>
-            <th class="sc-th sortable" data-col="bb_position">BB위치</th>
+            <th class="sc-th sortable" data-col="score_skew_count">A 스큐만기</th>
+            <th class="sc-th sortable" data-col="score_bet_ratio">B 베팅비율</th>
+            <th class="sc-th sortable" data-col="score_flip_dist">C Flip안정</th>
+            <th class="sc-th sortable" data-col="score_premium_gate">D $200K</th>
+            <th class="sc-th sortable" data-col="total_call_premium">총프리미엄</th>
+            <th class="sc-th sortable" data-col="call_skew_count">스큐만기수</th>
             <th class="sc-th sortable" data-col="iv_skew">IV스큐</th>
             <th class="sc-th sortable" data-col="close">현재가</th>
             <th class="sc-th">분석</th>
@@ -548,17 +550,15 @@ function renderTable() {
             <div class="mini-score-fill ${scoreColor}" style="width:${(r.total_score / 10) * 100}%"></div>
           </div>
         </td>
-        <td class="sc-td-sub">${scoreCell(r.score_skew, 5)}</td>
-        <td class="sc-td-sub">${scoreCell(r.score_bb, 3)}</td>
-        <td class="sc-td-sub">${scoreCell(r.score_vol_squeeze, 2)}</td>
-        <td class="sc-td-bb">
-          <div class="bb-pos-wrap">
-            <div class="bb-pos-track">
-              <div class="bb-pos-fill" style="left:${bbPct}"></div>
-            </div>
-            <span class="bb-pos-val">${bbPct}</span>
-          </div>
-        </td>
+        <td class="sc-td-sub">${scoreCell(r.score_skew_count ?? r.score_skew, 3)}</td>
+        <td class="sc-td-sub">${scoreCell(r.score_bet_ratio ?? r.score_bb, 3)}</td>
+        <td class="sc-td-sub">${scoreCell(r.score_flip_dist ?? r.score_vol_squeeze, 3)}</td>
+        <td class="sc-td-sub">${scoreCell(r.score_premium_gate ?? 0, 1)}</td>
+        <td class="sc-td-price">${r.total_call_premium
+          ? '$' + Number(r.total_call_premium).toLocaleString()
+          : '-'}</td>
+        <td class="sc-td-price">${r.call_skew_count ?? '-'}</td>
+
         <td>${ivSkewStr}</td>
         <td class="sc-td-price">${r.close ? '$' + r.close.toFixed(2) : '-'}</td>
         <td>
