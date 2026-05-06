@@ -426,11 +426,7 @@ function _renderHeatmap(expirations, weighted) {
           `rgba(${C_PUT.r},${C_PUT.g},${C_PUT.b},1)`,
           '#fff');
       }
-     /* if (strike === kl.F) {
-        _drawMarker(ctx, 'F', x, y + 2, CELL_W, ROW_H - 4,
-          'rgba(210,153,34,1)',
-          'rgba(210,153,34,1)'); */
-      }
+
       if (strike === kl.G) {
         _drawMarker(ctx, 'G', x, y + 2, CELL_W, ROW_H - 4,
           'rgba(139,92,246,1)',
@@ -497,10 +493,7 @@ function _renderHeatmap(expirations, weighted) {
       _drawMarker(ctx, 'm', x, sumY + 2, CELL_W, SUM_H - 4,
         `rgba(${C_PUT.r},${C_PUT.g},${C_PUT.b},1)`, '#fff');
     }
-  /*  if (strike === sumKl.F) {
-      _drawMarker(ctx, 'F', x, sumY + 2, CELL_W, SUM_H - 4,
-        'rgba(210,153,34,1)', 'rgba(210,153,34,1)'); */
-    }
+
     if (strike === sumKl.G) {
       _drawMarker(ctx, 'G', x, sumY + 2, CELL_W, SUM_H - 4,
         'rgba(139,92,246,1)', 'rgba(139,92,246,1)');
