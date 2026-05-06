@@ -241,7 +241,37 @@ function _renderMetrics(weighted) {
   _el('mk-flip').textContent      = flipZone  ? `$${flipZone}`        : '—';
 }
 
-// ── 멀티행 히트맵 (Canvas) ────────────────────────────────
+// ── 만기별 키레벨 추출 헬퍼 ──────────────────────────────
+function _extractKeyLevels(strikes, spot) {
+  // M: Call DEX 최대 스트라이크 (현재가 위)
+  const above   = strikes.filter(s => s.dex > 0 && s.strike > (spot || 0));
+  const M       = above.length ? above.reduce((a, b) => a.dex > b.dex ? a : b) : null;
+
+  // m: Put DEX 최대 스트라이크 (현재가 아래, 절대값 기준)
+  const below   = strikes.filter(s => s.dex < 0 && s.strike <= (spot || Infinity));
+  const m       = below.length ? below.reduce((a, b) => Math.abs(a.dex) > Math.abs(b.dex) ? a : b) : null;
+
+  // F: DEX 부호 전환점 (Gamma Flip)
+  const sorted  = [...strikes].sort((a, b) => a.strike - b.strike);
+  let F = null;
+  for (let i = 0; i < sorted.length - 1; i++) {
+    if ((sorted[i].dex >= 0 && sorted[i+1].dex < 0) ||
+        (sorted[i].dex < 0  && sorted[i+1].dex >= 0)) {
+      // 현재가에 더 가까운 쪽
+      F = sorted[i].dex >= 0 ? sorted[i].strike : sorted[i+1].strike;
+      if (spot && Math.abs(sorted[i].strike - spot) > 25) continue; // 너무 먼 건 스킵
+      break;
+    }
+  }
+
+  return {
+    M: M?.strike ?? null,
+    m: m?.strike ?? null,
+    F,
+  };
+}
+
+// ── 멀티행 히트맵 (Canvas) — M/m/F 마커 포함 ─────────────
 function _renderHeatmap(expirations, weighted) {
   const canvas = _el('mk-heatmap-canvas');
   if (!canvas) return;
@@ -263,14 +293,15 @@ function _renderHeatmap(expirations, weighted) {
   if (!enabledExpiries.length) return;
 
   // 레이아웃 상수
-  const ROW_H    = 26;
+  const ROW_H    = 28;
   const LABEL_W  = 68;
-  const CELL_W   = 20;
+  const CELL_W   = 22;
   const HEADER_H = 22;
-  const SUM_H    = 30;
+  const SUM_H    = 32;
+  const LEGEND_H = 18;
 
   const W = LABEL_W + allStrikes.length * CELL_W;
-  const H = HEADER_H + enabledExpiries.length * ROW_H + SUM_H + 10;
+  const H = HEADER_H + enabledExpiries.length * ROW_H + SUM_H + LEGEND_H + 10;
 
   canvas.width  = W;
   canvas.height = H;
@@ -282,18 +313,36 @@ function _renderHeatmap(expirations, weighted) {
   ctx.fillStyle = '#0d1117';
   ctx.fillRect(0, 0, W, H);
 
-  // 최대값 계산 (색상 강도 기준)
+  // 최대값 계산
   const maxVal = Math.max(
     ...Object.values(expirations).flat().map(s => Math.abs(s.dex)), 1
   );
   const maxSum = Math.max(...weighted.map(s => Math.abs(s.netDex)), 1);
 
+  // spotCol: 현재가 이상의 첫 번째 스트라이크 인덱스
+  const spotCol = spot ? allStrikes.findIndex(s => s >= spot) : -1;
+
+  // ── 마커 그리기 헬퍼
+  function _drawMarker(ctx, label, x, y, cellW, cellH, borderColor, textColor) {
+    // 테두리
+    ctx.strokeStyle = borderColor;
+    ctx.lineWidth   = 1.5;
+    ctx.setLineDash([]);
+    ctx.strokeRect(x + 1, y + 1, cellW - 2, cellH - 2);
+
+    // 라벨 (우상단)
+    ctx.fillStyle  = textColor;
+    ctx.font       = 'bold 8px monospace';
+    ctx.textAlign  = 'center';
+    ctx.fillText(label, x + cellW - 6, y + 9);
+  }
+
   // ── 스트라이크 헤더
   ctx.font      = '9px monospace';
   ctx.textAlign = 'center';
   allStrikes.forEach((strike, i) => {
-    const x = LABEL_W + i * CELL_W + CELL_W / 2;
-    const isSpot = spot && strike === allStrikes.find(s => s >= spot);
+    const x      = LABEL_W + i * CELL_W + CELL_W / 2;
+    const isSpot = i === spotCol;
     ctx.fillStyle = isSpot ? C_SPOT : (strike % 5 === 0 ? '#8b949e' : 'transparent');
     if (isSpot || strike % 5 === 0) {
       ctx.fillText(`$${strike}`, x, HEADER_H - 5);
@@ -302,9 +351,12 @@ function _renderHeatmap(expirations, weighted) {
 
   // ── 만기별 행
   enabledExpiries.forEach(([expiry, cfg], rowIdx) => {
-    const strikes    = expirations[expiry] ?? [];
+    const rawStrikes = expirations[expiry] ?? [];
     const strikeMap  = {};
-    strikes.forEach(s => { strikeMap[s.strike] = s; });
+    rawStrikes.forEach(s => { strikeMap[s.strike] = s; });
+
+    // 이 만기의 키레벨 추출
+    const kl = _extractKeyLevels(rawStrikes, spot);
 
     const y = HEADER_H + rowIdx * ROW_H;
 
@@ -327,23 +379,41 @@ function _renderHeatmap(expirations, weighted) {
       ctx.fillStyle = C_BORDER;
       ctx.fillRect(x + 1, y + 2, CELL_W - 2, ROW_H - 4);
 
+      // DEX 색상
       if (s) {
         const dex       = s.dex * cfg.weight;
         const intensity = Math.min(Math.abs(dex) / maxVal, 1);
         const c         = dex >= 0 ? C_CALL : C_PUT;
-        ctx.fillStyle   = `rgba(${c.r},${c.g},${c.b},${(intensity * 0.85 + 0.1).toFixed(2)})`;
+        ctx.fillStyle   = `rgba(${c.r},${c.g},${c.b},${(intensity * 0.8 + 0.1).toFixed(2)})`;
         ctx.fillRect(x + 1, y + 2, CELL_W - 2, ROW_H - 4);
       }
 
       // 현재가 컬럼 세로선
-      if (spot && strike === allStrikes.find(s => s >= spot)) {
-        ctx.strokeStyle = 'rgba(210,153,34,0.5)';
+      if (i === spotCol) {
+        ctx.strokeStyle = 'rgba(210,153,34,0.4)';
         ctx.lineWidth   = 1;
         ctx.setLineDash([]);
         ctx.beginPath();
         ctx.moveTo(x, y);
         ctx.lineTo(x, y + ROW_H);
         ctx.stroke();
+      }
+
+      // ── M/m/F 마커 오버레이
+      if (strike === kl.M) {
+        _drawMarker(ctx, 'M', x, y + 2, CELL_W, ROW_H - 4,
+          `rgba(${C_CALL.r},${C_CALL.g},${C_CALL.b},1)`,
+          '#fff');
+      }
+      if (strike === kl.m) {
+        _drawMarker(ctx, 'm', x, y + 2, CELL_W, ROW_H - 4,
+          `rgba(${C_PUT.r},${C_PUT.g},${C_PUT.b},1)`,
+          '#fff');
+      }
+      if (strike === kl.F) {
+        _drawMarker(ctx, 'F', x, y + 2, CELL_W, ROW_H - 4,
+          'rgba(210,153,34,1)',
+          'rgba(210,153,34,1)');
       }
     });
   });
@@ -359,6 +429,10 @@ function _renderHeatmap(expirations, weighted) {
   ctx.stroke();
 
   // ── 합산 행
+  // 합산 행의 키레벨은 weighted 기반
+  const weightedAsRaw = weighted.map(s => ({ strike: s.strike, dex: s.netDex }));
+  const sumKl = _extractKeyLevels(weightedAsRaw, spot);
+
   ctx.fillStyle = 'rgba(255,255,255,0.03)';
   ctx.fillRect(0, sumY, W, SUM_H);
 
@@ -382,7 +456,7 @@ function _renderHeatmap(expirations, weighted) {
     }
 
     // 현재가 점선
-    if (spot && strike === allStrikes.find(s => s >= spot)) {
+    if (i === spotCol) {
       ctx.strokeStyle = C_SPOT;
       ctx.lineWidth   = 1.5;
       ctx.setLineDash([3, 2]);
@@ -392,11 +466,45 @@ function _renderHeatmap(expirations, weighted) {
       ctx.stroke();
       ctx.setLineDash([]);
     }
+
+    // 합산 행 마커
+    if (strike === sumKl.M) {
+      _drawMarker(ctx, 'M', x, sumY + 2, CELL_W, SUM_H - 4,
+        `rgba(${C_CALL.r},${C_CALL.g},${C_CALL.b},1)`, '#fff');
+    }
+    if (strike === sumKl.m) {
+      _drawMarker(ctx, 'm', x, sumY + 2, CELL_W, SUM_H - 4,
+        `rgba(${C_PUT.r},${C_PUT.g},${C_PUT.b},1)`, '#fff');
+    }
+    if (strike === sumKl.F) {
+      _drawMarker(ctx, 'F', x, sumY + 2, CELL_W, SUM_H - 4,
+        'rgba(210,153,34,1)', 'rgba(210,153,34,1)');
+    }
+  });
+
+  // ── 범례
+  const legY = sumY + SUM_H + 6;
+  const items = [
+    { label: 'M = Call DEX 최대',  color: `rgb(${C_CALL.r},${C_CALL.g},${C_CALL.b})` },
+    { label: 'm = Put DEX 최대',   color: `rgb(${C_PUT.r},${C_PUT.g},${C_PUT.b})` },
+    { label: 'F = Gamma Flip',     color: 'rgb(210,153,34)' },
+  ];
+  let legX = LABEL_W;
+  ctx.font      = '9px monospace';
+  ctx.textAlign = 'left';
+  items.forEach(({ label, color }) => {
+    ctx.strokeStyle = color;
+    ctx.lineWidth   = 1.5;
+    ctx.setLineDash([]);
+    ctx.strokeRect(legX, legY + 2, 10, 10);
+    ctx.fillStyle = color;
+    ctx.fillText(label, legX + 14, legY + 11);
+    legX += label.length * 6 + 28;
   });
 
   // ── 현재가 마커 삼각형
   if (spot) {
-    const spotIdx = allStrikes.findIndex(s => s >= spot);
+    const spotIdx = spotCol;
     if (spotIdx >= 0) {
       const mx = LABEL_W + spotIdx * CELL_W + CELL_W / 2;
       ctx.fillStyle = C_SPOT;
