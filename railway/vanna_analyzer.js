@@ -1,4 +1,4 @@
-// DexBoard – vanna_analyzer.js
+// DexBoard - vanna_analyzer.js
 // Runs on Railway: fetch CBOE → filter → Black-Scholes → DEX/GEX/Vanna/Charm → CF KV
 // v2: 개별종목 스크리너 수집 엔진 추가
 // v3: 0DTE KV 별도 저장 (dex:spy:0dte) + oi15m/oiOpen 계산
@@ -6,10 +6,10 @@
 // ─────────────────────────────────────────────────────────────────
 // Environment
 // ─────────────────────────────────────────────────────────────────
-const CBOE_BASE    = process.env.CBOE_BASE    || “https://cdn.cboe.com/api/global/delayed_quotes/options”;
+const CBOE_BASE    = process.env.CBOE_BASE    || "https://cdn.cboe.com/api/global/delayed_quotes/options";
 const CF_KV_URL    = process.env.CF_KV_URL;
-const CF_KV_SECRET = process.env.CF_KV_SECRET || “”;
-const TWELVE_KEY   = process.env.TWELVE_KEY   || “”;
+const CF_KV_SECRET = process.env.CF_KV_SECRET || "";
+const TWELVE_KEY   = process.env.TWELVE_KEY   || "";
 
 // ─────────────────────────────────────────────────────────────────
 // 다음 거래일 날짜 계산 (Twelve Data market_state 활용)
@@ -20,7 +20,6 @@ const url = `https://api.twelvedata.com/market_state?exchange=NYSE&apikey=${TWEL
 const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
 if (!res.ok) throw new Error(`HTTP ${res.status}`);
 
-```
 const json = await res.json();
 const nyse = Array.isArray(json)
   ? (json.find(e => e.code === "XNYS") ?? json[0])
@@ -46,7 +45,6 @@ const dateStr    = _formatDate(nextOpenET);
 
 console.log(`[TradingDate] 장 마감 (time_to_open=${timeToOpen}) → 다음 거래일 ${dateStr}`);
 return dateStr;
-```
 
 } catch (e) {
 console.warn(`[TradingDate] Twelve Data 조회 실패: ${e.message} → ET 날짜 폴백`);
@@ -56,20 +54,20 @@ return _etDateFallback();
 
 function _parseHMS(hms) {
 if (!hms) return null;
-const parts = hms.split(”:”).map(Number);
+const parts = hms.split(":").map(Number);
 if (parts.length !== 3 || parts.some(isNaN)) return null;
 return parts[0] * 3600 + parts[1] * 60 + parts[2];
 }
 
 function _formatDate(date) {
 const y = date.getFullYear();
-const m = String(date.getMonth() + 1).padStart(2, “0”);
-const d = String(date.getDate()).padStart(2, “0”);
+const m = String(date.getMonth() + 1).padStart(2, "0");
+const d = String(date.getDate()).padStart(2, "0");
 return `${y}-${m}-${d}`;
 }
 
 function _etDateFallback() {
-const nowET   = new Date(new Date().toLocaleString(“en-US”, { timeZone: “America/New_York” }));
+const nowET   = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
 const dow     = nowET.getDay();
 const addDays = dow === 0 ? 1 : dow === 6 ? 2 : 0;
 nowET.setDate(nowET.getDate() + addDays);
@@ -80,7 +78,7 @@ return result;
 
 // 오늘 ET 날짜 (UTC 기준 ET 변환)
 export function getTodayET() {
-const nowET = new Date(new Date().toLocaleString(“en-US”, { timeZone: “America/New_York” }));
+const nowET = new Date(new Date().toLocaleString("en-US", { timeZone: "America/New_York" }));
 return _formatDate(nowET);
 }
 
@@ -102,7 +100,7 @@ return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
 }
 
 export function calcGreeks(spot, strike, dte, iv, r = 0.05) {
-const T_MIN = 2 / (365 * 24);  // 2시간 — Charm 폭발 방지
+const T_MIN = 2 / (365 * 24);  // 2시간 -- Charm 폭발 방지
 const T = Math.max(dte / 365, T_MIN);
 if (iv <= 0 || spot <= 0 || strike <= 0) return null;
 
@@ -143,10 +141,10 @@ return { symbol, expiry, type, strike, dte };
 // classifyExpiry
 // ─────────────────────────────────────────────────────────────────
 export function classifyExpiry(dte, expiry, nextTradingDate) {
-if (expiry === nextTradingDate) return “0dte”;
-if (dte <= 7)  return “weekly”;
-if (dte <= 35) return “monthly”;
-return “quarterly”;
+if (expiry === nextTradingDate) return "0dte";
+if (dte <= 7)  return "weekly";
+if (dte <= 35) return "monthly";
+return "quarterly";
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -185,7 +183,7 @@ return true;
 export async function fetchCBOESymbol(symbol) {
 const url = `${CBOE_BASE}/${symbol}.json`;
 const res = await fetch(url, {
-headers: { “User-Agent”: “DexBoard/1.0” },
+headers: { "User-Agent": "DexBoard/1.0" },
 signal: AbortSignal.timeout(15_000),
 });
 if (!res.ok) throw new Error(`CBOE fetch failed for ${symbol}: ${res.status}`);
@@ -197,14 +195,14 @@ return res.json();
 // ─────────────────────────────────────────────────────────────────
 async function kvPut(key, value) {
 if (!CF_KV_URL) {
-console.warn(“CF_KV_URL not set – skipping KV write for”, key);
+console.warn("CF_KV_URL not set - skipping KV write for", key);
 return;
 }
 const res = await fetch(`${CF_KV_URL}/kv-write`, {
-method: “POST”,
+method: "POST",
 headers: {
-“Content-Type”: “application/json”,
-“x-kv-secret”: CF_KV_SECRET,
+"Content-Type": "application/json",
+"x-kv-secret": CF_KV_SECRET,
 },
 body: JSON.stringify({ key, value: JSON.stringify(value) }),
 });
@@ -221,7 +219,7 @@ async function kvGet(key) {
 if (!CF_KV_URL) return null;
 try {
 const res = await fetch(`${CF_KV_URL}/kv-read?key=${encodeURIComponent(key)}`, {
-headers: { “x-kv-secret”: CF_KV_SECRET },
+headers: { "x-kv-secret": CF_KV_SECRET },
 signal: AbortSignal.timeout(8_000),
 });
 if (!res.ok) return null;
@@ -237,7 +235,7 @@ return arr.reduce((acc, item) => acc + (item[field] || 0), 0);
 }
 
 // ─────────────────────────────────────────────────────────────────
-// 개별 종목 옵션 집계 — 만기일별 DEX/GEX/PCR/IV스큐
+// 개별 종목 옵션 집계 -- 만기일별 DEX/GEX/PCR/IV스큐
 // ─────────────────────────────────────────────────────────────────
 export function aggregateByExpiry(options, spot) {
 // 필터: 60DTE 이내, OI > 0
@@ -250,7 +248,6 @@ for (const o of filtered) {
 const parsed = parseOption(o.option);
 if (!parsed) continue;
 
-```
 const { strike, dte, type, expiry } = parsed;
 
 if (!expiryMap[expiry]) {
@@ -283,7 +280,6 @@ if (type === "C") {
   s.putVol += vol;
   if (o.iv > 0) { s.putIV += o.iv; s.putIVCount++; }
 }
-```
 
 }
 
@@ -294,7 +290,6 @@ for (const [expiry, em] of Object.entries(expiryMap)) {
 const strikes = Object.values(em.strikes);
 const { dte } = em;
 
-```
 // ATM 스트라이크 결정
 const atmStrike = strikes.reduce((best, s) => {
   return Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best;
@@ -378,7 +373,6 @@ results.push({
   otm_call_theo:    avgOTMCallTheo  != null ? +avgOTMCallTheo.toFixed(4)  : null,
   otm_call_delta:   avgOTMCallDelta != null ? +avgOTMCallDelta.toFixed(4) : null,
 });
-```
 
 }
 
@@ -387,7 +381,7 @@ return results.sort((a, b) => a.dte - b.dte);
 
 function _avgIV(strikes, type) {
 const vals = strikes
-.map(s => type === “call”
+.map(s => type === "call"
 ? (s.callIVCount > 0 ? s.callIV / s.callIVCount : 0)
 : (s.putIVCount  > 0 ? s.putIV  / s.putIVCount  : 0))
 .filter(v => v > 0);
@@ -402,7 +396,7 @@ return cIV || pIV;
 }
 
 // ─────────────────────────────────────────────────────────────────
-// 스크리너 점수 계산 v2 — Charm 기반 상승 구조 탐색 (10점 만점)
+// 스크리너 점수 계산 v2 -- Charm 기반 상승 구조 탐색 (10점 만점)
 //
 // 필수 조건 (미충족 시 null 반환)
 //   1. 최소 1개 만기에서 GEX > 0 && DEX > 0 (Flip Zone 위 구조)
@@ -489,7 +483,6 @@ score_flip_dist,
 score_premium_gate,
 total_score,
 
-```
 // 진단용
 call_skew_count:    callSkewRows.length,
 total_call_premium: +totalCallPremium.toFixed(0),
@@ -505,7 +498,6 @@ bb_position:       null,
 bb_flag:           null,
 iv_skew:           shortestRow?.iv_skew ?? null,
 skew_strength:     totalCallPremium,
-```
 
 };
 }
@@ -534,7 +526,7 @@ return { symbol, spot, date, rows };
 // ─────────────────────────────────────────────────────────────────
 async function fetchCBOE() {
 const url = `${CBOE_BASE}/SPY.json`;
-const res = await fetch(url, { headers: { “User-Agent”: “DexBoard/1.0” } });
+const res = await fetch(url, { headers: { "User-Agent": "DexBoard/1.0" } });
 if (!res.ok) throw new Error(`CBOE fetch failed: ${res.status}`);
 return res.json();
 }
@@ -543,10 +535,10 @@ export async function calculateAndStore() {
 // 1. CBOE 옵션체인 fetch
 const raw = await fetchCBOE();
 const all = raw?.data?.options ?? [];
-if (all.length === 0) throw new Error(“CBOE returned empty options array”);
+if (all.length === 0) throw new Error("CBOE returned empty options array");
 
 const spot = raw?.data?.current_price;
-if (!spot) throw new Error(“CBOE current_price 없음”);
+if (!spot) throw new Error("CBOE current_price 없음");
 console.log(`[Calc] spot=${spot}`);
 
 // 저장 기준일: Twelve Data 기준 다음 거래일 (= 0DTE 만기일)
@@ -572,7 +564,6 @@ const parsed = parseOption(o.option);
 if (!parsed) continue;
 const { strike, dte, type, expiry } = parsed;
 
-```
 if (!expiryMap[expiry]) expiryMap[expiry] = {};
 if (!expiryMap[expiry][strike]) {
   expiryMap[expiry][strike] = {
@@ -590,17 +581,15 @@ const oiEff = oi > 0 ? oi : vol;
 if (type === "C") s.callOI += oiEff;
 else              s.putOI  += oiEff;
 if (o.iv > 0) { s.iv += o.iv; s.ivCount++; }
-```
 
 }
 
-// 4. Greeks 계산 — 만기일별 strikes 배열 구성
+// 4. Greeks 계산 -- 만기일별 strikes 배열 구성
 const expirations = {};
 
 for (const [expiry, strikeMap] of Object.entries(expiryMap)) {
 const strikes = [];
 
-```
 for (const s of Object.values(strikeMap)) {
   const { strike, dte, callOI, putOI } = s;
   const iv = s.ivCount > 0 ? s.iv / s.ivCount : 0.20;
@@ -625,29 +614,27 @@ for (const s of Object.values(strikeMap)) {
 if (strikes.length > 0) {
   expirations[expiry] = strikes;
 }
-```
 
 }
 
-// 5. 기존 dex:spy KV 저장 (전체 만기 — 날짜조회 탭용, 변경 없음)
+// 5. 기존 dex:spy KV 저장 (전체 만기 -- 날짜조회 탭용, 변경 없음)
 const updatedAt = new Date().toISOString();
 const fullPayload = {
 updated_at:  updatedAt,
 date:        todayET,
 expirations,
 };
-await kvPut(‘dex:spy’, fullPayload);
-console.log(`[KV] dex:spy 저장 완료 — 만기일 ${Object.keys(expirations).length}개`);
+await kvPut('dex:spy', fullPayload);
+console.log(`[KV] dex:spy 저장 완료 -- 만기일 ${Object.keys(expirations).length}개`);
 
 // 6. 0DTE strikes 추출 (nextTradingDate 기준)
 const zeroStrikes = expirations[nextTradingDate] ?? [];
 if (zeroStrikes.length === 0) {
-console.warn(`[KV] 0DTE strikes 없음 (만기일: ${nextTradingDate}) — dex:spy:0dte 저장 생략`);
+console.warn(`[KV] 0DTE strikes 없음 (만기일: ${nextTradingDate}) -- dex:spy:0dte 저장 생략`);
 } else {
 // 7. 직전 dex:spy:0dte KV 읽기 (oi15m, oiOpen 계산용)
-const prev0dte = await kvGet(‘dex:spy:0dte’);
+const prev0dte = await kvGet('dex:spy:0dte');
 
-```
 // 직전 스냅샷이 같은 만기일 데이터인지 확인
 const prevStrikes = (prev0dte?.expiry === nextTradingDate && Array.isArray(prev0dte?.strikes))
   ? prev0dte.strikes
@@ -699,8 +686,7 @@ const payload0dte = {
   strikes:    newStrikes,
 };
 await kvPut('dex:spy:0dte', payload0dte);
-console.log(`[KV] dex:spy:0dte 저장 완료 — 만기일 ${nextTradingDate}, ${newStrikes.length}건`);
-```
+console.log(`[KV] dex:spy:0dte 저장 완료 -- 만기일 ${nextTradingDate}, ${newStrikes.length}건`);
 
 }
 
