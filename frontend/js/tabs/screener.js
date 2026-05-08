@@ -12,7 +12,7 @@ import { goToTab } from '../tabs.js';
 // ── 내부 상태
 let allResults     = [];
 let sectorFilter   = 'all';
-let sortCol        = 'total_score';
+let sortCol        = 'strength_score';
 let sortDir        = 'desc';
 let isLoading      = false;
 let lastDate       = null;
@@ -110,10 +110,10 @@ function renderShell() {
   <div id="sc-content" class="sc-content" style="display:none">
 
     <div class="sc-legend">
-      <span class="legend-item"><span class="legend-dot green"></span> 8-10점: 강한 매수 신호</span>
-      <span class="legend-item"><span class="legend-dot amber"></span> 5-7점: 중립 관찰</span>
-      <span class="legend-item"><span class="legend-dot red"></span> 0-4점: 약한 신호</span>
-      <span class="legend-item"><span class="legend-dot flash"></span> BREAKDOWN: -2σ 이탈</span>
+      <span class="legend-item"><span class="legend-dot green"></span> +3~+1: 콜 방향 강한 기관 포지션</span>
+      <span class="legend-item"><span class="legend-dot red"></span> -1~-3: 풋 방향 강한 기관 포지션</span>
+      <span class="legend-item"><span class="legend-dot amber"></span> 타이밍 A: 즉시 진입 신호</span>
+      <span class="legend-item"><span class="legend-dot flash"></span> 타이밍 B: 준비 단계</span>
     </div>
 
     <div class="sc-table-wrap">
@@ -121,14 +121,10 @@ function renderShell() {
         <thead>
           <tr>
             <th class="sc-th sortable" data-col="symbol">종목</th>
-            <th class="sc-th">섹터 ETF</th>
-            <th class="sc-th sortable" data-col="total_score">총점 ↕</th>
-            <th class="sc-th sortable" data-col="score_skew_count">A 스큐만기</th>
-            <th class="sc-th sortable" data-col="score_bet_ratio">B 베팅비율</th>
-            <th class="sc-th sortable" data-col="score_flip_dist">C Flip안정</th>
-            <th class="sc-th sortable" data-col="score_premium_gate">D $200K</th>
-            <th class="sc-th sortable" data-col="total_call_premium">총프리미엄</th>
-            <th class="sc-th sortable" data-col="call_skew_count">스큐만기수</th>
+            <th class="sc-th sortable" data-col="strength_score">강도 ↕</th>
+            <th class="sc-th sortable" data-col="timing_grade">타이밍</th>
+            <th class="sc-th sortable" data-col="flip_strike">플립존</th>
+            <th class="sc-th sortable" data-col="monthly_count">Monthly</th>
             <th class="sc-th sortable" data-col="iv_skew">IV스큐</th>
             <th class="sc-th sortable" data-col="close">현재가</th>
             <th class="sc-th">분석</th>
@@ -526,39 +522,47 @@ function renderTable() {
   }
 
   tbody.innerHTML = rows.map((r) => {
-    const scoreColor = r.total_score >= 8 ? 'green' : r.total_score >= 5 ? 'amber' : 'red';
-    const bbPct      = r.bb_position != null ? (r.bb_position * 100).toFixed(0) + '%' : '-';
-    const ivSkewStr  = r.iv_skew != null
+    // 강도 점수 색상 및 표시
+    const s = r.strength_score ?? 0;
+    const strengthColor = s > 0 ? 'green' : s < 0 ? 'red' : 'muted';
+    const strengthLabel = s > 0 ? `+${s}` : `${s}`;
+    const strengthBar   = `
+      <div class="mini-score-bar">
+        <div class="mini-score-fill ${strengthColor}" style="width:${(Math.abs(s)/3)*100}%"></div>
+      </div>`;
+
+    // 타이밍 등급
+    const grade      = r.timing_grade ?? 'C';
+    const gradeColor = grade === 'A' ? '#f59e0b' : grade === 'B' ? '#3b82f6' : '#6e7681';
+    const gradeLabel = grade === 'A' ? '⚡ A' : grade === 'B' ? '◎ B' : '○ C';
+
+    // 플립존
+    const flipStr = r.flip_strike ? `$${r.flip_strike.toFixed(0)}` : '-';
+
+    // Monthly 수
+    const monthlyStr = r.monthly_count != null ? `${r.monthly_count}개` : '-';
+
+    // IV 스큐
+    const ivSkewStr = r.iv_skew != null
       ? `<span style="color:${r.iv_skew > 0 ? '#22c55e' : '#ef4444'}">${r.iv_skew > 0 ? '+' : ''}${(r.iv_skew * 100).toFixed(1)}%</span>`
       : '-';
-    const breakdown = r.bb_flag === 'BREAKDOWN' ? '<span class="bd-tag">⚡BD</span>' : '';
 
     return `
       <tr class="sc-row" data-sym="${r.symbol}">
         <td class="sc-td-sym">
           <span class="sc-sym">${r.symbol}</span>
           <span class="sc-name">${r.name || ''}</span>
-          <span class="sc-type ${r.type}">${r.type}</span>
-          ${breakdown}
-        </td>
-        <td class="sc-td-etf">
-          ${r.sector_etf ? `<span class="sc-etf-tag">${r.sector_etf}</span>` : '-'}
+          <span class="sc-type ${r.type}">${r.type ?? ''}</span>
         </td>
         <td class="sc-td-score">
-          <div class="score-badge ${scoreColor}">${r.total_score}</div>
-          <div class="mini-score-bar">
-            <div class="mini-score-fill ${scoreColor}" style="width:${(r.total_score / 10) * 100}%"></div>
-          </div>
+          <div class="score-badge ${strengthColor}">${strengthLabel}</div>
+          ${strengthBar}
         </td>
-        <td class="sc-td-sub">${scoreCell(r.score_skew_count ?? r.score_skew, 3)}</td>
-        <td class="sc-td-sub">${scoreCell(r.score_bet_ratio ?? r.score_bb, 3)}</td>
-        <td class="sc-td-sub">${scoreCell(r.score_flip_dist ?? r.score_vol_squeeze, 3)}</td>
-        <td class="sc-td-sub">${scoreCell(r.score_premium_gate ?? 0, 1)}</td>
-        <td class="sc-td-price">${r.total_call_premium
-          ? '$' + Number(r.total_call_premium).toLocaleString()
-          : '-'}</td>
-        <td class="sc-td-price">${r.call_skew_count ?? '-'}</td>
-
+        <td class="sc-td-sub">
+          <span style="color:${gradeColor};font-weight:700;font-size:13px">${gradeLabel}</span>
+        </td>
+        <td class="sc-td-price" style="font-family:var(--mono)">${flipStr}</td>
+        <td class="sc-td-sub">${monthlyStr}</td>
         <td>${ivSkewStr}</td>
         <td class="sc-td-price">${r.close ? '$' + r.close.toFixed(2) : '-'}</td>
         <td>

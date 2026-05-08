@@ -518,82 +518,102 @@ function renderATMBars(rows) {
   }).join('');
 }
 
-// ── 점수 분해 테이블
+// ── 점수 분해 테이블 (새 기준: 강도 + 타이밍)
 function renderScoreTable(s) {
   const el = document.getElementById('struct-score-table');
   if (!el) return;
 
-  const rows = [
-    {
-      label: 'A. 콜 스큐 지속',
-      score: s.score_skew_weeks,
-      max: 3,
-      detail: `${s.skew_weeks ?? 0}주 연속 콜 스큐`,
-      color: s.score_skew_weeks >= 2 ? '#22c55e' : s.score_skew_weeks >= 1 ? '#f59e0b' : '#8b949e',
-    },
-    {
-      label: 'B. 볼린저 위치',
-      score: s.score_bb,
-      max: 3,
-      detail: `BB Position ${s.bb_position != null ? (s.bb_position * 100).toFixed(0) : '-'}%${s.bb_flag ? ' ⚡BREAKDOWN' : ''}`,
-      color: s.score_bb >= 2 ? '#22c55e' : s.score_bb >= 1 ? '#f59e0b' : '#8b949e',
-    },
-    {
-      label: 'C. ATM 풋 집중도',
-      score: s.score_atm_put,
-      max: 2,
-      detail: `ATM±5% 풋 비중`,
-      color: s.score_atm_put >= 2 ? '#ef4444' : s.score_atm_put >= 1 ? '#f59e0b' : '#8b949e',
-    },
-    {
-      label: 'D. 변동폭 수축',
-      score: s.score_vol_squeeze,
-      max: 2,
-      detail: 'ATR5 / ATR20 비율',
-      color: s.score_vol_squeeze >= 2 ? '#22c55e' : s.score_vol_squeeze >= 1 ? '#f59e0b' : '#8b949e',
-    },
-  ];
+  const strength = s.strength_score ?? 0;
+  const grade    = s.timing_grade   ?? 'C';
+  const flip     = s.flip_strike    ?? null;
+  const monthly  = s.monthly_count  ?? 0;
+
+  // 강도 방향
+  const dir      = strength > 0 ? '콜 ▲' : strength < 0 ? '풋 ▼' : '중립';
+  const dirColor = strength > 0 ? '#22c55e' : strength < 0 ? '#ef4444' : '#6e7681';
+
+  // 타이밍 등급 설명
+  const gradeDesc = {
+    'A': '⚡ 즉시 진입 — Monthly 2개 + Weekly 방향 일치',
+    'B': '◎ 준비 단계 — Monthly 2개 방향 일치',
+    'C': '○ 관찰 — 타이밍 신호 없음',
+  };
+  const gradeColor = grade === 'A' ? '#f59e0b' : grade === 'B' ? '#3b82f6' : '#6e7681';
 
   el.innerHTML = `
+    <div class="score-summary-box" style="
+      background:var(--bg2);border:1px solid var(--border);
+      border-radius:8px;padding:16px;margin-bottom:12px;
+      display:grid;grid-template-columns:1fr 1fr;gap:12px
+    ">
+      <!-- 강도 점수 -->
+      <div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px">강도 점수</div>
+        <div style="font-size:32px;font-weight:800;font-family:var(--mono);color:${dirColor}">
+          ${strength > 0 ? '+' : ''}${strength}
+        </div>
+        <div style="font-size:12px;color:${dirColor};margin-top:2px">${dir}</div>
+        <div style="margin-top:8px;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden">
+          <div style="width:${(Math.abs(strength)/3)*100}%;height:100%;background:${dirColor};border-radius:3px"></div>
+        </div>
+      </div>
+      <!-- 타이밍 등급 -->
+      <div>
+        <div style="font-size:11px;color:var(--text3);margin-bottom:4px">타이밍 등급</div>
+        <div style="font-size:32px;font-weight:800;color:${gradeColor}">${grade}</div>
+        <div style="font-size:11px;color:${gradeColor};margin-top:2px">${gradeDesc[grade] ?? ''}</div>
+      </div>
+    </div>
+
     <table class="score-tbl">
-      <thead>
-        <tr>
-          <th>항목</th>
-          <th>점수</th>
-          <th>상세</th>
-          <th>바</th>
-        </tr>
-      </thead>
       <tbody>
-        ${rows.map(r => `
-          <tr>
-            <td class="score-item-label">${r.label}</td>
-            <td class="score-item-val" style="color:${r.color}">${r.score} / ${r.max}</td>
-            <td class="score-item-detail">${r.detail}</td>
-            <td class="score-item-bar-cell">
-              <div class="score-bar-track">
-                <div class="score-bar-fill" style="width:${(r.score/r.max)*100}%;background:${r.color}"></div>
-              </div>
-            </td>
-          </tr>
-        `).join('')}
-        <tr class="score-total-row">
-          <td>합계</td>
-          <td style="color:${s.total_score >= 7 ? '#22c55e' : s.total_score >= 4 ? '#f59e0b' : '#ef4444'}">
-            <strong>${s.total_score} / 10</strong>
+        <tr>
+          <td class="score-item-label">플립존</td>
+          <td class="score-item-val" style="color:${dirColor};font-family:var(--mono)">
+            ${flip ? '$' + flip.toFixed(0) : '—'}
           </td>
-          <td colspan="2"></td>
+          <td class="score-item-detail">
+            현재가 기준 ${flip && s.close
+              ? (s.close > flip ? '위 (딜러 롱감마 ✓)' : '아래 (딜러 숏감마)')
+              : '—'}
+          </td>
+        </tr>
+        <tr>
+          <td class="score-item-label">Monthly 수</td>
+          <td class="score-item-val">${monthly}개</td>
+          <td class="score-item-detail">
+            ${monthly >= 2 ? '2개 월물 확인 — 기관 분산 베팅 가능성' : '1개 월물'}
+          </td>
+        </tr>
+        <tr>
+          <td class="score-item-label">IV 스큐</td>
+          <td class="score-item-val" style="color:${(s.iv_skew ?? 0) > 0 ? '#22c55e' : '#ef4444'}">
+            ${s.iv_skew != null
+              ? (s.iv_skew > 0 ? '+' : '') + (s.iv_skew * 100).toFixed(1) + '%'
+              : '—'}
+          </td>
+          <td class="score-item-detail">
+            ${s.iv_skew != null
+              ? (s.iv_skew > 0 ? '콜 프리미엄 — 업사이드 기대' : '풋 프리미엄 — 하방 헷지')
+              : '—'}
+          </td>
         </tr>
       </tbody>
     </table>
-    ${s.iv_skew != null ? `
-      <div class="score-iv-note">
-        IV 스큐: <strong style="color:${s.iv_skew > 0 ? '#22c55e' : '#ef4444'}">
-          ${s.iv_skew > 0 ? '+' : ''}${(s.iv_skew * 100).toFixed(1)}%
-        </strong>
-        (${s.iv_skew > 0 ? '콜 프리미엄 — 업사이드 기대' : '풋 프리미엄 — 하방 헷지 집중'})
-      </div>
-    ` : ''}
+
+    <div class="score-guide" style="
+      margin-top:12px;padding:10px 12px;
+      background:var(--bg3);border-radius:6px;
+      font-size:11px;color:var(--text3);line-height:1.6
+    ">
+      <strong style="color:var(--text2)">기준 안내</strong><br>
+      강도 +3/-3: 헤징 수량 &gt; 일평균거래량×5% × 3배 이상<br>
+      강도 +2/-2: 헤징 수량 &gt; 일평균거래량×5% × 2배<br>
+      강도 +1/-1: 헤징 수량 &gt; 일평균거래량×5% (최소 기준 통과)<br>
+      타이밍 A: Monthly 2개 IV스큐 일치 + Weekly 방향 일치 → 진입 임박<br>
+      타이밍 B: Monthly 2개 IV스큐 일치 → 준비 단계<br>
+      타이밍 C: 필터 통과, 타이밍 신호 없음 → 관찰
+    </div>
   `;
 }
 
