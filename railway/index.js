@@ -1,38 +1,37 @@
-// DexBoard – Railway entry point v3
+// DexBoard - Railway entry point v3
 // POST /calculate        → CBOE SPY DEX 계산 → CF KV
 // POST /analyze          → Gemini API 분석
 // POST /collect-screener → 개별종목 스크리너 수집 → D1 저장
 // GET  /screener-status  → 오늘 수집 여부 확인
 // setInterval 스케줄러   → fetchSnapshot (Yahoo→KV), snapshotOpen, triggerScreener
 
-import http from “http”;
+import http from "http";
 import { calculateAndStore, collectSymbol, getTodayET } from "./vanna_analyzer.js";
-import { collectPriceIndicators as collectPriceIndicatorsNew, calcAndSaveScore, saveOptionsFlow as saveOptionsFlowNew } from "./screener-v2.js";
+import { collectPriceIndicators as collectPriceIndicatorsNew, calcAndSaveScore } from "./screener-engine.js";
 
 const TWELVE_KEY = process.env.TWELVE_KEY || process.env.TWELVE_KEY_SPY || "";
 
 const PORT        = process.env.PORT        || 8080;
-const CRON_SECRET = process.env.CRON_SECRET || “”;
-const GEMINI_KEY  = process.env.GEMINI_KEY  || “”;
-const CF_WORKER_URL = process.env.CF_WORKER_URL || “”;
-const CF_KV_SECRET  = process.env.CF_KV_SECRET  || “”;
-const TWELVE_KEY_SPY = process.env.TWELVE_KEY_SPY || “”;
+const CRON_SECRET = process.env.CRON_SECRET || "";
+const GEMINI_KEY  = process.env.GEMINI_KEY  || "";
+const CF_WORKER_URL = process.env.CF_WORKER_URL || "";
+const CF_KV_SECRET  = process.env.CF_KV_SECRET  || "";
+const TWELVE_KEY_SPY = process.env.TWELVE_KEY_SPY || "";
 
 // ─────────────────────────────────────────────────────────────────
 // 가격 수집 + BB 계산 → CF Worker D1 저장
 // ─────────────────────────────────────────────────────────────────
-const YAHOO_CHART = ‘https://query1.finance.yahoo.com/v8/finance/chart’;
+const YAHOO_CHART = 'https://query1.finance.yahoo.com/v8/finance/chart';
 
 async function collectPriceIndicators(symbol, cfWorkerUrl, cronSecret) {
 try {
 const url = `${YAHOO_CHART}/${encodeURIComponent(symbol)}?interval=1d&range=3mo`;
 const res = await fetch(url, {
-headers: { ‘User-Agent’: ‘Mozilla/5.0’ },
+headers: { 'User-Agent': 'Mozilla/5.0' },
 signal: AbortSignal.timeout(10000),
 });
 if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
 
-```
 const json   = await res.json();
 const result = json?.chart?.result?.[0];
 if (!result) throw new Error('Yahoo: no result');
@@ -69,7 +68,7 @@ for (let i = 19; i < candles.length; i++) {
   const bbRange    = upper2 - lower2;
   const bbPosition = bbRange > 0 ? (close - lower2) / bbRange : 0.5;
 
-  // ATR (5일/20일) — i 기준 슬라이스
+  // ATR (5일/20일) -- i 기준 슬라이스
   const atr = (n) => {
     if (i < n - 1) return null;
     const s = candles.slice(i - n + 1, i + 1);
@@ -94,7 +93,7 @@ for (let i = 19; i < candles.length; i++) {
   });
 }
 
-// CF Worker D1 저장 — INSERT OR IGNORE (기존 날짜 데이터 보존, 신규만 추가)
+// CF Worker D1 저장 -- INSERT OR IGNORE (기존 날짜 데이터 보존, 신규만 추가)
 const writeRes = await fetch(`${cfWorkerUrl}/d1/price-indicators`, {
   method:  'POST',
   headers: {
@@ -109,7 +108,6 @@ if (!writeRes.ok) throw new Error(`D1 write failed: ${writeRes.status}`);
 // 반환값은 가장 최신 캔들 기준
 const latest = rows[rows.length - 1];
 return { symbol, close: latest.close, bbPosition: latest.bb_position, volRatio: latest.vol_ratio };
-```
 
 } catch (err) {
 console.error(`[${symbol}] 가격 수집 실패:`, err.message);
@@ -118,7 +116,7 @@ return null;
 }
 
 const GEMINI_URL =
-“https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent”;
+"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent";
 
 // ─────────────────────────────────────────────────────────────────
 // Rate Limiter
@@ -149,10 +147,10 @@ for (let i = 0; i < retries; i++) {
 try {
 return await callGemini(payload);
 } catch (err) {
-const is429 = err.message?.includes(“429”);
+const is429 = err.message?.includes("429");
 if (is429 && i < retries - 1) {
 const wait = Math.pow(2, i) * 1500;
-console.warn(`[Gemini] 429 — ${wait}ms 후 재시도 (${i + 1}/${retries - 1})`);
+console.warn(`[Gemini] 429 -- ${wait}ms 후 재시도 (${i + 1}/${retries - 1})`);
 await sleep(wait);
 continue;
 }
@@ -162,15 +160,15 @@ throw err;
 }
 
 async function callGemini(payload) {
-if (!GEMINI_KEY) throw new Error(“GEMINI_KEY not set”);
+if (!GEMINI_KEY) throw new Error("GEMINI_KEY not set");
 
 const compressedStrikes = (payload.strikes ?? [])
 .sort((a, b) => Math.abs(b.dex) - Math.abs(a.dex))
 .slice(0, 10)
 .map(s => ({
 s:  s.strike,
-cd: s.type === ‘C’ ? +(s.dex / 1e6).toFixed(1) : 0,
-pd: s.type === ‘P’ ? +(s.dex / 1e6).toFixed(1) : 0,
+cd: s.type === 'C' ? +(s.dex / 1e6).toFixed(1) : 0,
+pd: s.type === 'P' ? +(s.dex / 1e6).toFixed(1) : 0,
 g:  +(s.gex   / 1e6).toFixed(1),
 v:  +(s.vanna  / 1e6).toFixed(1),
 c:  +(s.charm  / 1e6).toFixed(1),
@@ -203,44 +201,44 @@ s=strike, cd=call_dex(M), pd=put_dex(M), g=gex(M), v=vanna(M), c=charm(M)
 [Strike 데이터 (DEX 상위 10개)]
 ${JSON.stringify(compressedStrikes)}
 
-[응답 JSON 형식 — 한국어, 각 필드를 구체적이고 충분히 서술할 것]
+[응답 JSON 형식 -- 한국어, 각 필드를 구체적이고 충분히 서술할 것]
 {
-“market_regime”: {
-“phase”: “시장 국면 (예: 감마 압축 구간, 언와인드 진행 중 등)”,
-“volatility_context”: “현재 VIX 수준과 변동성 방향성에 대한 구체적 설명”,
-“dominance”: “Dealer-Driven 또는 Flow-Driven — 근거 포함”
+"market_regime": {
+"phase": "시장 국면 (예: 감마 압축 구간, 언와인드 진행 중 등)",
+"volatility_context": "현재 VIX 수준과 변동성 방향성에 대한 구체적 설명",
+"dominance": "Dealer-Driven 또는 Flow-Driven -- 근거 포함"
 },
-“deep_dive”: {
-“dealer_inventory”: {
-“gamma_exposure”: “GEX 부호 및 크기, 핵심 위험 스트라이크, 딜러 헷지 방향을 상세히 설명”,
-“vanna_flow”: “현재 VIX 방향에 따른 Vanna 흐름이 딜러 델타 헷지에 미치는 압력 분석”
+"deep_dive": {
+"dealer_inventory": {
+"gamma_exposure": "GEX 부호 및 크기, 핵심 위험 스트라이크, 딜러 헷지 방향을 상세히 설명",
+"vanna_flow": "현재 VIX 방향에 따른 Vanna 흐름이 딜러 델타 헷지에 미치는 압력 분석"
 },
-“breadth_analysis”: {
-“vold_signal”: “VOLD와 SPY 가격 간 다이버전스 여부, 강도, 지속 가능성 평가”,
-“interpretation”: “현물 수급 에너지의 질적 해석 — 진짜 매수/매도 vs 파생 헷지 유발 흐름 구분”
+"breadth_analysis": {
+"vold_signal": "VOLD와 SPY 가격 간 다이버전스 여부, 강도, 지속 가능성 평가",
+"interpretation": "현물 수급 에너지의 질적 해석 -- 진짜 매수/매도 vs 파생 헷지 유발 흐름 구분"
 }
 },
-“scenarios”: [
+"scenarios": [
 {
-“case”: “상승 시나리오”,
-“trigger”: “구체적인 발생 조건”,
-“target”: “목표 스트라이크 또는 Call Wall 레벨”,
-“probability”: 60
+"case": "상승 시나리오",
+"trigger": "구체적인 발생 조건",
+"target": "목표 스트라이크 또는 Call Wall 레벨",
+"probability": 60
 },
 {
-“case”: “하락 시나리오”,
-“trigger”: “구체적인 발생 조건”,
-“target”: “주요 지지선 또는 Put Wall 레벨”,
-“probability”: 40
+"case": "하락 시나리오",
+"trigger": "구체적인 발생 조건",
+"target": "주요 지지선 또는 Put Wall 레벨",
+"probability": 40
 }
 ],
-“expert_insight”: “딜러 헷징 메커니즘 관점에서 현 국면의 핵심 리스크와 트레이딩 함의를 3~4문장으로 서술”
+"expert_insight": "딜러 헷징 메커니즘 관점에서 현 국면의 핵심 리스크와 트레이딩 함의를 3~4문장으로 서술"
 }`.trim();
 
 const url = `${GEMINI_URL}?key=${GEMINI_KEY}`;
 const res = await fetch(url, {
-method:  “POST”,
-headers: { “Content-Type”: “application/json” },
+method:  "POST",
+headers: { "Content-Type": "application/json" },
 body: JSON.stringify({
 contents: [{ parts: [{ text: fullPrompt }] }],
 generationConfig: {
@@ -259,21 +257,21 @@ throw new Error(`Gemini ${res.status}: ${txt.slice(0, 200)}`);
 
 const json = await res.json();
 const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
-if (!text) throw new Error(“Gemini: 응답 텍스트 없음”);
+if (!text) throw new Error("Gemini: 응답 텍스트 없음");
 
 try {
 const cleaned = text
-.replace(/^`json\s*/i, "") .replace(/^`\s*/i, “”)
-.replace(/```\s*$/, “”)
+.replace(/^`json\s*/i, "") .replace(/^`\s*/i, "")
+.replace(/```\s*$/, "")
 .trim();
 return JSON.parse(cleaned);
 } catch {
 const raw = text.slice(0, 500);
 const chunkSize = 80;
 for (let i = 0; i < raw.length; i += chunkSize) {
-console.log(”[Gemini RAW] chunk” + Math.floor(i/chunkSize) + “: “ + raw.slice(i, i + chunkSize));
+console.log("[Gemini RAW] chunk" + Math.floor(i/chunkSize) + ": " + raw.slice(i, i + chunkSize));
 }
-throw new Error(“Gemini: JSON 파싱 실패”);
+throw new Error("Gemini: JSON 파싱 실패");
 }
 }
 
@@ -281,12 +279,12 @@ throw new Error(“Gemini: JSON 파싱 실패”);
 // CF Worker D1 write 헬퍼
 // ─────────────────────────────────────────────────────────────────
 async function d1Write(endpoint, body) {
-if (!CF_WORKER_URL) throw new Error(“CF_WORKER_URL not set”);
+if (!CF_WORKER_URL) throw new Error("CF_WORKER_URL not set");
 const res = await fetch(`${CF_WORKER_URL}${endpoint}`, {
-method:  “POST”,
+method:  "POST",
 headers: {
-“Content-Type”:  “application/json”,
-“x-cron-secret”: CRON_SECRET,
+"Content-Type":  "application/json",
+"x-cron-secret": CRON_SECRET,
 },
 body: JSON.stringify(body),
 signal: AbortSignal.timeout(30_000),
@@ -302,7 +300,7 @@ return res.json();
 // 스크리너 수집 엔진
 // ─────────────────────────────────────────────────────────────────
 
-// 동시 수집 제한 — CBOE rate limit 방지
+// 동시 수집 제한 -- CBOE rate limit 방지
 async function batchCollect(symbols, concurrency = 5) {
 const results = [];
 const errors  = [];
@@ -313,7 +311,6 @@ const settled = await Promise.allSettled(
 batch.map(s => collectSymbol(s.symbol, s.date))
 );
 
-```
 for (let j = 0; j < settled.length; j++) {
   const r = settled[j];
   if (r.status === "fulfilled") {
@@ -325,21 +322,20 @@ for (let j = 0; j < settled.length; j++) {
   }
 }
 
-// CBOE 요청 간격 — 배치 사이 200ms 대기
+// CBOE 요청 간격 -- 배치 사이 200ms 대기
 if (i + concurrency < symbols.length) {
   await sleep(200);
 }
-```
 
 }
 
 return { results, errors };
 }
 
-// saveToD1 — 레거시, 미사용 (Whale 필터 기준으로 교체)
+// saveToD1 -- 레거시, 미사용 (Whale 필터 기준으로 교체)
 
 // ─────────────────────────────────────────────────────────────────
-// 수집 진행 상태 (메모리 내 — Railway 재시작 시 초기화)
+// 수집 진행 상태 (메모리 내 -- Railway 재시작 시 초기화)
 // ─────────────────────────────────────────────────────────────────
 let collectState = {
 running:   false,
@@ -352,10 +348,10 @@ lastRun:   null,   // { date, ok, count, errors, ts }
 // HTTP 서버
 // ─────────────────────────────────────────────────────────────────
 const corsHeaders = {
-“Access-Control-Allow-Origin”:  “*”,
-“Access-Control-Allow-Methods”: “GET, POST, OPTIONS”,
-“Access-Control-Allow-Headers”: “Content-Type, x-cron-secret”,
-“Content-Type”: “application/json”,
+"Access-Control-Allow-Origin":  "*",
+"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+"Access-Control-Allow-Headers": "Content-Type, x-cron-secret",
+"Content-Type": "application/json",
 };
 
 function sendJSON(res, status, data) {
@@ -365,10 +361,10 @@ res.end(JSON.stringify(data));
 
 async function readBody(req) {
 return new Promise((resolve) => {
-let body = “”;
-req.on(“data”, c => (body += c));
-req.on(“end”, () => {
-try { resolve(JSON.parse(body || “{}”)); }
+let body = "";
+req.on("data", c => (body += c));
+req.on("end", () => {
+try { resolve(JSON.parse(body || "{}")); }
 catch { resolve({}); }
 });
 });
@@ -376,18 +372,18 @@ catch { resolve({}); }
 
 const server = http.createServer(async (req, res) => {
 // Health check
-if (req.method === “GET” && req.url === “/health”) {
-return sendJSON(res, 200, { status: “ok”, ts: new Date().toISOString() });
+if (req.method === "GET" && req.url === "/health") {
+return sendJSON(res, 200, { status: "ok", ts: new Date().toISOString() });
 }
 
 // CORS preflight
-if (req.method === “OPTIONS”) {
+if (req.method === "OPTIONS") {
 res.writeHead(204, corsHeaders);
 return res.end();
 }
 
 // ── GET /screener-status ─────────────────────────────────────────
-if (req.method === “GET” && req.url === “/screener-status”) {
+if (req.method === "GET" && req.url === "/screener-status") {
 const todayET = getTodayET();
 return sendJSON(res, 200, {
 today:    todayET,
@@ -398,15 +394,14 @@ last_run: collectState.lastRun,
 }
 
 // ── POST /analyze ────────────────────────────────────────────────
-if (req.method === “POST” && req.url === “/analyze”) {
+if (req.method === "POST" && req.url === "/analyze") {
 const body = await readBody(req);
 try {
-const ip = req.socket.remoteAddress ?? “unknown”;
+const ip = req.socket.remoteAddress ?? "unknown";
 if (!checkRateLimit(ip)) {
-return sendJSON(res, 429, { ok: false, error: “서버 요청 한도 초과 (IP 기반)” });
+return sendJSON(res, 429, { ok: false, error: "서버 요청 한도 초과 (IP 기반)" });
 }
 
-```
   const analysis = await callGeminiWithRetry(body);
 
   // AI 분석 결과 KV 캐싱
@@ -435,38 +430,36 @@ return sendJSON(res, 429, { ok: false, error: “서버 요청 한도 초과 (IP
     error: is429 ? "Gemini API 할당량이 일시적으로 소진되었습니다." : err.message,
   });
 }
-```
 
 }
 
 // ── POST /calculate ──────────────────────────────────────────────
-if (req.method === “POST” && req.url === “/calculate”) {
-const auth = req.headers[“x-cron-secret”];
+if (req.method === "POST" && req.url === "/calculate") {
+const auth = req.headers["x-cron-secret"];
 if (CRON_SECRET && auth !== CRON_SECRET) {
 res.writeHead(401);
-return res.end(“Unauthorized”);
+return res.end("Unauthorized");
 }
 try {
 console.log(`[${new Date().toISOString()}] /calculate 시작`);
 const result = await calculateAndStore();
 return sendJSON(res, 200, { ok: true, date: result.date, updated_at: result.updated_at });
 } catch (err) {
-console.error(“calculateAndStore error:”, err);
+console.error("calculateAndStore error:", err);
 return sendJSON(res, 500, { ok: false, error: err.message });
 }
 }
 
 // ── GET /etf-holdings/:ticker ─────────────────────────────────────
 // CF Worker IP는 Yahoo에서 차단 → Railway에서 직접 호출
-const etfMatch = req.url.match(/^/etf-holdings/([A-Z0-9.-]+)$/i);
-if (req.method === “GET” && etfMatch) {
-const auth = req.headers[“x-cron-secret”];
+const etfMatch = req.url.match(/^\/etf-holdings\/([A-Z0-9.-]+)$/i);
+if (req.method === "GET" && etfMatch) {
+const auth = req.headers["x-cron-secret"];
 if (CRON_SECRET && auth !== CRON_SECRET) {
 res.writeHead(401);
-return res.end(“Unauthorized”);
+return res.end("Unauthorized");
 }
 
-```
 const ticker = etfMatch[1].toUpperCase();
 try {
   const holdings = await fetchETFHoldings(ticker);
@@ -475,20 +468,18 @@ try {
   console.error(`[ETF] ${ticker} 조회 실패:`, err.message);
   return sendJSON(res, 502, { error: err.message });
 }
-```
 
 }
 
 // ── POST /rescore ────────────────────────────────────────────────
 // 기존 options_dex + price_indicators 데이터로 점수만 재계산
-if (req.method === “POST” && req.url === “/rescore”) {
-const auth = req.headers[“x-cron-secret”];
+if (req.method === "POST" && req.url === "/rescore") {
+const auth = req.headers["x-cron-secret"];
 if (CRON_SECRET && auth !== CRON_SECRET) {
 res.writeHead(401);
-return res.end(“Unauthorized”);
+return res.end("Unauthorized");
 }
 
-```
 try {
   const dataRes = await fetch(`${CF_WORKER_URL}/api/rescore-data`, {
     headers: { "x-cron-secret": CRON_SECRET },
@@ -542,7 +533,7 @@ try {
     }
   }
 
-  console.log(`[Rescore] 완료 — ${scoreCount}개 종목 (기준일: ${dex_date})`);
+  console.log(`[Rescore] 완료 -- ${scoreCount}개 종목 (기준일: ${dex_date})`);
   return sendJSON(res, 200, {
     ok:      true,
     date:    dex_date,
@@ -554,20 +545,18 @@ try {
   console.error("[Rescore] 실패:", err.message);
   return sendJSON(res, 500, { ok: false, error: err.message });
 }
-```
 
 }
 
 // ── POST /collect-screener ───────────────────────────────────────
 // body: { symbols: [{symbol, name, type, sector, sector_etf}], force?: boolean }
-if (req.method === “POST” && req.url === “/collect-screener”) {
-const auth = req.headers[“x-cron-secret”];
+if (req.method === "POST" && req.url === "/collect-screener") {
+const auth = req.headers["x-cron-secret"];
 if (CRON_SECRET && auth !== CRON_SECRET) {
 res.writeHead(401);
-return res.end(“Unauthorized”);
+return res.end("Unauthorized");
 }
 
-```
 if (collectState.running) {
   return sendJSON(res, 409, {
     ok: false,
@@ -586,7 +575,7 @@ if (!Array.isArray(symbols) || !symbols.length) {
 const date = getTodayET();
 
 // force=false: 이미 수집된 날짜면 스킵 안내 후 수집 실행
-// (이미 오늘 수집됐는지는 CF Worker의 D1 쿼리로 확인 — 여기선 lastRun 메모리로 판단)
+// (이미 오늘 수집됐는지는 CF Worker의 D1 쿼리로 확인 -- 여기선 lastRun 메모리로 판단)
 if (!force && collectState.lastRun?.date === date && collectState.lastRun?.ok) {
   return sendJSON(res, 200, {
     ok:       false,
@@ -619,12 +608,11 @@ sendJSON(res, 202, {
 runCollect(symbols, date).catch(e => console.error('[collect-screener] error:', e.message));
 
 return;
-```
 
 }
 
 res.writeHead(404);
-res.end(“Not found”);
+res.end("Not found");
 });
 
 // ─────────────────────────────────────────────────────────────────
@@ -635,7 +623,7 @@ console.log(`DexBoard Railway service listening on port ${PORT}`);
 }); */
 // ============================================
 // ETF 구성종목 조회 (Yahoo Finance)
-// Railway 서버에서 직접 호출 — CF Worker IP 우회
+// Railway 서버에서 직접 호출 -- CF Worker IP 우회
 // ============================================
 async function fetchETFHoldings(ticker) {
 // ── 시도 1: Yahoo Finance v1 quoteSummary
@@ -643,14 +631,13 @@ try {
 const url = `https://query1.finance.yahoo.com/v1/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=topHoldings`;
 const res = await fetch(url, {
 headers: {
-‘User-Agent’: ‘Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36’,
-‘Accept’: ‘application/json’,
-‘Accept-Language’: ‘en-US,en;q=0.9’,
+'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+'Accept': 'application/json',
+'Accept-Language': 'en-US,en;q=0.9',
 },
 signal: AbortSignal.timeout(10000),
 });
 
-```
 if (res.ok) {
   const data     = await res.json();
   const holdings = data?.quoteSummary?.result?.[0]?.topHoldings?.holdings ?? [];
@@ -664,7 +651,6 @@ if (res.ok) {
   }
 }
 console.warn(`[ETF] ${ticker}: Yahoo v1 실패 (${res.status}), v10 시도`);
-```
 
 } catch (e) {
 console.warn(`[ETF] ${ticker}: Yahoo v1 오류 (${e.message}), v10 시도`);
@@ -675,13 +661,12 @@ try {
 const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=topHoldings`;
 const res = await fetch(url, {
 headers: {
-‘User-Agent’: ‘Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36’,
-‘Accept’: ‘application/json’,
+'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+'Accept': 'application/json',
 },
 signal: AbortSignal.timeout(10000),
 });
 
-```
 if (res.ok) {
   const data     = await res.json();
   const holdings = data?.quoteSummary?.result?.[0]?.topHoldings?.holdings ?? [];
@@ -695,7 +680,6 @@ if (res.ok) {
   }
 }
 console.warn(`[ETF] ${ticker}: Yahoo v10 실패 (${res.status})`);
-```
 
 } catch (e) {
 console.warn(`[ETF] ${ticker}: Yahoo v10 오류 (${e.message})`);
@@ -704,7 +688,7 @@ console.warn(`[ETF] ${ticker}: Yahoo v10 오류 (${e.message})`);
 throw new Error(`${ticker} ETF 구성종목을 가져올 수 없습니다 (Yahoo Finance 차단 또는 데이터 없음)`);
 }
 
-server.listen(PORT, ‘0.0.0.0’, () => {
+server.listen(PORT, '0.0.0.0', () => {
 console.log(`DexBoard Railway service listening on port ${PORT}`);
 startScheduler();
 });
@@ -713,13 +697,13 @@ startScheduler();
 // 시장 시간 유틸 (ET 기준)
 // ─────────────────────────────────────────────────────────────────
 function getETHour() {
-const etStr = new Date().toLocaleString(“en-US”, { timeZone: “America/New_York” });
+const etStr = new Date().toLocaleString("en-US", { timeZone: "America/New_York" });
 return new Date(etStr).getHours();
 }
 
 function getETDay() {
-const etStr = new Date().toLocaleString(“en-US”, { timeZone: “America/New_York” });
-return new Date(etStr).getDay(); // 0=일, 1=월 … 5=금, 6=토
+const etStr = new Date().toLocaleString("en-US", { timeZone: "America/New_York" });
+return new Date(etStr).getDay(); // 0=일, 1=월 ... 5=금, 6=토
 }
 
 function isWeekday() {
@@ -728,24 +712,24 @@ return day >= 1 && day <= 5;
 }
 
 function getMarketSession() {
-if (!isWeekday()) return ‘CLOSED’;
+if (!isWeekday()) return 'CLOSED';
 const h = getETHour();
-if (h >= 4  && h < 9)  return ‘PRE’;      // 04:00~08:59
-if (h === 9)           return ‘PRE’;      // 09:00~09:29 (분 체크 생략)
-if (h >= 9  && h < 16) return ‘REGULAR’;  // 09:30~15:59
-if (h >= 16 && h < 20) return ‘AFTER’;    // 16:00~19:59
-if (h >= 20 && h < 24) return ‘AFTER’;    // 20:00~23:59
-return ‘CLOSED’;
+if (h >= 4  && h < 9)  return 'PRE';      // 04:00~08:59
+if (h === 9)           return 'PRE';      // 09:00~09:29 (분 체크 생략)
+if (h >= 9  && h < 16) return 'REGULAR';  // 09:30~15:59
+if (h >= 16 && h < 20) return 'AFTER';    // 16:00~19:59
+if (h >= 20 && h < 24) return 'AFTER';    // 20:00~23:59
+return 'CLOSED';
 }
 
 // ─────────────────────────────────────────────────────────────────
 // Yahoo Finance → CF KV 스냅샷 저장
 // ─────────────────────────────────────────────────────────────────
-const YAHOO_BASE = process.env.YAHOO_BASE || ‘https://query1.finance.yahoo.com/v8/finance/chart’;
+const YAHOO_BASE = process.env.YAHOO_BASE || 'https://query1.finance.yahoo.com/v8/finance/chart';
 
 async function fetchYahoo(symbol) {
 const url = `${YAHOO_BASE}/${symbol}?interval=1m&range=1d`;
-const res = await fetch(url, { headers: { ‘User-Agent’: ‘Mozilla/5.0’ } });
+const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
 if (!res.ok) throw new Error(`Yahoo ${symbol}: ${res.status}`);
 const data = await res.json();
 const result = data?.chart?.result?.[0];
@@ -755,10 +739,10 @@ const quotes     = result.indicators?.quote?.[0]?.close ?? [];
 const price      = quotes.filter(Boolean).pop();
 if (!price) throw new Error(`Yahoo ${symbol}: no close data`);
 
-// 전날 종가(prevClose) — interval=1d&range=2d로 별도 조회
+// 전날 종가(prevClose) -- interval=1d&range=2d로 별도 조회
 // meta.chartPreviousClose가 2일 전 값을 반환하는 오류가 있어 조회 방식 변경
 let prevClose = null;
-const dayRes = await fetch(`${YAHOO_BASE}/${symbol}?interval=1d&range=2d`, { headers: { ‘User-Agent’: ‘Mozilla/5.0’ } });
+const dayRes = await fetch(`${YAHOO_BASE}/${symbol}?interval=1d&range=2d`, { headers: { 'User-Agent': 'Mozilla/5.0' } });
 if (dayRes.ok) {
 const dayData  = await dayRes.json();
 const dayClose = dayData?.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [];
@@ -776,20 +760,20 @@ return { price: Math.round(price * 100) / 100, change, changePct, prevClose, ser
 
 // ─────────────────────────────────────────────────────────────────
 // 스냅샷 메모리 캐시 (정규장 30초 루프용)
-// SPY: Twelve Data 30초, VIX: Yahoo 1분 — 각자 독립 갱신, KV는 30초마다 합산 저장
+// SPY: Twelve Data 30초, VIX: Yahoo 1분 -- 각자 독립 갱신, KV는 30초마다 합산 저장
 // ─────────────────────────────────────────────────────────────────
 const _cache = {
 spy: { price: null, change: null, changePct: null, prevClose: null },
 vix: { price: null, change: null, changePct: null, prevClose: null, series: [] },
 };
 
-// SPY 현재가 — Twelve Data /quote (정규장 30초)
+// SPY 현재가 -- Twelve Data /quote (정규장 30초)
 async function fetchSpyTwelve() {
 try {
 if (!TWELVE_KEY_SPY) return;
 const url = `https://api.twelvedata.com/quote?symbol=SPY&apikey=${TWELVE_KEY_SPY}`;
 const res = await fetch(url, {
-headers: { ‘User-Agent’: ‘Mozilla/5.0’ },
+headers: { 'User-Agent': 'Mozilla/5.0' },
 signal: AbortSignal.timeout(6000),
 });
 if (!res.ok) return;
@@ -799,17 +783,17 @@ if (isNaN(price) || price <= 0) return;
 const prevClose = parseFloat(td.previous_close);
 const change    = !isNaN(prevClose) ? Math.round((price - prevClose) * 100) / 100 : null;
 const changePct = !isNaN(prevClose) ? Math.round((price - prevClose) / prevClose * 10000) / 100 : null;
-_cache.spy = { …_cache.spy, price, change, changePct, prevClose };
+_cache.spy = { ..._cache.spy, price, change, changePct, prevClose };
 console.log(`[spy] Twelve Data: $${price} (${changePct}%)`);
 } catch (e) {
-console.warn(’[spy] Twelve Data 실패 (직전값 유지):’, e.message);
+console.warn('[spy] Twelve Data 실패 (직전값 유지):', e.message);
 }
 }
 
-// VIX 현재가 — Yahoo Finance (1분)
+// VIX 현재가 -- Yahoo Finance (1분)
 async function fetchVixYahoo() {
 try {
-const data = await fetchYahoo(’%5EVIX’);
+const data = await fetchYahoo('%5EVIX');
 _cache.vix = {
 price:     data.price,
 change:    data.change,
@@ -819,11 +803,11 @@ series:    data.series ?? [],
 };
 console.log(`[vix] Yahoo: ${data.price} (${data.changePct}%)`);
 } catch (e) {
-console.warn(’[vix] Yahoo 실패 (직전값 유지):’, e.message);
+console.warn('[vix] Yahoo 실패 (직전값 유지):', e.message);
 }
 }
 
-// KV 저장 — _cache.spy + _cache.vix 합산 → snapshot:1min
+// KV 저장 -- _cache.spy + _cache.vix 합산 → snapshot:1min
 async function saveSnapshot() {
 if (!_cache.spy.price && !_cache.vix.price) return; // 둘 다 없으면 스킵
 try {
@@ -833,29 +817,29 @@ vix: _cache.vix,
 ts:  new Date().toISOString(),
 };
 await fetch(`${CF_WORKER_URL}/kv-write`, {
-method:  ‘POST’,
-headers: { ‘Content-Type’: ‘application/json’, ‘x-kv-secret’: CF_KV_SECRET },
-body:    JSON.stringify({ key: ‘snapshot:1min’, value: JSON.stringify(snapshot) }),
+method:  'POST',
+headers: { 'Content-Type': 'application/json', 'x-kv-secret': CF_KV_SECRET },
+body:    JSON.stringify({ key: 'snapshot:1min', value: JSON.stringify(snapshot) }),
 signal:  AbortSignal.timeout(5000),
 });
 console.log(`[snapshot] saved SPY=${_cache.spy.price} VIX=${_cache.vix.price}`);
 } catch (e) {
-console.error(’[snapshot] KV 저장 실패:’, e.message);
+console.error('[snapshot] KV 저장 실패:', e.message);
 }
 }
 
-// PRE/AFTER — Yahoo SPY+VIX 묶음 (기존 방식 유지)
+// PRE/AFTER -- Yahoo SPY+VIX 묶음 (기존 방식 유지)
 async function fetchSnapshot() {
 try {
 const [spy, vix] = await Promise.all([
-fetchYahoo(‘SPY’),
-fetchYahoo(’%5EVIX’),
+fetchYahoo('SPY'),
+fetchYahoo('%5EVIX'),
 ]);
 _cache.spy = { price: spy.price, change: spy.change, changePct: spy.changePct, prevClose: spy.prevClose };
 _cache.vix = { price: vix.price, change: vix.change, changePct: vix.changePct, prevClose: vix.prevClose, series: vix.series ?? [] };
 await saveSnapshot();
 } catch (e) {
-console.error(’[snapshot] error:’, e.message);
+console.error('[snapshot] error:', e.message);
 }
 }
 
@@ -867,14 +851,14 @@ if (!res.ok) return;
 const snap = await res.json();
 if (!snap?.spy) return;
 await fetch(`${CF_WORKER_URL}/kv-write`, {
-method: ‘POST’,
-headers: { ‘Content-Type’: ‘application/json’, ‘x-kv-secret’: CF_KV_SECRET },
-body: JSON.stringify({ key: ‘options:spy:open’, value: JSON.stringify({ …snap, saved_at: new Date().toISOString() }) }),
+method: 'POST',
+headers: { 'Content-Type': 'application/json', 'x-kv-secret': CF_KV_SECRET },
+body: JSON.stringify({ key: 'options:spy:open', value: JSON.stringify({ ...snap, saved_at: new Date().toISOString() }) }),
 signal: AbortSignal.timeout(5000),
 });
-console.log(’[snapshotOpen] saved opening snapshot’);
+console.log('[snapshotOpen] saved opening snapshot');
 } catch (e) {
-console.error(’[snapshotOpen] error:’, e.message);
+console.error('[snapshotOpen] error:', e.message);
 }
 }
 
@@ -887,7 +871,7 @@ try {
 let bbCount = 0;
 try {
 const bbRes = await fetch(`${CF_WORKER_URL}/api/bb-map-symbols`, {
-headers: { ‘x-cron-secret’: CRON_SECRET },
+headers: { 'x-cron-secret': CRON_SECRET },
 signal: AbortSignal.timeout(10000),
 });
 if (bbRes.ok) {
@@ -895,7 +879,6 @@ const bbData = await bbRes.json();
 const optionSymSet = new Set(symbols.map(s => s.symbol));
 const bbOnly = (bbData.symbols ?? []).filter(s => !optionSymSet.has(s.symbol));
 
-```
     console.log(`[Screener] BB 맵 전용 종목 ${bbOnly.length}개 가격 수집`);
     collectState.progress = { stage: 'bb_map', done: 0, total: bbOnly.length, errors: 0 };
     for (const { symbol: sym } of bbOnly) {
@@ -989,7 +972,7 @@ if (allResults.length) {
     }
   }
 
-  console.log(`[Screener] D1 저장 완료 — DEX: ${dexRows.length}행, Scores: ${scoreCount}행`);
+  console.log(`[Screener] D1 저장 완료 -- DEX: ${dexRows.length}행, Scores: ${scoreCount}행`);
 }
 
 collectState = {
@@ -1007,11 +990,10 @@ collectState = {
   },
 };
 
-console.log(`[Screener] 완료 — 성공: ${allResults.length}, 실패: ${allErrors.length}`);
-```
+console.log(`[Screener] 완료 -- 성공: ${allResults.length}, 실패: ${allErrors.length}`);
 
 } catch (err) {
-console.error(”[Screener] 수집 중 치명적 오류:”, err.message);
+console.error("[Screener] 수집 중 치명적 오류:", err.message);
 collectState = {
 running:   false,
 startedAt: null,
@@ -1048,18 +1030,17 @@ function scheduleSnapshot() {
 if (snapshotTimer) clearInterval(snapshotTimer);
 if (vixTimer)      { clearInterval(vixTimer); vixTimer = null; }
 
-```
 const session = getMarketSession();
 
 if (session === 'CLOSED') {
-  console.log('[scheduler] CLOSED — snapshot 중지');
+  console.log('[scheduler] CLOSED -- snapshot 중지');
   snapshotTimer = null;
   return;
 }
 
 if (session === 'REGULAR') {
   // ── REGULAR: SPY 30초(Twelve Data) + VIX 1분(Yahoo) → KV 30초 저장
-  console.log('[scheduler] REGULAR — SPY 30초(Twelve) + VIX 1분(Yahoo)');
+  console.log('[scheduler] REGULAR -- SPY 30초(Twelve) + VIX 1분(Yahoo)');
 
   // 즉시 1회 (SPY+VIX 동시 조회 후 KV 저장)
   (async () => {
@@ -1078,11 +1059,10 @@ if (session === 'REGULAR') {
 
 } else {
   // ── PRE / AFTER: Yahoo SPY+VIX 묶음 3분
-  console.log(`[scheduler] ${session} — snapshot 3분 주기`);
+  console.log(`[scheduler] ${session} -- snapshot 3분 주기`);
   fetchSnapshot(); // 즉시 1회
   snapshotTimer = setInterval(fetchSnapshot, 3 * 60_000);
 }
-```
 
 }
 
@@ -1091,7 +1071,6 @@ setInterval(() => {
 const session = getMarketSession();
 const h = getETHour();
 
-```
 if (session !== lastSession) {
   console.log(`[scheduler] 세션 변경: ${lastSession} → ${session}`);
   lastSession = session;
@@ -1120,14 +1099,14 @@ if (session !== lastSession) {
         const symbols = symData.symbols ?? [];
 
         if (!symbols.length) {
-          console.warn('[scheduler] 수집 대상 심볼 없음 — 스크리너 수집 생략');
+          console.warn('[scheduler] 수집 대상 심볼 없음 -- 스크리너 수집 생략');
           return;
         }
 
         console.log(`[scheduler] ${symbols.length}개 심볼 수집 시작`);
         // 직접 백그라운드 수집 실행 (localhost HTTP 우회)
         if (collectState.running) {
-          console.warn('[scheduler] 수집 이미 진행 중 — 스킵');
+          console.warn('[scheduler] 수집 이미 진행 중 -- 스킵');
           return;
         }
         const date = getTodayET();
@@ -1154,7 +1133,6 @@ if (isWeekday()) {
     calculateAndStore().catch(e => console.error('[scheduler] calculateAndStore error:', e.message));
   }
 }
-```
 
 }, 60_000);
 
@@ -1163,8 +1141,8 @@ lastSession = getMarketSession();
 scheduleSnapshot();
 
 // 서버 시작 시 즉시 1회 DEX 계산
-console.log(’[scheduler] 서버 시작 — DEX 즉시 1회 실행’);
-calculateAndStore().catch(e => console.error(’[scheduler] calculateAndStore error (init):’, e.message));
+console.log('[scheduler] 서버 시작 -- DEX 즉시 1회 실행');
+calculateAndStore().catch(e => console.error('[scheduler] calculateAndStore error (init):', e.message));
 }
 
 // ─────────────────────────────────────────────────────────────────
