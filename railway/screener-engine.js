@@ -47,20 +47,37 @@ function avg(arr) {
 // Twelve Data average_volume fetch
 // ============================================
 export async function fetchAvgVolume(symbol, twelveKey) {
-  if (!twelveKey) return null;
+  // 1차: Twelve Data (주식에서 주로 동작)
+  if (twelveKey) {
+    try {
+      const url = `${TWELVE_BASE}?symbol=${encodeURIComponent(symbol)}&apikey=${twelveKey}`;
+      const res = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0' },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        const avgVol = parseFloat(data.average_volume);
+        if (!isNaN(avgVol) && avgVol > 0) return avgVol;
+      }
+    } catch (_) {}
+  }
+
+  // 2차: Yahoo Finance (ETF 포함 폭넓게 지원)
   try {
-    const url = `${TWELVE_BASE}?symbol=${encodeURIComponent(symbol)}&apikey=${twelveKey}`;
+    const url = `${YAHOO_BASE}/${encodeURIComponent(symbol)}?interval=1d&range=1mo`;
     const res = await fetch(url, {
       headers: { 'User-Agent': 'Mozilla/5.0' },
       signal: AbortSignal.timeout(8000),
     });
-    if (!res.ok) throw new Error(`Twelve Data HTTP ${res.status}`);
-    const data = await res.json();
-    const avgVol = parseFloat(data.average_volume);
-    if (isNaN(avgVol) || avgVol <= 0) throw new Error('average_volume 유효하지 않음');
-    return avgVol;
+    if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
+    const json    = await res.json();
+    const meta    = json?.chart?.result?.[0]?.meta;
+    const avgVol  = meta?.regularMarketVolume ?? meta?.averageDailyVolume10Day ?? null;
+    if (avgVol && avgVol > 0) return avgVol;
+    throw new Error('Yahoo: avg_volume 없음');
   } catch (err) {
-    console.warn(`[${symbol}] avg_volume 수집 실패:`, err.message);
+    console.warn(`[${symbol}] avg_volume 수집 실패 (Twelve + Yahoo):`, err.message);
     return null;
   }
 }
@@ -275,31 +292,47 @@ function calcTimingGrade(monthlyRows, weeklyRows, spotPrice) {
 // 옵션 데이터에서 플립존 + OI 집계
 // (vanna_analyzer.js의 collectSymbol 결과 rows 기반)
 // ============================================
+// ============================================
+// 옵션 데이터 보강 + 플립존 추정
+// (vanna_analyzer.js collectSymbol -> aggregateByExpiry 반환값 기반)
+//
+// Strike별 raw 없으므로 만기별 gex/dex 부호로 플립존 근사:
+//   gex > 0 && dex > 0: 현재가 Flip 위 -> flip = spotPrice * 0.97
+//   그 외: 현재가 Flip 아래 -> flip = spotPrice * 1.03
+// ============================================
 function enrichRows(rows, spotPrice) {
-  // rows: options_dex 형태 (expiry_date, dte, call_oi, put_oi, iv_skew 등)
-  // vanna_analyzer에서 넘어온 raw에는 strike별 데이터가 없으므로
-  // flip_strike는 dex 부호 기반으로 근사 계산
+  if (!rows?.length || !spotPrice) return [];
 
-  return rows.map(r => {
-    const monthly = isStandardMonthly(r.expiry_date) ? 1 : 0;
+  const sorted = [...rows].sort((a, b) => a.dte - b.dte);
 
-    // dex_map 근사: 단일 만기의 net dex 부호로 flip 추정
-    // (strike별 데이터 없으므로 전체 DEX 부호로 대체)
-    const flipStrike = r.flip_strike ?? null;
+  // Monthly 행 기준으로 Flip 방향 판별
+  const monthlyRows = sorted.filter(r => isStandardMonthly(r.expiry_date));
+  const target = monthlyRows.length >= 1 ? monthlyRows : sorted;
 
-    // 델타 가중 OI — otm_call_delta, otm_call_theo 활용
-    const otmCallOiD = r.otm_call_theo ?? 0;
-    const otmPutOiD  = 0; // 풋 방향은 별도 필드 없으면 0
+  const aboveCount = target.filter(r => r.gex > 0 && r.dex > 0).length;
+  const belowCount = target.length - aboveCount;
+
+  // 과반수 방향으로 flip_strike 결정
+  const estimatedFlip = aboveCount >= belowCount
+    ? +(spotPrice * 0.97).toFixed(0)  // 현재가 Flip 위: flip = 현재가 -3%
+    : +(spotPrice * 1.03).toFixed(0); // 현재가 Flip 아래: flip = 현재가 +3%
+
+  return sorted.map(r => {
+    const isMonthly  = isStandardMonthly(r.expiry_date) ? 1 : 0;
+    const delta      = r.otm_call_delta ?? 0.3;
+    const otmCallOiD = delta * (r.call_oi ?? 0);
+    const otmPutOiD  = delta * (r.put_oi  ?? 0);
 
     return {
       ...r,
-      is_monthly:    monthly,
-      flip_strike:   flipStrike,
+      is_monthly:    isMonthly,
+      flip_strike:   estimatedFlip,
       otm_call_oi_d: otmCallOiD,
       otm_put_oi_d:  otmPutOiD,
     };
   });
 }
+
 
 // ============================================
 // 종합 점수 계산 + D1 저장
