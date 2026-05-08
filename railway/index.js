@@ -6,7 +6,10 @@
 // setInterval 스케줄러   → fetchSnapshot (Yahoo→KV), snapshotOpen, triggerScreener
 
 import http from “http”;
-import { calculateAndStore, collectSymbol, calcScreenerScore, getTodayET } from “./vanna_analyzer.js”;
+import { calculateAndStore, collectSymbol, getTodayET } from "./vanna_analyzer.js";
+import { collectPriceIndicators as collectPriceIndicatorsNew, calcAndSaveScore, saveOptionsFlow as saveOptionsFlowNew } from "./screener-v2.js";
+
+const TWELVE_KEY = process.env.TWELVE_KEY || process.env.TWELVE_KEY_SPY || "";
 
 const PORT        = process.env.PORT        || 8080;
 const CRON_SECRET = process.env.CRON_SECRET || “”;
@@ -333,33 +336,7 @@ if (i + concurrency < symbols.length) {
 return { results, errors };
 }
 
-// 수집 결과 → CF Worker D1 저장
-async function saveToD1(collected, date) {
-const rows = [];
-const scores = [];
-
-for (const { symbol, spot, rows: expiryRows } of collected) {
-// options_dex 행 구성
-for (const r of expiryRows) {
-rows.push({ date, symbol, …r });
-}
-
-```
-// screener_scores 계산
-const scoreData = calcScreenerScore(expiryRows, spot);
-if (scoreData) {
-  scores.push({ date, symbol, ...scoreData });
-}
-```
-
-}
-
-// D1 batch write
-await d1Write(”/d1/options-dex”, { rows });
-await d1Write(”/d1/screener-scores”, { rows: scores });
-
-return { dex_rows: rows.length, score_rows: scores.length };
-}
+// saveToD1 — 레거시, 미사용 (Whale 필터 기준으로 교체)
 
 // ─────────────────────────────────────────────────────────────────
 // 수집 진행 상태 (메모리 내 — Railway 재시작 시 초기화)
@@ -545,29 +522,32 @@ try {
     symbolMap.get(row.symbol).push(row);
   }
 
-  // 심볼별 점수 재계산
-  const scoreRows = [];
+  // 심볼별 점수 재계산 (새 Whale 필터 기준)
+  let scoreCount = 0;
   for (const [symbol, rows] of symbolMap) {
     const priceData = piMap.get(symbol) ?? {};
-    const spotPrice = priceData.close ?? null;
-    const scoreData = calcScreenerScore(rows, spotPrice);
-    if (scoreData) {
-      scoreRows.push({
-        date:   dex_date,
-        symbol,
-        close:  priceData.close ?? null,
-        ...scoreData,
-      });
+    try {
+      const result = await calcAndSaveScore(
+        CF_WORKER_URL, CRON_SECRET,
+        symbol, dex_date, rows,
+        {
+          close:      priceData.close       ?? null,
+          avgVolume:  priceData.avg_volume  ?? null,
+          bbPosition: priceData.bb_position ?? null,
+        }
+      );
+      if (result) scoreCount++;
+    } catch (e) {
+      console.warn(`[${symbol}] rescore 실패:`, e.message);
     }
   }
 
-  await d1Write("/d1/screener-scores", { rows: scoreRows });
-  console.log(`[Rescore] 완료 — ${scoreRows.length}개 종목 (기준일: ${dex_date})`);
+  console.log(`[Rescore] 완료 — ${scoreCount}개 종목 (기준일: ${dex_date})`);
   return sendJSON(res, 200, {
     ok:      true,
     date:    dex_date,
-    count:   scoreRows.length,
-    message: `${scoreRows.length}개 종목 점수 재계산 완료`,
+    count:   scoreCount,
+    message: `${scoreCount}개 종목 점수 재계산 완료`,
   });
 
 } catch (err) {
@@ -959,50 +939,57 @@ for (let i = 0; i < symbolsWithDate.length; i += BATCH) {
   if (i + BATCH < symbolsWithDate.length) await sleep(300);
 }
 
-// ── 3. 옵션 수집 종목 price_indicators 수집
+// ── 3. 옵션 수집 종목 price_indicators 수집 (Twelve Data avg_volume 포함)
 console.log(`[Screener] 옵션 종목 ${symbols.length}개 가격 수집`);
 const priceMap = new Map();
 for (const { symbol: sym } of symbols) {
-  const pi = await collectPriceIndicators(sym, CF_WORKER_URL, CRON_SECRET);
+  const pi = await collectPriceIndicatorsNew(sym, CF_WORKER_URL, CRON_SECRET, TWELVE_KEY);
   if (pi) {
     priceMap.set(sym, {
-      bb_position: pi.bbPosition ?? null,
-      vol_squeeze: pi.volRatio   ?? null,
+      close:       pi.close       ?? null,
+      bbPosition:  pi.bbPosition  ?? null,
+      avgVolume:   pi.avgVolume   ?? null,
     });
   }
   await sleep(200);
 }
 
-// ── 4. D1 저장
+// ── 4. D1 저장 (새 Whale 필터 기준)
 if (allResults.length) {
   console.log(`[Screener] ${allResults.length}개 종목 수집 완료 → D1 저장 시작`);
 
-  const dexRows   = [];
-  const scoreRows = [];
+  const dexRows = [];
 
   for (const { symbol, rows, meta } of allResults) {
     for (const r of rows) {
       dexRows.push({ date, symbol, ...r });
     }
+  }
+
+  // options_dex 저장
+  await d1Write("/d1/options-dex", { rows: dexRows });
+
+  // 새 기준으로 점수 계산 + screener_scores 저장
+  let scoreCount = 0;
+  for (const { symbol, rows: expiryRows, meta } of allResults) {
     const priceData = priceMap.get(symbol) ?? {};
-    const scoreData = calcScreenerScore(rows, priceData.close ?? null);
-    if (scoreData) {
-      scoreRows.push({
-        date,
-        symbol,
-        name:       meta?.name       ?? symbol,
-        type:       meta?.type       ?? "stock",
-        sector:     meta?.sector     ?? null,
-        sector_etf: meta?.sector_etf ?? null,
-        ...scoreData,
-      });
+    try {
+      const result = await calcAndSaveScore(
+        CF_WORKER_URL, CRON_SECRET,
+        symbol, date, expiryRows,
+        {
+          close:       priceData.close      ?? null,
+          avgVolume:   priceData.avgVolume  ?? null,
+          bbPosition:  priceData.bbPosition ?? null,
+        }
+      );
+      if (result) scoreCount++;
+    } catch (e) {
+      console.warn(`[${symbol}] 점수 계산 실패:`, e.message);
     }
   }
 
-  await d1Write("/d1/options-dex",    { rows: dexRows });
-  await d1Write("/d1/screener-scores", { rows: scoreRows });
-
-  console.log(`[Screener] D1 저장 완료 — DEX: ${dexRows.length}행, Scores: ${scoreRows.length}행`);
+  console.log(`[Screener] D1 저장 완료 — DEX: ${dexRows.length}행, Scores: ${scoreCount}행`);
 }
 
 collectState = {
