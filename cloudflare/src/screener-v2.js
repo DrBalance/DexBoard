@@ -1,6 +1,20 @@
 // ============================================
-// screener-v2.js — 종합 스크리너
-// Barchart 옵션 + Twelve Data 가격 → 점수화 → D1
+// screener-v2.js — 종합 스크리너 v3
+// 새 기준: Whale 필터 기반 강도(-3~+3) + 타이밍 등급(A/B/C)
+//
+// 필터 조건:
+//   1. 현재가 > 플립존 (딜러 롱감마) — 콜 방향
+//      현재가 < 플립존 (딜러 숏감마) — 풋 방향
+//   2. 델타 0.2~0.4 구간 OI × 델타 × 100 합계 > avg_volume × 5%
+//
+// 강도 점수 (-3 ~ +3):
+//   DEX Share % 자체가 점수 기반 (플립존 구간 집중도)
+//
+// 타이밍 등급:
+//   A: Monthly 2개 IV 스큐 방향 일치 + Weekly 방향 일치
+//   B: Monthly 2개 IV 스큐 방향 일치 (Weekly 불일치)
+//   C: 필터 통과, 타이밍 신호 없음
+//
 // Cron: 매일 20:30 UTC (장 마감 30분 후)
 // ============================================
 
@@ -13,375 +27,6 @@ const HEADERS = {
   'Referer': 'https://www.barchart.com/options/unusual-activity',
   'X-Requested-With': 'XMLHttpRequest',
 };
-
-// ============================================
-// 1. 옵션체인 수집 (Barchart) — 스트라이크별 포함
-// ============================================
-export async function fetchOptionsData(symbol, spotPrice) {
-  try {
-    // 스트라이크별 데이터가 필요하므로 fields에 strikePrice 추가
-    const url = `${BARCHART_BASE}/proxies/core-api/v1/options/chain`
-      + `?symbol=${symbol}`
-      + `&startDate=${getToday()}`
-      + `&endDate=${getDateAfterDays(56)}`
-      + `&fields=symbol,expiration,strikePrice,callOpenInterest,putOpenInterest,`
-      + `callVolume,putVolume,impliedVolatility,delta`
-      + `&raw=1`;
-
-    const res = await fetch(url, { headers: HEADERS });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
-
-    return parseOptionsChain(symbol, data, spotPrice);
-  } catch (err) {
-    console.error(`[${symbol}] 옵션 수집 실패:`, err.message);
-    return null;
-  }
-}
-
-// ============================================
-// 2. 옵션체인 파싱 — 만기별 + ATM 풋 집중도
-// ============================================
-function parseOptionsChain(symbol, data, spotPrice) {
-  if (!data?.data) return null;
-
-  const today   = getToday();
-  const results = [];
-  const byExpiry = {};
-
-  for (const row of data.data) {
-    const expiry = row.expiration;
-    const strike = row.strikePrice || 0;
-
-    if (!byExpiry[expiry]) {
-      byExpiry[expiry] = {
-        call_vol: 0, put_vol: 0,
-        call_oi:  0, put_oi:  0,
-        atm_put_oi: 0,          // ATM ±5% 풋 OI
-        ivs: [],
-      };
-    }
-
-    const d = byExpiry[expiry];
-    d.call_vol += row.callVolume || 0;
-    d.put_vol  += row.putVolume  || 0;
-    d.call_oi  += row.callOpenInterest || 0;
-    d.put_oi   += row.putOpenInterest  || 0;
-
-    // ATM ±5% 풋 OI 집계
-    if (spotPrice && strike > 0) {
-      const pct = Math.abs(strike - spotPrice) / spotPrice;
-      if (pct <= 0.05) {
-        d.atm_put_oi += row.putOpenInterest || 0;
-      }
-    }
-
-    if (row.impliedVolatility) {
-      d.ivs.push({
-        iv:    row.impliedVolatility,
-        delta: Math.abs(row.delta || 0.5),
-      });
-    }
-  }
-
-  for (const [expiry, d] of Object.entries(byExpiry)) {
-    const dte = daysBetween(today, expiry);
-    if (dte < 0 || dte > 56) continue;
-
-    const atmIVs     = d.ivs.filter(x => x.delta >= 0.4 && x.delta <= 0.6);
-    const otmCallIVs = d.ivs.filter(x => x.delta >= 0.2 && x.delta < 0.4);
-    const otmPutIVs  = d.ivs.filter(x => x.delta >= 0.2 && x.delta < 0.4);
-    const otmCallIV  = avg(otmCallIVs.map(x => x.iv));
-    const otmPutIV   = avg(otmPutIVs.map(x => x.iv));
-
-    results.push({
-      date:             today,
-      symbol,
-      expiry_date:      expiry,
-      dte,
-      call_vol:         d.call_vol,
-      put_vol:          d.put_vol,
-      call_oi:          d.call_oi,
-      put_oi:           d.put_oi,
-      pcr_vol:          d.put_vol / (d.call_vol || 1),
-      pcr_oi:           d.put_oi  / (d.call_oi  || 1),
-      atm_iv:           avg(atmIVs.map(x => x.iv)),
-      otm_call_iv:      otmCallIV,
-      otm_put_iv:       otmPutIV,
-      atm_put_oi_ratio: d.put_oi > 0 ? d.atm_put_oi / d.put_oi : 0,
-      iv_skew:          (otmCallIV && otmPutIV) ? otmCallIV - otmPutIV : null,
-    });
-  }
-
-  return results;
-}
-
-// ============================================
-// 3. options_flow 저장
-// ============================================
-export async function saveOptionsFlow(db, records) {
-  if (!records?.length) return 0;
-
-  const stmt = db.prepare(`
-    INSERT OR REPLACE INTO options_flow
-      (date, symbol, expiry_date, dte,
-       call_vol, put_vol, call_oi, put_oi,
-       pcr_vol, pcr_oi, atm_iv, otm_call_iv, otm_put_iv,
-       atm_put_oi_ratio, iv_skew)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
-
-  const batch = records.map(r => stmt.bind(
-    r.date, r.symbol, r.expiry_date, r.dte,
-    r.call_vol, r.put_vol, r.call_oi, r.put_oi,
-    r.pcr_vol, r.pcr_oi, r.atm_iv, r.otm_call_iv, r.otm_put_iv,
-    r.atm_put_oi_ratio, r.iv_skew
-  ));
-
-  await db.batch(batch);
-  return records.length;
-}
-
-// ============================================
-// 4. Baseline 업데이트 (변경 없음)
-// ============================================
-export async function updateBaseline(db, symbol) {
-  const result = await db.prepare(`
-    SELECT
-      AVG(call_vol)    as avg_call_vol,
-      AVG(put_vol)     as avg_put_vol,
-      AVG(call_oi)     as avg_call_oi,
-      AVG(put_oi)      as avg_put_oi,
-      AVG(pcr_vol)     as avg_pcr_vol,
-      AVG(pcr_oi)      as avg_pcr_oi,
-      AVG(atm_iv)      as avg_atm_iv,
-      AVG(otm_call_iv) as avg_otm_call_iv,
-      AVG(otm_put_iv)  as avg_otm_put_iv,
-      AVG(call_vol * call_vol) - AVG(call_vol) * AVG(call_vol) as var_call_vol,
-      AVG(call_oi  * call_oi)  - AVG(call_oi)  * AVG(call_oi)  as var_call_oi,
-      AVG(pcr_oi   * pcr_oi)   - AVG(pcr_oi)   * AVG(pcr_oi)   as var_pcr_oi,
-      AVG(otm_call_iv * otm_call_iv) - AVG(otm_call_iv) * AVG(otm_call_iv) as var_otm_call_iv
-    FROM options_flow
-    WHERE symbol = ? AND date >= date('now', '-20 days')
-  `).bind(symbol).first();
-
-  if (!result) return;
-
-  await db.prepare(`
-    INSERT OR REPLACE INTO options_baseline
-      (symbol, updated_date,
-       avg_call_vol, avg_put_vol, avg_call_oi, avg_put_oi,
-       avg_pcr_vol, avg_pcr_oi,
-       avg_atm_iv, avg_otm_call_iv, avg_otm_put_iv,
-       std_call_vol, std_call_oi, std_pcr_oi, std_otm_call_iv)
-    VALUES (?, date('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    symbol,
-    result.avg_call_vol,  result.avg_put_vol,
-    result.avg_call_oi,   result.avg_put_oi,
-    result.avg_pcr_vol,   result.avg_pcr_oi,
-    result.avg_atm_iv,    result.avg_otm_call_iv, result.avg_otm_put_iv,
-    Math.sqrt(Math.max(0, result.var_call_vol)),
-    Math.sqrt(Math.max(0, result.var_call_oi)),
-    Math.sqrt(Math.max(0, result.var_pcr_oi)),
-    Math.sqrt(Math.max(0, result.var_otm_call_iv))
-  ).run();
-}
-
-// ============================================
-// 5. 점수 계산
-// ============================================
-
-// A. 콜 스큐 지속 주수 (D1에서 과거 4주 조회)
-async function calcSkewWeeks(db, symbol) {
-  const rows = await db.prepare(`
-    SELECT date, AVG(iv_skew) as avg_skew
-    FROM options_flow
-    WHERE symbol = ?
-      AND date >= date('now', '-28 days')
-      AND iv_skew IS NOT NULL
-    GROUP BY strftime('%W', date)  -- 주차별 그룹
-    ORDER BY date DESC
-    LIMIT 4
-  `).bind(symbol).all();
-
-  // 최근부터 연속 콜 스큐(양수) 주수 카운트
-  let weeks = 0;
-  for (const row of rows.results) {
-    if (row.avg_skew > 0) weeks++;
-    else break;
-  }
-  return Math.min(weeks, 3); // 최대 3점
-}
-
-// B. 볼린저 위치 점수
-function calcBBScore(bbPosition) {
-  // bbPosition: 0 = -2σ(하단), 1 = +2σ(상단)
-  // 하단에 가까울수록 높은 점수
-  if (bbPosition < 0)    return { score: 0, flag: 'BREAKDOWN' }; // -2σ 이탈
-  if (bbPosition < 0.05) return { score: 3, flag: null };         // -2σ 밀착
-  if (bbPosition < 0.16) return { score: 2, flag: null };         // -1.5σ 근접
-  if (bbPosition < 0.32) return { score: 1, flag: null };         // -1σ 근접
-  return { score: 0, flag: null };
-}
-
-// C. ATM 풋 집중도 점수
-function calcATMPutScore(atm_put_oi_ratio) {
-  if (!atm_put_oi_ratio) return 0;
-  if (atm_put_oi_ratio > 0.7) return 2;
-  if (atm_put_oi_ratio > 0.5) return 1;
-  return 0;
-}
-
-// D. 변동폭 수축 점수
-function calcVolSqueezeScore(vol_ratio) {
-  if (!vol_ratio) return 0;
-  if (vol_ratio < 0.7) return 2; // atr5 < atr20의 70%
-  if (vol_ratio < 1.0) return 1; // atr5 < atr20
-  return 0;
-}
-
-// ============================================
-// 6. 종합 점수 계산 + 저장 (종목 단위)
-// ============================================
-export async function calcAndSaveScore(db, symbol, today) {
-  // 오늘 옵션 데이터 (만기별 평균으로 집계)
-  const optRow = await db.prepare(`
-    SELECT
-      AVG(atm_put_oi_ratio) as atm_put_ratio,
-      AVG(iv_skew)          as iv_skew
-    FROM options_flow
-    WHERE symbol = ? AND date = ? AND dte BETWEEN 7 AND 56
-  `).bind(symbol, today).first();
-
-  // 오늘 가격 지표
-  const priceRow = await db.prepare(`
-    SELECT bb_position, vol_ratio, close
-    FROM price_indicators
-    WHERE symbol = ? AND date = ?
-  `).bind(symbol, today).first();
-
-  if (!optRow || !priceRow) return null;
-
-  // 섹터 정보
-  const symRow = await db.prepare(`
-    SELECT sector, sector_etf FROM symbols WHERE symbol = ?
-  `).bind(symbol).first();
-
-  const skewWeeks = await calcSkewWeeks(db, symbol);
-  const bbResult  = calcBBScore(priceRow.bb_position);
-
-  const scoreSkew   = skewWeeks;
-  const scoreBB     = bbResult.score;
-  const scoreATMPut = calcATMPutScore(optRow.atm_put_ratio);
-  const scoreVol    = calcVolSqueezeScore(priceRow.vol_ratio);
-  const total       = scoreSkew + scoreBB + scoreATMPut + scoreVol;
-
-  await db.prepare(`
-    INSERT OR REPLACE INTO screener_scores
-      (date, symbol, sector, sector_etf,
-       score_skew_weeks, score_bb, score_atm_put, score_vol_squeeze,
-       total_score, bb_position, bb_flag, iv_skew, skew_weeks, close)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `).bind(
-    today, symbol,
-    symRow?.sector    || null,
-    symRow?.sector_etf || null,
-    scoreSkew, scoreBB, scoreATMPut, scoreVol,
-    total,
-    priceRow.bb_position,
-    bbResult.flag,
-    optRow.iv_skew,
-    skewWeeks,
-    priceRow.close
-  ).run();
-
-  return { symbol, total, scoreSkew, scoreBB, scoreATMPut, scoreVol, flag: bbResult.flag };
-}
-
-// ============================================
-// 7. 스크리너 결과 쿼리
-// ============================================
-export async function getScreenerResults(db, date = null) {
-  const targetDate = date || getToday();
-
-  const rows = await db.prepare(`
-    SELECT
-      sc.symbol,
-      s.name,
-      s.type,
-      sc.sector,
-      sc.sector_etf,
-      sc.total_score,
-      sc.score_skew_weeks,
-      sc.score_bb,
-      sc.score_atm_put,
-      sc.score_vol_squeeze,
-      sc.bb_position,
-      sc.bb_flag,
-      sc.iv_skew,
-      sc.skew_weeks,
-      sc.close
-    FROM screener_scores sc
-    JOIN symbols s USING (symbol)
-    WHERE sc.date = ?
-      AND s.is_active = 1
-    ORDER BY sc.total_score DESC, sc.sector, sc.symbol
-  `).bind(targetDate).all();
-
-  return rows.results;
-}
-
-// ============================================
-// 8. Cron 진입점 (worker.js에서 호출)
-// ============================================
-export async function runScreener(env) {
-  const db    = env.DB;
-  const today = getToday();
-
-  console.log(`[Screener] 시작: ${today}`);
-
-  // 활성 종목 목록
-  const symbols = await db.prepare(
-    `SELECT symbol FROM symbols WHERE is_active = 1`
-  ).all();
-
-  const results = [];
-
-  for (const { symbol } of symbols.results) {
-    // 1. 가격 수집 + 볼린저 계산 (Yahoo Finance)
-    const priceResult = await collectPriceIndicators(db, symbol);
-
-    // 2. 현재가 (ATM 풋 집중도 계산용)
-    const spotPrice = priceResult?.close ?? null;
-
-    // 3. 옵션체인 수집 (Barchart)
-    const optRecords = await fetchOptionsData(symbol, spotPrice);
-    if (optRecords?.length) {
-      await saveOptionsFlow(db, optRecords);
-    }
-
-    // 4. Baseline 업데이트
-    await updateBaseline(db, symbol);
-
-    // 5. 점수 계산 + 저장
-    const score = await calcAndSaveScore(db, symbol, today);
-    if (score) results.push(score);
-
-    // Yahoo Finance 레이트 리밋 방지 (너무 빠르면 429 가능)
-    await sleep(300);
-  }
-
-  // 결과 요약 로그
-  const top5 = results
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 5);
-
-  console.log(`[Screener] 완료: ${results.length}종목`);
-  console.log(`[Screener] Top5:`, top5.map(r => `${r.symbol}(${r.total})`).join(', '));
-
-  return results;
-}
 
 // ============================================
 // 유틸리티
@@ -407,4 +52,430 @@ function avg(arr) {
 
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
+}
+
+// Standard Monthly 판별 (매달 3번째 금요일)
+function isStandardMonthly(dateStr) {
+  const d = new Date(dateStr + 'T00:00:00');
+  if (d.getDay() !== 5) return false; // 금요일 아니면 false
+  const day = d.getDate();
+  return day >= 15 && day <= 21;      // 3번째 금요일: 15~21일
+}
+
+// ============================================
+// 1. 옵션체인 수집 (Barchart) — Strike별 delta 포함
+// ============================================
+export async function fetchOptionsData(symbol, spotPrice) {
+  try {
+    const url = `${BARCHART_BASE}/proxies/core-api/v1/options/chain`
+      + `?symbol=${symbol}`
+      + `&startDate=${getToday()}`
+      + `&endDate=${getDateAfterDays(56)}`
+      + `&fields=symbol,expiration,strikePrice,callOpenInterest,putOpenInterest,`
+      + `callVolume,putVolume,impliedVolatility,delta,gamma`
+      + `&raw=1`;
+
+    const res = await fetch(url, { headers: HEADERS });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    return parseOptionsChain(symbol, data, spotPrice);
+  } catch (err) {
+    console.error(`[${symbol}] 옵션 수집 실패:`, err.message);
+    return null;
+  }
+}
+
+// ============================================
+// 2. 옵션체인 파싱
+// ============================================
+function parseOptionsChain(symbol, data, spotPrice) {
+  if (!data?.data) return null;
+
+  const today   = getToday();
+  const results = [];
+  const byExpiry = {};
+
+  for (const row of data.data) {
+    const expiry = row.expiration;
+    const strike = row.strikePrice || 0;
+    const delta  = Math.abs(row.delta || 0);
+
+    if (!byExpiry[expiry]) {
+      byExpiry[expiry] = {
+        call_vol: 0, put_vol: 0,
+        call_oi: 0,  put_oi: 0,
+        atm_put_oi: 0,
+        ivs: [],
+        // 델타 0.2~0.4 구간 Strike별 데이터 (Whale 필터용)
+        otm_call_strikes: [],  // { strike, delta, oi }
+        otm_put_strikes:  [],
+        // DEX 계산용 (GEX 플립존 찾기)
+        dex_map: {},           // { strike: netDex }
+      };
+    }
+
+    const d = byExpiry[expiry];
+    d.call_vol += row.callVolume || 0;
+    d.put_vol  += row.putVolume  || 0;
+    d.call_oi  += row.callOpenInterest || 0;
+    d.put_oi   += row.putOpenInterest  || 0;
+
+    // ATM ±5% 풋 OI
+    if (spotPrice && strike > 0) {
+      const pct = Math.abs(strike - spotPrice) / spotPrice;
+      if (pct <= 0.05) d.atm_put_oi += row.putOpenInterest || 0;
+    }
+
+    // IV 스큐용
+    if (row.impliedVolatility) {
+      d.ivs.push({ iv: row.impliedVolatility, delta });
+    }
+
+    // 델타 0.2~0.4 구간 (Whale 필터)
+    if (delta >= 0.2 && delta <= 0.4 && strike > 0) {
+      if (row.callOpenInterest > 0) {
+        d.otm_call_strikes.push({ strike, delta, oi: row.callOpenInterest });
+      }
+      if (row.putOpenInterest > 0) {
+        d.otm_put_strikes.push({ strike, delta, oi: row.putOpenInterest });
+      }
+    }
+
+    // DEX 근사치 (delta × OI × 100) — 플립존 계산용
+    if (strike > 0) {
+      const callDex = delta * (row.callOpenInterest || 0) * 100;
+      const putDex  = delta * (row.putOpenInterest  || 0) * 100;
+      if (!d.dex_map[strike]) d.dex_map[strike] = 0;
+      d.dex_map[strike] += callDex - putDex;
+    }
+  }
+
+  for (const [expiry, d] of Object.entries(byExpiry)) {
+    const dte = daysBetween(today, expiry);
+    if (dte < 0 || dte > 56) continue;
+
+    const atmIVs     = d.ivs.filter(x => x.delta >= 0.4 && x.delta <= 0.6);
+    const otmCallIVs = d.ivs.filter(x => x.delta >= 0.2 && x.delta < 0.4);
+    const otmPutIVs  = d.ivs.filter(x => x.delta >= 0.2 && x.delta < 0.4);
+    const otmCallIV  = avg(otmCallIVs.map(x => x.iv));
+    const otmPutIV   = avg(otmPutIVs.map(x => x.iv));
+
+    // 플립존 계산: DEX가 양→음 또는 음→양으로 바뀌는 Strike
+    const flipStrike = findFlipStrike(d.dex_map, spotPrice);
+
+    // 델타 0.2~0.4 콜 OI 합계 × 델타 (헤징 수량)
+    const otmCallOiD = d.otm_call_strikes.reduce((sum, s) => sum + s.oi * s.delta, 0);
+    const otmPutOiD  = d.otm_put_strikes.reduce((sum, s)  => sum + s.oi * s.delta, 0);
+
+    results.push({
+      date:             today,
+      symbol,
+      expiry_date:      expiry,
+      dte,
+      is_monthly:       isStandardMonthly(expiry) ? 1 : 0,
+      call_vol:         d.call_vol,
+      put_vol:          d.put_vol,
+      call_oi:          d.call_oi,
+      put_oi:           d.put_oi,
+      pcr_vol:          d.put_vol / (d.call_vol || 1),
+      pcr_oi:           d.put_oi  / (d.call_oi  || 1),
+      atm_iv:           avg(atmIVs.map(x => x.iv)),
+      otm_call_iv:      otmCallIV,
+      otm_put_iv:       otmPutIV,
+      atm_put_oi:       d.atm_put_oi,
+      atm_put_oi_ratio: d.put_oi > 0 ? d.atm_put_oi / d.put_oi : 0,
+      iv_skew:          (otmCallIV && otmPutIV) ? otmCallIV - otmPutIV : null,
+      flip_strike:      flipStrike,
+      otm_call_oi_d:    +otmCallOiD.toFixed(0),  // 델타 가중 콜 OI (헤징 수량)
+      otm_put_oi_d:     +otmPutOiD.toFixed(0),   // 델타 가중 풋 OI (헤징 수량)
+    });
+  }
+
+  return results;
+}
+
+// ── 플립존 Strike 계산 (DEX 부호 전환점)
+function findFlipStrike(dexMap, spotPrice) {
+  if (!dexMap || !spotPrice) return null;
+
+  const strikes = Object.keys(dexMap)
+    .map(Number)
+    .sort((a, b) => a - b);
+
+  if (strikes.length < 2) return null;
+
+  // 현재가 근처 ±15% 범위에서만 탐색
+  const range = spotPrice * 0.15;
+  const near  = strikes.filter(s => Math.abs(s - spotPrice) <= range);
+  if (near.length < 2) return null;
+
+  for (let i = 0; i < near.length - 1; i++) {
+    const curr = dexMap[near[i]];
+    const next = dexMap[near[i + 1]];
+    // 음→양 전환: 네거티브→포지티브 감마 플립
+    if (curr < 0 && next >= 0) return near[i + 1];
+    // 양→음 전환도 기록 (참고용, 주요 플립은 음→양)
+    if (curr >= 0 && next < 0) return near[i];
+  }
+  return null;
+}
+
+// ============================================
+// 3. Whale 필터 + 강도 점수 계산
+// ============================================
+
+// Standard Monthly 2개 추출 (가장 가까운 순)
+function getMonthlyRows(rows) {
+  return rows
+    .filter(r => r.is_monthly === 1)
+    .sort((a, b) => a.dte - b.dte)
+    .slice(0, 2);
+}
+
+// Weekly 행 추출 (0~14DTE, Monthly 제외)
+function getWeeklyRows(rows) {
+  return rows.filter(r => r.is_monthly === 0 && r.dte <= 14 && r.dte >= 0);
+}
+
+// 강도 점수 계산 (-3 ~ +3)
+// 기준: 플립존 위치 + 델타 0.2~0.4 헤징 수량 > avg_volume × 5%
+function calcStrengthScore(monthlyRows, spotPrice, avgVolume) {
+  if (!monthlyRows.length || !spotPrice) return 0;
+
+  // 필터 통과 여부 확인
+  const primary = monthlyRows[0];
+
+  // 조건 1: 현재가 vs 플립존
+  if (!primary.flip_strike) return 0;
+  const isAboveFlip = spotPrice > primary.flip_strike;
+  const direction   = isAboveFlip ? 1 : -1; // +1: 콜 방향, -1: 풋 방향
+
+  // 조건 2: 헤징 수량 > avg_volume × 5%
+  const hedgeThreshold = avgVolume ? avgVolume * 0.05 : null;
+  const hedgeQty = direction > 0
+    ? primary.otm_call_oi_d * 100  // 헤징 수량 = OI×delta×100
+    : primary.otm_put_oi_d  * 100;
+
+  if (hedgeThreshold && hedgeQty < hedgeThreshold) return 0; // 필터 탈락
+
+  // 강도: 헤징 수량이 임계값의 몇 배인가
+  // 임계값 없으면 DEX Share로 대체
+  let strength = 0;
+  if (hedgeThreshold && hedgeThreshold > 0) {
+    const ratio = hedgeQty / hedgeThreshold;
+    if      (ratio >= 3) strength = 3;
+    else if (ratio >= 2) strength = 2;
+    else if (ratio >= 1) strength = 1;
+  } else {
+    // avg_volume 없을 때: Monthly 2개 모두 같은 방향이면 강도 올림
+    strength = 1;
+  }
+
+  // Monthly 2개 모두 같은 방향 플립존이면 강도 +1 (최대 3)
+  if (monthlyRows.length >= 2 && monthlyRows[1].flip_strike) {
+    const secondAbove = spotPrice > monthlyRows[1].flip_strike;
+    if (secondAbove === isAboveFlip) {
+      strength = Math.min(strength + 1, 3);
+    }
+  }
+
+  return direction * strength;
+}
+
+// 타이밍 등급 계산 (A / B / C)
+function calcTimingGrade(monthlyRows, weeklyRows, spotPrice) {
+  if (!monthlyRows.length) return 'C';
+
+  // Monthly IV 스큐 방향 일치 여부
+  const monthlySkews = monthlyRows
+    .map(r => r.iv_skew)
+    .filter(v => v != null);
+
+  let monthlyMatch = false;
+  if (monthlySkews.length >= 2) {
+    // 두 Monthly의 iv_skew 부호가 같으면 방향 일치
+    monthlyMatch = (monthlySkews[0] > 0) === (monthlySkews[1] > 0);
+  } else if (monthlySkews.length === 1) {
+    monthlyMatch = false; // Monthly 1개만이면 B 불가
+  }
+
+  // Weekly 방향 일치 여부
+  // 현재가 > 플립존이면 콜 방향 → Weekly iv_skew > 0 이면 일치
+  const direction = spotPrice > (monthlyRows[0].flip_strike ?? 0) ? 1 : -1;
+  const weeklyMatch = weeklyRows.some(r => {
+    if (r.iv_skew == null) return false;
+    return direction > 0 ? r.iv_skew > 0 : r.iv_skew < 0;
+  });
+
+  if (monthlyMatch && weeklyMatch) return 'A';
+  if (monthlyMatch)                return 'B';
+  return 'C';
+}
+
+// ============================================
+// 4. 종합 점수 계산 + 저장
+// ============================================
+export async function calcAndSaveScore(cfWorkerUrl, cfKvSecret, symbol, date, flowRows, priceInfo) {
+  if (!flowRows?.length) return null;
+
+  const spotPrice  = priceInfo?.close     ?? null;
+  const avgVolume  = priceInfo?.avgVolume ?? null;
+
+  const monthlyRows = getMonthlyRows(flowRows);
+  const weeklyRows  = getWeeklyRows(flowRows);
+
+  // 필터 1: 플립존 존재 여부
+  const primary = monthlyRows[0];
+  if (!primary?.flip_strike) {
+    console.log(`[${symbol}] 플립존 없음 — 스킵`);
+    return null;
+  }
+
+  // 강도 점수 (-3 ~ +3)
+  const strengthScore = calcStrengthScore(monthlyRows, spotPrice, avgVolume);
+  if (strengthScore === 0) {
+    console.log(`[${symbol}] 필터 미통과 (strength=0) — 스킵`);
+    return null;
+  }
+
+  // 타이밍 등급 (A / B / C)
+  const timingGrade = calcTimingGrade(monthlyRows, weeklyRows, spotPrice);
+
+  // iv_skew (가장 가까운 Monthly)
+  const ivSkew = primary.iv_skew ?? null;
+
+  // total_score: 기존 호환용 (strength 절대값 × 타이밍 가중치)
+  const timingWeight = timingGrade === 'A' ? 1.5 : timingGrade === 'B' ? 1.2 : 1.0;
+  const totalScore   = Math.round(Math.abs(strengthScore) * timingWeight * 10) / 10;
+
+  const row = {
+    date,
+    symbol,
+    close:          spotPrice,
+    bb_position:    priceInfo?.bbPosition ?? null,
+    bb_flag:        null,
+    iv_skew:        ivSkew,
+    score_skew:     0,   // 기존 호환 (미사용)
+    score_bb:       0,
+    score_vol_squeeze: 0,
+    skew_strength:  null,
+    total_score:    totalScore,
+    // 새 필드
+    strength_score: strengthScore,
+    timing_grade:   timingGrade,
+    flip_strike:    primary.flip_strike,
+    monthly_count:  monthlyRows.length,
+  };
+
+  // D1 저장
+  const res = await fetch(`${cfWorkerUrl}/d1/screener-scores`, {
+    method: 'POST',
+    headers: {
+      'Content-Type':  'application/json',
+      'x-cron-secret': cfKvSecret,
+    },
+    body: JSON.stringify({ rows: [row] }),
+    signal: AbortSignal.timeout(10000),
+  });
+
+  if (!res.ok) throw new Error(`screener-scores write failed: ${res.status}`);
+
+  return { symbol, strengthScore, timingGrade, totalScore, flipStrike: primary.flip_strike };
+}
+
+// ============================================
+// 5. options_dex 저장
+// ============================================
+export async function saveOptionsFlow(cfWorkerUrl, cfKvSecret, records) {
+  if (!records?.length) return 0;
+
+  const res = await fetch(`${cfWorkerUrl}/d1/options-dex`, {
+    method: 'POST',
+    headers: {
+      'Content-Type':  'application/json',
+      'x-cron-secret': cfKvSecret,
+    },
+    body: JSON.stringify({ rows: records }),
+    signal: AbortSignal.timeout(15000),
+  });
+
+  if (!res.ok) throw new Error(`options-dex write failed: ${res.status}`);
+  return records.length;
+}
+
+// ============================================
+// 6. Cron 진입점
+// ============================================
+export async function runScreener(env) {
+  const CF_WORKER_URL = env.CF_KV_URL;       // CF Worker URL
+  const CF_KV_SECRET  = env.CF_KV_SECRET;
+  const TWELVE_KEY    = env.TWELVE_KEY;
+  const today         = getToday();
+
+  console.log(`[Screener] 시작: ${today}`);
+
+  // 수집 대상 종목 조회
+  const targetsRes = await fetch(`${CF_WORKER_URL}/api/collect-targets`, {
+    headers: { 'x-cron-secret': CF_KV_SECRET },
+    signal: AbortSignal.timeout(10000),
+  });
+  const targetsData = await targetsRes.json();
+  const symbols = (targetsData.symbols ?? []).map(s => s.symbol);
+
+  console.log(`[Screener] 대상 종목: ${symbols.length}개`);
+
+  const results = [];
+
+  for (const symbol of symbols) {
+    try {
+      // 1. 가격 수집 (Yahoo Finance + Twelve Data avg_volume)
+      const priceResult = await collectPriceIndicators(
+        symbol, CF_WORKER_URL, CF_KV_SECRET, TWELVE_KEY
+      );
+
+      const spotPrice = priceResult?.close     ?? null;
+      const avgVolume = priceResult?.avgVolume ?? null;
+
+      // 2. 옵션체인 수집 (Barchart)
+      const flowRows = await fetchOptionsData(symbol, spotPrice);
+      if (!flowRows?.length) {
+        console.warn(`[${symbol}] 옵션 데이터 없음 — 스킵`);
+        await sleep(300);
+        continue;
+      }
+
+      // 3. options_dex 저장
+      await saveOptionsFlow(CF_WORKER_URL, CF_KV_SECRET, flowRows);
+
+      // 4. 강도 점수 + 타이밍 등급 계산 + screener_scores 저장
+      const score = await calcAndSaveScore(
+        CF_WORKER_URL, CF_KV_SECRET,
+        symbol, today, flowRows,
+        { close: spotPrice, avgVolume, bbPosition: priceResult?.bbPosition }
+      );
+
+      if (score) {
+        results.push(score);
+        console.log(`[${symbol}] strength=${score.strengthScore} grade=${score.timingGrade} flip=$${score.flipStrike}`);
+      }
+
+    } catch (err) {
+      console.error(`[${symbol}] 처리 실패:`, err.message);
+    }
+
+    await sleep(300);
+  }
+
+  // 결과 요약
+  const top5 = [...results]
+    .sort((a, b) => Math.abs(b.strengthScore) - Math.abs(a.strengthScore))
+    .slice(0, 5);
+
+  console.log(`[Screener] 완료: ${results.length}/${symbols.length}종목 통과`);
+  console.log(`[Screener] Top5:`, top5.map(r =>
+    `${r.symbol}(${r.strengthScore > 0 ? '+' : ''}${r.strengthScore}/${r.timingGrade})`
+  ).join(', '));
+
+  return results;
 }

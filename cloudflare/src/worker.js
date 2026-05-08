@@ -284,13 +284,15 @@ export default {
         env.DB.prepare(`
           ${insertMode} INTO price_indicators
             (date, symbol, close, bb_mid, bb_upper1, bb_lower1,
-             bb_upper2, bb_lower2, bb_position, atr5, atr20, vol_ratio)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+             bb_upper2, bb_lower2, bb_position, atr5, atr20, vol_ratio,
+             avg_volume)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
         `).bind(
           r.date, r.symbol, r.close,
           r.bb_mid ?? null, r.bb_upper1 ?? null, r.bb_lower1 ?? null,
           r.bb_upper2 ?? null, r.bb_lower2 ?? null, r.bb_position ?? null,
-          r.atr5 ?? null, r.atr20 ?? null, r.vol_ratio ?? null
+          r.atr5 ?? null, r.atr20 ?? null, r.vol_ratio ?? null,
+          r.avg_volume ?? null
         )
       );
       const CHUNK = 50;
@@ -386,8 +388,9 @@ export default {
               pcr_oi, pcr_vol, iv_skew, atm_iv, otm_call_iv, otm_put_iv,
               dex, gex, vanna, charm,
               atm_put_oi, atm_put_oi_ratio,
-              otm_call_theo, otm_call_delta
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              otm_call_theo, otm_call_delta,
+              flip_strike, otm_call_oi_d, otm_put_oi_d, hedge_ratio
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
           `).bind(
             r.date, r.symbol, r.expiry_date, r.dte,
             r.call_oi ?? 0, r.put_oi ?? 0, r.call_vol ?? 0, r.put_vol ?? 0,
@@ -397,6 +400,8 @@ export default {
             r.dex ?? null, r.gex ?? null, r.vanna ?? null, r.charm ?? null,
             r.atm_put_oi ?? null, r.atm_put_oi_ratio ?? null,
             r.otm_call_theo ?? null, r.otm_call_delta ?? null,
+            r.flip_strike ?? null, r.otm_call_oi_d ?? null,
+            r.otm_put_oi_d ?? null, r.hedge_ratio ?? null,
           )
         );
         await env.DB.batch(stmts);
@@ -425,14 +430,17 @@ export default {
               date, symbol,
               close, bb_position, bb_flag, iv_skew,
               score_skew, score_bb, score_vol_squeeze,
-              skew_strength, total_score
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?)
+              skew_strength, total_score,
+              strength_score, timing_grade, flip_strike, monthly_count
+            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
           `).bind(
             r.date, r.symbol,
             r.close ?? null, r.bb_position ?? null,
             r.bb_flag ?? null, r.iv_skew ?? null,
             r.score_skew ?? 0, r.score_bb ?? 0, r.score_vol_squeeze ?? 0,
             r.skew_strength ?? null, r.total_score ?? 0,
+            r.strength_score ?? null, r.timing_grade ?? null,
+            r.flip_strike ?? null, r.monthly_count ?? null,
           )
         );
         await env.DB.batch(stmts);

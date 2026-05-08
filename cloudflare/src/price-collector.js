@@ -1,9 +1,11 @@
 // ============================================
 // price-collector.js — Yahoo Finance 일봉 수집
 // 볼린저밴드(20일) + ATR(5/20일) 계산 후 D1 저장
+// v2: Twelve Data average_volume 추가
 // ============================================
 
-const YAHOO_BASE = 'https://query1.finance.yahoo.com/v8/finance/chart';
+const YAHOO_BASE  = 'https://query1.finance.yahoo.com/v8/finance/chart';
+const TWELVE_BASE = 'https://api.twelvedata.com/quote';
 
 // ── 볼린저밴드 계산
 function calcBollinger(closes, period = 20) {
@@ -61,10 +63,39 @@ export async function fetchPriceData(symbol) {
   return candles;
 }
 
-// ── 지표 계산 + CF Worker D1 저장
-export async function collectPriceIndicators(symbol, cfWorkerUrl, cfKvSecret) {
+// ── Twelve Data average_volume fetch
+// average_volume: 일평균 거래량 (Whale 필터 기준값 계산용)
+export async function fetchAvgVolume(symbol, twelveKey) {
+  if (!twelveKey) {
+    console.warn(`[${symbol}] TWELVE_KEY 없음 — avg_volume 스킵`);
+    return null;
+  }
   try {
-    const candles = await fetchPriceData(symbol);
+    const url = `${TWELVE_BASE}?symbol=${encodeURIComponent(symbol)}&apikey=${twelveKey}`;
+    const res = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0' },
+      signal: AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw new Error(`Twelve Data HTTP ${res.status}`);
+    const data = await res.json();
+    const avgVol = parseFloat(data.average_volume);
+    if (isNaN(avgVol) || avgVol <= 0) throw new Error('average_volume 유효하지 않음');
+    return avgVol;
+  } catch (err) {
+    console.warn(`[${symbol}] avg_volume 수집 실패:`, err.message);
+    return null;
+  }
+}
+
+// ── 지표 계산 + CF Worker D1 저장
+export async function collectPriceIndicators(symbol, cfWorkerUrl, cfKvSecret, twelveKey) {
+  try {
+    // Yahoo Finance + Twelve Data 병렬 호출
+    const [candles, avgVolume] = await Promise.all([
+      fetchPriceData(symbol),
+      fetchAvgVolume(symbol, twelveKey),
+    ]);
+
     const closes  = candles.map(c => c.close);
     const today   = candles[candles.length - 1].date;
     const close   = closes[closes.length - 1];
@@ -88,9 +119,10 @@ export async function collectPriceIndicators(symbol, cfWorkerUrl, cfKvSecret) {
       bb_upper2:   bb.upper2,
       bb_lower2:   bb.lower2,
       bb_position: +bbPosition.toFixed(4),
-      atr5:        atr5  ? +atr5.toFixed(4)  : null,
-      atr20:       atr20 ? +atr20.toFixed(4) : null,
+      atr5:        atr5       ? +atr5.toFixed(4)  : null,
+      atr20:       atr20      ? +atr20.toFixed(4) : null,
       vol_ratio:   (atr5 && atr20) ? +(atr5 / atr20).toFixed(4) : null,
+      avg_volume:  avgVolume  ?? null,   // Twelve Data average_volume
     };
 
     // CF Worker D1 write
@@ -106,7 +138,7 @@ export async function collectPriceIndicators(symbol, cfWorkerUrl, cfKvSecret) {
 
     if (!res.ok) throw new Error(`D1 write failed: ${res.status}`);
 
-    return { symbol, close, bbPosition: row.bb_position, atr5, atr20 };
+    return { symbol, close, bbPosition: row.bb_position, atr5, atr20, avgVolume };
 
   } catch (err) {
     console.error(`[${symbol}] 가격 수집 실패:`, err.message);
