@@ -748,8 +748,7 @@ function renderBbHeatmap(container, data) {
     const tooltipParts = vals.map((v, i) => {
       const [, m, day] = (dates[i] ?? '').split('-');
       return `${+m}/${+day}: ${v != null ? (v*100).toFixed(0)+'%' : '-'}`;
-    }).join('
-');
+    }).join('\n');
 
     return `
       <div class="bb-hm-row">
