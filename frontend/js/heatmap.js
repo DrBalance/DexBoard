@@ -40,6 +40,40 @@ function _dexColor(value, maxAbs) {
     : `rgba(239,68,68,${opacity.toFixed(2)})`;
 }
 
+// ── 드래그 스크롤 헬퍼 ───────────────────────────────────
+function _attachDragScroll(el) {
+  let isDown = false, startX = 0, scrollLeft = 0;
+
+  el.addEventListener('mousedown', (e) => {
+    isDown = true;
+    el.style.cursor = 'grabbing';
+    startX = e.pageX - el.offsetLeft;
+    scrollLeft = el.scrollLeft;
+  });
+  el.addEventListener('mouseleave', () => { isDown = false; el.style.cursor = 'grab'; });
+  el.addEventListener('mouseup',    () => { isDown = false; el.style.cursor = 'grab'; });
+  el.addEventListener('mousemove',  (e) => {
+    if (!isDown) return;
+    e.preventDefault();
+    const x    = e.pageX - el.offsetLeft;
+    const walk = (x - startX) * 1.2;
+    el.scrollLeft = scrollLeft - walk;
+  });
+
+  // 터치
+  let touchStartX = 0, touchScrollLeft = 0;
+  el.addEventListener('touchstart', (e) => {
+    touchStartX     = e.touches[0].pageX;
+    touchScrollLeft = el.scrollLeft;
+  }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    const dx = touchStartX - e.touches[0].pageX;
+    el.scrollLeft = touchScrollLeft + dx;
+  }, { passive: true });
+
+  el.style.cursor = 'grab';
+}
+
 // ── M단위 수치 포매터 ─────────────────────────────────────
 function _fmtM(v) {
   if (v == null || isNaN(v)) return '—';
@@ -235,14 +269,18 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     if (!scrollEl) return;
 
     if (prevScrollLeft !== null) {
-      // 옵션체인 갱신 (15분): 사용자가 보던 위치 복원
       scrollEl.scrollLeft = prevScrollLeft;
     } else {
-      // 최초 1회: spot 열이 컨테이너 중앙에 오도록
       const colOffset  = LBL_W + spotIdx * COL_W;
       const containerW = scrollEl.clientWidth;
       scrollEl.scrollLeft = colOffset - containerW / 2 + COL_W / 2;
       _scrollInitialized[containerId] = true;
+    }
+
+    // 드래그 스크롤 (중복 등록 방지)
+    if (!scrollEl._dragScrollBound) {
+      _attachDragScroll(scrollEl);
+      scrollEl._dragScrollBound = true;
     }
   });
 }
