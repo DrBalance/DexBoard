@@ -281,7 +281,7 @@ function _renderHeatmap(expirations, weighted) {
       .flatMap(e => Array.isArray(e) ? e : (e.strikes ?? []))
       .map(s => s.strike)
   )].sort((a, b) => a - b)
-    .filter(s => !spot || (s >= spot - 30 && s <= spot + 30));
+    ;
 
   if (!allStrikes.length) return;
 
@@ -585,6 +585,22 @@ function _renderHeatmap(expirations, weighted) {
     ctx.font      = '9px monospace';
     ctx.textAlign = 'center';
     ctx.fillText(`$${spot.toFixed(0)}`, mx, sumY - 11);
+  }
+
+  // ── 드래그 스크롤 + 최초 spot 중앙 스크롤 ───────────────
+  // Canvas의 부모 overflow 컨테이너에 적용
+  const wrap = canvas.parentElement;
+  if (wrap) {
+    // 최초 1회: spot 열이 중앙에 오도록 스크롤
+    if (spotCol >= 0) {
+      const scrollTarget = LABEL_W + spotCol * CELL_W - wrap.clientWidth / 2 + CELL_W / 2;
+      wrap.scrollLeft = Math.max(0, scrollTarget);
+    }
+    // 드래그 스크롤 (중복 등록 방지)
+    if (!wrap._dragScrollBound) {
+      _attachDragScroll(wrap);
+      wrap._dragScrollBound = true;
+    }
   }
 }
 
@@ -941,6 +957,39 @@ function _renderSelectedExpiryHeatmap(expirations) {
   // containerId: 'mk-expiry-heatmap' — live.js의 'heatmap-canvas'와 분리
   const spot = _spot;
   renderHeatmap('mk-expiry-heatmap', strikes, spot || 0);
+}
+
+// ── 드래그 스크롤 헬퍼 ───────────────────────────────────
+// 마우스/터치 드래그로 좌우 스크롤 (overflow-x:auto 컨테이너에 부착)
+function _attachDragScroll(el) {
+  let isDown = false, startX = 0, scrollLeft = 0;
+
+  el.addEventListener('mousedown', (e) => {
+    isDown = true;
+    el.style.cursor = 'grabbing';
+    startX = e.pageX - el.offsetLeft;
+    scrollLeft = el.scrollLeft;
+  });
+  el.addEventListener('mouseleave', () => { isDown = false; el.style.cursor = ''; });
+  el.addEventListener('mouseup',    () => { isDown = false; el.style.cursor = ''; });
+  el.addEventListener('mousemove',  (e) => {
+    if (!isDown) return;
+    e.preventDefault();
+    const x    = e.pageX - el.offsetLeft;
+    const walk = (x - startX) * 1.2;
+    el.scrollLeft = scrollLeft - walk;
+  });
+
+  // 터치
+  let touchStartX = 0, touchScrollLeft = 0;
+  el.addEventListener('touchstart', (e) => {
+    touchStartX    = e.touches[0].pageX;
+    touchScrollLeft = el.scrollLeft;
+  }, { passive: true });
+  el.addEventListener('touchmove', (e) => {
+    const dx = touchStartX - e.touches[0].pageX;
+    el.scrollLeft = touchScrollLeft + dx;
+  }, { passive: true });
 }
 
 // ── 헬퍼 ──────────────────────────────────────────────────
