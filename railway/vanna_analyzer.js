@@ -351,9 +351,23 @@ for (const s of strikes) {
   charm += g.charm * netOI * 100 / 1e6;
 }
 
+// Strike별 GEX 목록으로 플립존 계산
+const strikeGexList = strikes.map(s => {
+  const iv = _strikeAvgIV(s);
+  if (iv <= 0) return null;
+  const dteForGreeks = dte === 0 ? 0.001 : dte;
+  const g = calcGreeks(spot, s.strike, dteForGreeks, iv);
+  if (!g) return null;
+  const netOI = s.callOI - s.putOI;
+  return { strike: s.strike, gex: netOI * g.gamma * 100 * spot / 1e6 };
+}).filter(Boolean);
+
+const flipStrike = calcFlipStrike(strikeGexList);
+
 results.push({
   expiry_date:      expiry,
   dte,
+  flip_strike:      flipStrike,
   call_oi:          callOI,
   put_oi:           putOI,
   call_vol:         callVol,
@@ -377,6 +391,33 @@ results.push({
 }
 
 return results.sort((a, b) => a.dte - b.dte);
+}
+
+// ─────────────────────────────────────────────────────────────────
+// GEX 누적합 부호 전환점 계산 (표준 Flip Zone)
+// market.js의 _extractKeyLevels()와 동일한 알고리즘
+//
+// strikeGexList: [{ strike, gex }, ...]
+// 낮은 Strike부터 GEX를 누적 — 음수→양수 전환 Strike가 Flip Zone
+// ─────────────────────────────────────────────────────────────────
+export function calcFlipStrike(strikeGexList) {
+  if (!strikeGexList?.length) return null;
+
+  const sorted = [...strikeGexList].sort((a, b) => a.strike - b.strike);
+
+  let cumGex   = 0;
+  let prevSign = null;
+
+  for (const s of sorted) {
+    cumGex += (s.gex ?? 0);
+    const sign = cumGex >= 0 ? 1 : -1;
+    if (prevSign !== null && sign !== prevSign) {
+      return s.strike;
+    }
+    prevSign = sign;
+  }
+
+  return null;
 }
 
 function _avgIV(strikes, type) {
@@ -617,7 +658,13 @@ if (strikes.length > 0) {
 
 }
 
-// 5. 기존 dex:spy KV 저장 (전체 만기 -- 날짜조회 탭용, 변경 없음)
+// 5. 만기별 플립존 계산 후 expirations에 포함
+for (const [expiry, strikes] of Object.entries(expirations)) {
+  const flipStrike = calcFlipStrike(strikes);
+  expirations[expiry] = { strikes, flip_strike: flipStrike };
+}
+
+// 기존 dex:spy KV 저장 (전체 만기 -- 날짜조회 탭용)
 const updatedAt = new Date().toISOString();
 const fullPayload = {
 updated_at:  updatedAt,
@@ -628,7 +675,7 @@ await kvPut('dex:spy', fullPayload);
 console.log(`[KV] dex:spy 저장 완료 -- 만기일 ${Object.keys(expirations).length}개`);
 
 // 6. 0DTE strikes 추출 (nextTradingDate 기준)
-const zeroStrikes = expirations[nextTradingDate] ?? [];
+const zeroStrikes = expirations[nextTradingDate]?.strikes ?? [];
 if (zeroStrikes.length === 0) {
 console.warn(`[KV] 0DTE strikes 없음 (만기일: ${nextTradingDate}) -- dex:spy:0dte 저장 생략`);
 } else {

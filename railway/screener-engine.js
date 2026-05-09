@@ -31,11 +31,25 @@ function sleep(ms) {
 }
 
 // Standard Monthly 판별 (매달 3번째 금요일)
+// CBOE가 일부 만기를 전날 목요일로 표기하는 경우:
+// 해당 날짜가 목요일이면 다음날(금요일)이 3번째 금요일인지 확인
 function isStandardMonthly(dateStr) {
   const d = new Date(dateStr + 'T00:00:00');
-  if (d.getDay() !== 5) return false;
-  const day = d.getDate();
-  return day >= 15 && day <= 21;
+  const dow = d.getDay();
+
+  // 금요일인 경우: 직접 판별
+  if (dow === 5) {
+    const day = d.getDate();
+    return day >= 15 && day <= 21;
+  }
+
+  // 목요일인 경우: 다음날(금요일)이 3번째 금요일인지 확인
+  if (dow === 4) {
+    const nextDay = d.getDate() + 1;
+    return nextDay >= 15 && nextDay <= 21;
+  }
+
+  return false;
 }
 
 function avg(arr) {
@@ -293,44 +307,28 @@ function calcTimingGrade(monthlyRows, weeklyRows, spotPrice) {
 // (vanna_analyzer.js의 collectSymbol 결과 rows 기반)
 // ============================================
 // ============================================
-// 옵션 데이터 보강 + 플립존 추정
-// (vanna_analyzer.js collectSymbol -> aggregateByExpiry 반환값 기반)
-//
-// Strike별 raw 없으므로 만기별 gex/dex 부호로 플립존 근사:
-//   gex > 0 && dex > 0: 현재가 Flip 위 -> flip = spotPrice * 0.97
-//   그 외: 현재가 Flip 아래 -> flip = spotPrice * 1.03
+// 옵션 데이터 보강
+// aggregateByExpiry()에서 이미 flip_strike가 계산되어 넘어옴
 // ============================================
 function enrichRows(rows, spotPrice) {
   if (!rows?.length || !spotPrice) return [];
 
-  const sorted = [...rows].sort((a, b) => a.dte - b.dte);
+  return [...rows]
+    .sort((a, b) => a.dte - b.dte)
+    .map(r => {
+      const isMonthly  = isStandardMonthly(r.expiry_date) ? 1 : 0;
+      const delta      = r.otm_call_delta ?? 0.3;
+      const otmCallOiD = delta * (r.call_oi ?? 0);
+      const otmPutOiD  = delta * (r.put_oi  ?? 0);
 
-  // Monthly 행 기준으로 Flip 방향 판별
-  const monthlyRows = sorted.filter(r => isStandardMonthly(r.expiry_date));
-  const target = monthlyRows.length >= 1 ? monthlyRows : sorted;
-
-  const aboveCount = target.filter(r => r.gex > 0 && r.dex > 0).length;
-  const belowCount = target.length - aboveCount;
-
-  // 과반수 방향으로 flip_strike 결정
-  const estimatedFlip = aboveCount >= belowCount
-    ? +(spotPrice * 0.97).toFixed(0)  // 현재가 Flip 위: flip = 현재가 -3%
-    : +(spotPrice * 1.03).toFixed(0); // 현재가 Flip 아래: flip = 현재가 +3%
-
-  return sorted.map(r => {
-    const isMonthly  = isStandardMonthly(r.expiry_date) ? 1 : 0;
-    const delta      = r.otm_call_delta ?? 0.3;
-    const otmCallOiD = delta * (r.call_oi ?? 0);
-    const otmPutOiD  = delta * (r.put_oi  ?? 0);
-
-    return {
-      ...r,
-      is_monthly:    isMonthly,
-      flip_strike:   estimatedFlip,
-      otm_call_oi_d: otmCallOiD,
-      otm_put_oi_d:  otmPutOiD,
-    };
-  });
+      return {
+        ...r,
+        is_monthly:    isMonthly,
+        otm_call_oi_d: otmCallOiD,
+        otm_put_oi_d:  otmPutOiD,
+        // flip_strike는 aggregateByExpiry()에서 계산된 값 그대로 사용
+      };
+    });
 }
 
 
