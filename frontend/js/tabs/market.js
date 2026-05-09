@@ -169,7 +169,7 @@ function _renderExpiryPanel() {
   });
 
   container.querySelectorAll('.mk-weight-input').forEach(inp => {
-    inp.addEventListener('change', (e) => {
+    inp.addEventListener('input', (e) => {
       const exp = e.target.dataset.expiry;
       const val = parseFloat(e.target.value);
       if (!isNaN(val) && val >= 0) _expiryConfig[exp].weight = val;
@@ -388,17 +388,39 @@ function _renderHeatmap(expirations, weighted) {
 
     ctx.restore();
 
-    // ② 테두리 (우선순위: M > m > G 단독)
+    // ② 테두리
+    // 단독: 단색 / 겹침: 상+좌 = 주색, 하+우 = 부색
     ctx.lineWidth   = 1.8;
     ctx.setLineDash([]);
-    if (hasM) {
-      ctx.strokeStyle = C_M;
-    } else if (hasm) {
-      ctx.strokeStyle = C_m;
+
+    const activeCount = [hasM, hasm, hasG].filter(Boolean).length;
+
+    if (activeCount === 1) {
+      ctx.strokeStyle = hasM ? C_M : hasm ? C_m : C_G;
+      ctx.strokeRect(x1, y1, w, h);
     } else {
-      ctx.strokeStyle = C_G;
+      let colorA, colorB;
+      if (hasM && hasG && !hasm)      { colorA = C_M; colorB = C_G; }
+      else if (hasm && hasG && !hasM) { colorA = C_m; colorB = C_G; }
+      else if (hasM && hasm && !hasG) { colorA = C_M; colorB = C_m; }
+      else                             { colorA = C_M; colorB = C_m; } // M+m+G
+
+      // 상+좌 (colorA)
+      ctx.strokeStyle = colorA;
+      ctx.beginPath();
+      ctx.moveTo(x1 + w, y1);
+      ctx.lineTo(x1,     y1);
+      ctx.lineTo(x1,     y1 + h);
+      ctx.stroke();
+
+      // 하+우 (colorB)
+      ctx.strokeStyle = colorB;
+      ctx.beginPath();
+      ctx.moveTo(x1,     y1 + h);
+      ctx.lineTo(x1 + w, y1 + h);
+      ctx.lineTo(x1 + w, y1);
+      ctx.stroke();
     }
-    ctx.strokeRect(x1, y1, w, h);
 
     // ③ 라벨 (우상단)
     const label = [hasM ? 'M' : '', hasm ? 'm' : '', hasG ? 'G' : ''].filter(Boolean).join('');
