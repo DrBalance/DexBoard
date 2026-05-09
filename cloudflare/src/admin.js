@@ -1778,17 +1778,17 @@ async function backfillPriceIndicators(db, symbol) {
 }
 
 // ============================================
-// ETF 구성종목 조회 — 정적 데이터 (하드코딩)
-// 2026-04-30 Finnhub 위젯 기준, 미국 상장 종목만 수록
+// ETF 구성종목 조회 — D1 etf_holdings 테이블
 // ============================================
 async function handleGetETFHoldings(symbol, env) {
-  const ticker   = symbol.toUpperCase();
-  const holdings = ETF_HOLDINGS_DB[ticker];
-  if (!holdings) {
-    const supported = Object.keys(ETF_HOLDINGS_DB).join(', ');
-    return json({ error: `${ticker} ETF 데이터 없음. 지원 목록: ${supported}` }, 404);
+  const ticker = symbol.toUpperCase();
+  const rows = await env.DB.prepare(
+    "SELECT symbol, name, pct FROM etf_holdings WHERE etf = ? ORDER BY pct DESC"
+  ).bind(ticker).all();
+  if (!rows.results?.length) {
+    return json({ error: `${ticker} ETF 데이터 없음` }, 404);
   }
-  return json({ etf: ticker, holdings });
+  return json({ etf: ticker, holdings: rows.results });
 }
 
 // ============================================

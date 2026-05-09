@@ -579,6 +579,20 @@ export default {
       return json(rows.results ?? [], 200, corsHeaders);
     }
 
+    // ── GET /api/etf-holdings/:ticker ───────────────────────────
+    // 인증 없음 — 프론트 BB맵에서 직접 호출
+    const etfMatch = path.match(/^\/api\/etf-holdings\/([A-Z0-9.\-]+)$/i);
+    if (request.method === "GET" && etfMatch) {
+      const ticker = etfMatch[1].toUpperCase();
+      const rows = await env.DB.prepare(
+        "SELECT symbol, name, pct FROM etf_holdings WHERE etf = ? ORDER BY pct DESC"
+      ).bind(ticker).all();
+      if (!rows.results?.length) {
+        return json({ etf: ticker, holdings: [] }, 200, corsHeaders);
+      }
+      return json({ etf: ticker, holdings: rows.results }, 200, corsHeaders);
+    }
+
     // ── Health check ────────────────────────────────────────────
     if (path === "/health") {
       return json({ status: "ok", ts: new Date().toISOString() }, 200, corsHeaders);
