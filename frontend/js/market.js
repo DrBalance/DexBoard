@@ -1,10 +1,10 @@
 /**
- * market.js — Market 탭 v2 (지수 방향성 판단)
+ * market.js -- Market 탭 v2 (지수 방향성 판단)
  *
  * 핵심 변경:
  *  - 만기를 날짜 단위로 선택 (체크박스 + 가중치 입력)
  *  - Apply 버튼 → 메모리(_rawData)에서 필터/합산 → 재렌더링 (API 재호출 없음)
- *  - 멀티행 히트맵 (만기별 행 + 합산 행) — Canvas 직접 렌더링
+ *  - 멀티행 히트맵 (만기별 행 + 합산 행) -- Canvas 직접 렌더링
  *  - Call/Put DEX 바 차트 (Chart.js)
  *  - 전체 Strike 원본 테이블 (2개월 이내)
  */
@@ -74,16 +74,16 @@ async function _load() {
     const snapData = snapRes.ok ? await snapRes.json() : null;
 
     if (!dexData?.expirations) {
-      _showError('데이터 없음 — /api/dex/' + sym);
+      _showError('데이터 없음 -- /api/dex/' + sym);
       return;
     }
 
     _rawData = dexData;
     _spot    = parseFloat(snapData?.spy?.price ?? 0);
 
-    _el('mk-spy').textContent = _spot ? `$${_spot.toFixed(2)}` : '—';
+    _el('mk-spy').textContent = _spot ? `$${_spot.toFixed(2)}` : '--';
     _el('mk-vix').textContent = snapData?.vix?.price
-      ? snapData.vix.price.toFixed(2) : '—';
+      ? snapData.vix.price.toFixed(2) : '--';
 
     if (dexData.updated_at) {
       const t = new Date(dexData.updated_at);
@@ -236,13 +236,13 @@ function _renderMetrics(weighted) {
     }
   }
 
-  _el('mk-call-wall').textContent = callWall ? `$${callWall.strike}` : '—';
-  _el('mk-put-wall').textContent  = putWall  ? `$${putWall.strike}`  : '—';
-  _el('mk-flip').textContent      = flipZone  ? `$${flipZone}`        : '—';
+  _el('mk-call-wall').textContent = callWall ? `$${callWall.strike}` : '--';
+  _el('mk-put-wall').textContent  = putWall  ? `$${putWall.strike}`  : '--';
+  _el('mk-flip').textContent      = flipZone  ? `$${flipZone}`        : '--';
 }
 
 // ── 만기별 키레벨 추출 헬퍼 ──────────────────────────────
-function _extractKeyLevels(strikes, spot) {
+function _extractKeyLevels({ strikes, flip_strike }, spot) {
   const sorted = [...strikes].sort((a, b) => a.strike - b.strike);
 
   // M: Call DEX 최대 스트라이크 (현재가 위)
@@ -251,31 +251,21 @@ function _extractKeyLevels(strikes, spot) {
 
   // m: Put DEX 최대 스트라이크 (현재가 아래, 절대값 기준)
   const below = strikes.filter(s => s.dex < 0 && s.strike <= (spot || Infinity));
+  
   const m     = below.length ? below.reduce((a, b) => Math.abs(a.dex) > Math.abs(b.dex) ? a : b) : null;
 
-  // G: GEX 누적합 부호 전환점 (표준 Flip Zone)
-  // 낮은 스트라이크부터 누적 — 음수→양수 전환점이 Flip
-  let G = null;
-  let cumGex = 0;
-  let prevSign = null;
-  for (const s of sorted) {
-    cumGex += (s.gex ?? 0);
-    const sign = cumGex >= 0 ? 1 : -1;
-    if (prevSign !== null && sign !== prevSign) {
-      G = s.strike;
-      break;
-    }
-    prevSign = sign;
-  }
+  // G: KV에 저장된 flip_strike 사용 (백엔드에서 계산)
+  // vanna_analyzer.js의 calcFlipStrike()와 동일한 알고리즘으로 Railway에서 계산
+  const G = flip_strike ?? null;
 
   return {
     M: M?.strike ?? null,
     m: m?.strike ?? null,
-    G,   // GEX 누적합 부호 전환 (표준 Flip Zone)
+    G,
   };
 }
 
-// ── 멀티행 히트맵 (Canvas) — M/m/G 마커 포함 ─────────────
+// ── 멀티행 히트맵 (Canvas) -- M/m/G 마커 포함 ─────────────
 function _renderHeatmap(expirations, weighted) {
   const canvas = _el('mk-heatmap-canvas');
   if (!canvas) return;
@@ -355,12 +345,13 @@ function _renderHeatmap(expirations, weighted) {
 
   // ── 만기별 행
   enabledExpiries.forEach(([expiry, cfg], rowIdx) => {
-    const rawStrikes = expirations[expiry] ?? [];
+    const expiryData = expirations[expiry] ?? {};
+    const rawStrikes = expiryData.strikes ?? [];
     const strikeMap  = {};
     rawStrikes.forEach(s => { strikeMap[s.strike] = s; });
 
     // 이 만기의 키레벨 추출
-    const kl = _extractKeyLevels(rawStrikes, spot);
+    const kl = _extractKeyLevels({ strikes: rawStrikes, flip_strike: expiryData.flip_strike }, spot);
 
     const y = HEADER_H + rowIdx * ROW_H;
 
@@ -436,7 +427,7 @@ function _renderHeatmap(expirations, weighted) {
   // ── 합산 행
   // 합산 행의 키레벨은 weighted 기반
   const weightedAsRaw = weighted.map(s => ({ strike: s.strike, dex: s.netDex }));
-  const sumKl = _extractKeyLevels(weightedAsRaw, spot);
+  const sumKl = _extractKeyLevels({ strikes: weightedAsRaw, flip_strike: null }, spot);
 
   ctx.fillStyle = 'rgba(255,255,255,0.03)';
   ctx.fillRect(0, sumY, W, SUM_H);
@@ -626,7 +617,7 @@ function _renderExpiryBars(expirations) {
     .filter(([, cfg]) => cfg.enabled)
     .sort(([a], [b]) => a.localeCompare(b))
     .map(([expiry, cfg]) => {
-      const strikes = expirations[expiry] ?? [];
+      const strikes = (expirations[expiry]?.strikes ?? expirations[expiry]) ?? [];
       const dex = strikes.reduce((acc, s) => acc + s.dex * cfg.weight, 0);
       return { expiry, dex, cfg };
     });
@@ -659,7 +650,7 @@ function _renderKeyLevelTable(weighted, expirations) {
 
   const spot     = _spot;
   const todayStr = _fmtDate(new Date());
-  const dte0Raw  = expirations[todayStr] ?? [];
+  const dte0Raw  = expirations[todayStr]?.strikes ?? expirations[todayStr] ?? [];
   const dte0     = dte0Raw.map(s => ({
     strike: s.strike,
     callDex: s.dex > 0 ? s.dex : 0,
@@ -690,7 +681,7 @@ function _renderKeyLevelTable(weighted, expirations) {
   const rows = [
     { name: 'Call Wall', v0: lv0.callWall, vAll: lvAll.callWall,
       interp: (v0, vAll) => {
-        if (!v0 || !vAll) return '—';
+        if (!v0 || !vAll) return '--';
         const d = vAll - v0;
         if (d > 2)  return `선택만기 ${d.toFixed(0)}pt 위 → 숨겨진 상승 압력`;
         if (d < -2) return `선택만기 ${Math.abs(d).toFixed(0)}pt 아래 → 저항 더 가까움`;
@@ -698,7 +689,7 @@ function _renderKeyLevelTable(weighted, expirations) {
       }},
     { name: 'Put Wall', v0: lv0.putWall, vAll: lvAll.putWall,
       interp: (v0, vAll) => {
-        if (!v0 || !vAll) return '—';
+        if (!v0 || !vAll) return '--';
         const d = vAll - v0;
         if (d < -2) return `선택만기 ${Math.abs(d).toFixed(0)}pt 아래 → 더 강한 지지`;
         if (d > 2)  return `선택만기 ${d.toFixed(0)}pt 위 → 지지 약화 가능`;
@@ -706,7 +697,7 @@ function _renderKeyLevelTable(weighted, expirations) {
       }},
     { name: 'Flip Zone', v0: lv0.flip, vAll: lvAll.flip,
       interp: (v0, vAll) => {
-        if (!v0 || !vAll) return '—';
+        if (!v0 || !vAll) return '--';
         const d = vAll - v0;
         if (Math.abs(d) <= 1) return '0DTE·선택만기 Flip 일치 → 핵심 레벨';
         if (d > 0) return `선택만기 Flip ${d.toFixed(0)}pt 위 → 딜러 중립선 상방`;
@@ -715,13 +706,13 @@ function _renderKeyLevelTable(weighted, expirations) {
   ];
 
   tbody.innerHTML = rows.map(r => {
-    const v0Str   = r.v0   ? `$${r.v0}`   : '—';
-    const vAllStr = r.vAll ? `$${r.vAll}` : '—';
+    const v0Str   = r.v0   ? `$${r.v0}`   : '--';
+    const vAllStr = r.vAll ? `$${r.vAll}` : '--';
     const diff    = (r.v0 && r.vAll) ? r.vAll - r.v0 : null;
     const diffStr = diff !== null
       ? `<span style="color:${diff > 0 ? 'var(--green)' : diff < 0 ? 'var(--red)' : 'var(--text3)'}">
            ${diff > 0 ? '+' : ''}${diff.toFixed(0)}pt</span>`
-      : '—';
+      : '--';
     return `<tr>
       <td style="font-weight:500">${r.name}</td>
       <td style="color:var(--green);font-family:var(--mono)">${v0Str}</td>
@@ -798,7 +789,7 @@ function _resetWeights() {
 function _el(id) { return document.getElementById(id); }
 
 function _fmtM(v) {
-  if (v == null || isNaN(v)) return '—';
+  if (v == null || isNaN(v)) return '--';
   const abs = Math.abs(v), sign = v < 0 ? '-' : '';
   if (abs >= 1000) return `${sign}${(abs/1000).toFixed(1)}B`;
   if (abs >= 1)    return `${sign}${abs.toFixed(1)}M`;
@@ -816,7 +807,7 @@ function _fmtDate(date) {
 
 function _showError(msg) {
   ['mk-dex','mk-call-wall','mk-put-wall','mk-flip'].forEach(id => {
-    const el = _el(id); if (el) el.textContent = '—';
+    const el = _el(id); if (el) el.textContent = '--';
   });
   const bars = _el('mk-expiry-bars');
   if (bars) bars.innerHTML = `<div class="empty" style="color:var(--red)">오류: ${msg}</div>`;
