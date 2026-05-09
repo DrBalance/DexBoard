@@ -677,63 +677,101 @@ async function loadBbMap() {
   }
 }
 
+// ETF 구성종목 캐시
+const _etfHoldingsCache = {};
+
+async function fetchEtfHoldings(etf) {
+  if (_etfHoldingsCache[etf]) return _etfHoldingsCache[etf];
+  try {
+    const res = await fetch(`${CF_API}/api/etf-holdings/${etf}`);
+    const data = await res.json();
+    const holdings = data.holdings ?? [];
+    _etfHoldingsCache[etf] = holdings;
+    return holdings;
+  } catch {
+    return [];
+  }
+}
+
+function toggleHoldingsPanel(etf, btn) {
+  // 이미 열린 패널이 있으면 닫기
+  const existing = document.getElementById(`holdings-panel-${etf}`);
+  if (existing) {
+    existing.remove();
+    btn.textContent = '종목 ▼';
+    return;
+  }
+
+  // 로딩 패널 표시
+  const row = btn.closest('.bb-hm-row');
+  const panel = document.createElement('div');
+  panel.id = `holdings-panel-${etf}`;
+  panel.className = 'bb-holdings-panel';
+  panel.innerHTML = '<span style="color:var(--text3);font-size:12px">로딩 중...</span>';
+  row.after(panel);
+  btn.textContent = '종목 ▲';
+
+  fetchEtfHoldings(etf).then(holdings => {
+    if (!holdings.length) {
+      panel.innerHTML = '<span style="color:var(--text3);font-size:12px">구성종목 없음</span>';
+      return;
+    }
+    panel.innerHTML = holdings.map(h => `
+      <div class="bb-holding-item">
+        <span class="bb-holding-sym">${h.symbol}</span>
+        <span class="bb-holding-name">${h.name}</span>
+        <span class="bb-holding-pct">${h.pct.toFixed(1)}%</span>
+      </div>
+    `).join('');
+  });
+}
+
 function renderBbHeatmap(container, data) {
   const { symbols, dates, series } = data;
 
-  // 날짜 레이블 (M/D 형식)
-  const dateLabels = dates.map(d => {
-    const [, m, day] = d.split('-');
-    return `${+m}/${+day}`;
-  });
-
-  // 날짜 헤더 표시 간격 — 셀이 많으면 일부만 표시
-  const totalCols = dateLabels.length;
-  // 약 7개 레이블만 표시 (첫날, 마지막날 포함)
-  const labelStep = Math.max(1, Math.floor(totalCols / 6));
-
   const rows = symbols.map(s => {
-    const vals = series[s.symbol] ?? [];
+    const vals    = series[s.symbol] ?? [];
     const lastVal = [...vals].reverse().find(v => v != null);
     const lastPct = lastVal != null ? (lastVal * 100).toFixed(0) : '-';
 
-    const cells = vals.map((v, i) => {
-      const bg   = bbColor(v);
-      //const show = (i === totalCols - 1); // 마지막 셀에만 숫자 표시
-      const show = false;
-      return `<div class="bb-hm-cell" style="background:${bg}" title="${dateLabels[i]}: ${v != null ? (v*100).toFixed(0)+'%' : '-'}">${show ? `<span class="bb-hm-last" style="color:${bbTextColor(lastVal)}">${lastPct}%</span>` : ''}</div>`;
-    }).join('');
+    // 그라데이션 컬러바 (가장 오래된 → 최신)
+    const validVals = vals.filter(v => v != null);
+    const barColor  = bbColor(lastVal);
+    const barWidth  = lastVal != null ? `${(lastVal * 100).toFixed(0)}%` : '0%';
 
-    // 점수 색상
     const scoreColor = lastVal == null ? '#64748b'
       : lastVal >= 0.8 ? '#22c55e'
       : lastVal <= 0.2 ? '#ef4444'
       : '#f59e0b';
 
+    // 날짜별 툴팁용 title
+    const tooltipParts = vals.map((v, i) => {
+      const [, m, day] = (dates[i] ?? '').split('-');
+      return `${+m}/${+day}: ${v != null ? (v*100).toFixed(0)+'%' : '-'}`;
+    }).join('
+');
+
     return `
       <div class="bb-hm-row">
         <div class="bb-hm-sym">${s.symbol}</div>
-        <div class="bb-hm-cells">${cells}</div>
+        <div class="bb-hm-bar-wrap" title="${tooltipParts}">
+          <div class="bb-hm-bar-track">
+            <div class="bb-hm-bar-fill" style="width:${barWidth};background:${barColor}"></div>
+          </div>
+        </div>
         <div class="bb-hm-score" style="color:${scoreColor}">${lastPct}%</div>
+        <div class="bb-hm-actions">
+          <button class="bb-holdings-btn" onclick="toggleHoldingsPanel('${s.symbol}', this)">종목 ▼</button>
+        </div>
       </div>`;
   }).join('');
 
-  // 날짜 헤더 행
-  const headerCells = dateLabels.map((lbl, i) => {
-    const show = (i === 0 || i === totalCols - 1 || i % labelStep === 0);
-    return `<div class="bb-hm-cell bb-hm-header-cell">${show ? lbl : ''}</div>`;
-  }).join('');
-
   container.innerHTML = `
-    <div class="bb-hm-row bb-hm-header">
-      <div class="bb-hm-sym"></div>
-      <div class="bb-hm-cells">${headerCells}</div>
-      <div class="bb-hm-score" style="font-size:10px;color:var(--text3)">최신</div>
-    </div>
     ${rows}
     <div class="bb-hm-legend-bar">
-      <span style="color:#dc3c1e">0% (BB 하단)</span>
+      <span style="color:#ef4444;font-size:11px">0% (BB 하단)</span>
       <div class="bb-hm-gradient"></div>
-      <span style="color:#22c55e">100% (BB 상단)</span>
+      <span style="color:#22c55e;font-size:11px">100% (BB 상단)</span>
     </div>
   `;
 }
