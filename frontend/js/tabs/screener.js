@@ -726,6 +726,22 @@ function toggleHoldingsPanel(etf, btn) {
   });
 }
 
+// 최대 N일치 데이터를 CSS linear-gradient 문자열로 변환
+// 왼쪽(오래된) → 오른쪽(최신)
+function buildGradientBar(vals, maxDays = 10) {
+  // 최신 N일만 사용
+  const slice = vals.slice(-maxDays);
+  if (!slice.length) return 'transparent';
+
+  const stops = slice.map((v, i) => {
+    const pct   = (i / (slice.length - 1 || 1)) * 100;
+    const color = v != null ? bbColor(v) : '#1e293b';
+    return `${color} ${pct.toFixed(1)}%`;
+  });
+
+  return `linear-gradient(to right, ${stops.join(', ')})`;
+}
+
 function renderBbHeatmap(container, data) {
   const { symbols, dates, series } = data;
 
@@ -734,33 +750,31 @@ function renderBbHeatmap(container, data) {
     const lastVal = [...vals].reverse().find(v => v != null);
     const lastPct = lastVal != null ? (lastVal * 100).toFixed(0) : '-';
 
-    // 그라데이션 컬러바 (가장 오래된 → 최신)
-    const validVals = vals.filter(v => v != null);
-    const barColor  = bbColor(lastVal);
-    const barWidth  = lastVal != null ? `${(lastVal * 100).toFixed(0)}%` : '0%';
-
     const scoreColor = lastVal == null ? '#64748b'
       : lastVal >= 0.8 ? '#22c55e'
       : lastVal <= 0.2 ? '#ef4444'
       : '#f59e0b';
 
-    // 날짜별 툴팁용 title
+    // 날짜별 툴팁
     const tooltipParts = vals.map((v, i) => {
       const [, m, day] = (dates[i] ?? '').split('-');
       return `${+m}/${+day}: ${v != null ? (v*100).toFixed(0)+'%' : '-'}`;
     }).join('\n');
 
+    // 그래디언트 — 최근 10일(2주) 기준, 부족하면 있는 것만
+    const gradient = buildGradientBar(vals, 10);
+
     return `
-      <div class="bb-hm-row">
+      <div class="bb-hm-row" data-sym="${s.symbol}">
         <div class="bb-hm-sym">${s.symbol}</div>
         <div class="bb-hm-bar-wrap" title="${tooltipParts}">
           <div class="bb-hm-bar-track">
-            <div class="bb-hm-bar-fill" style="width:${barWidth};background:${barColor}"></div>
+            <div class="bb-hm-bar-fill" style="width:100%;background:${gradient}"></div>
           </div>
         </div>
         <div class="bb-hm-score" style="color:${scoreColor}">${lastPct}%</div>
         <div class="bb-hm-actions">
-          <button class="bb-holdings-btn" onclick="toggleHoldingsPanel('${s.symbol}', this)">종목 ▼</button>
+          <button class="bb-holdings-btn" data-etf="${s.symbol}" type="button">종목 ▼</button>
         </div>
       </div>`;
   }).join('');
@@ -773,4 +787,12 @@ function renderBbHeatmap(container, data) {
       <span style="color:#22c55e;font-size:11px">100% (BB 상단)</span>
     </div>
   `;
+
+  // ── 이벤트 위임: onclick 인라인 대신 addEventListener 사용 (모바일/모듈 호환)
+  container.addEventListener('click', e => {
+    const btn = e.target.closest('.bb-holdings-btn');
+    if (!btn) return;
+    const etf = btn.dataset.etf;
+    if (etf) toggleHoldingsPanel(etf, btn);
+  });
 }
