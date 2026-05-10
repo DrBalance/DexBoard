@@ -268,11 +268,10 @@ function _extractKeyLevels({ strikes, flip_strike }, spot) {
 }
 
 // ── 멀티행 히트맵 (Canvas) -- M/m/G 마커 포함 ─────────────
-// [BUG FIX] expirations[expiry]에서 .strikes / .flip_strike 추출
-// [UPD] 마커 겹침 → 사선 표현 / Spot 실선 z-order 최상위
+// sticky 라벨 div + 스크롤 Canvas 분리 구조
 function _renderHeatmap(expirations, weighted) {
-  const canvas = _el('mk-heatmap-canvas');
-  if (!canvas) return;
+  const container = _el('mk-heatmap-canvas');
+  if (!container) return;
 
   const spot = _spot;
 
@@ -280,8 +279,7 @@ function _renderHeatmap(expirations, weighted) {
     Object.values(expirations)
       .flatMap(e => Array.isArray(e) ? e : (e.strikes ?? []))
       .map(s => s.strike)
-  )].sort((a, b) => a - b)
-    ;
+  )].sort((a, b) => a - b);
 
   if (!allStrikes.length) return;
 
@@ -291,37 +289,22 @@ function _renderHeatmap(expirations, weighted) {
 
   if (!enabledExpiries.length) return;
 
+  // ── 레이아웃 상수 ──────────────────────────────────────
   const ROW_H    = 28;
-  const LABEL_W  = 68;
-  const CELL_W   = 28;   // 모바일에서도 읽기 적당한 셀 너비
+  const LABEL_W  = 72;   // sticky 라벨 div 너비
+  const CELL_W   = 28;
   const HEADER_H = 22;
   const SUM_H    = 32;
   const LEGEND_H = 18;
 
-  const W = LABEL_W + allStrikes.length * CELL_W;
-  const H = HEADER_H + enabledExpiries.length * ROW_H + SUM_H + LEGEND_H + 10;
+  const rows      = enabledExpiries.length;
+  const canvasW   = allStrikes.length * CELL_W;
+  const canvasH   = HEADER_H + rows * ROW_H + SUM_H + LEGEND_H + 10;
+  const labelH    = canvasH;
 
-  // ── 스크롤 컨테이너 설정 ──────────────────────────────
-  // Canvas 부모를 overflow-x:auto 스크롤 컨테이너로 만들고
-  // Canvas는 실제 픽셀 크기 그대로 (100% 압축 금지)
-  const wrap = canvas.parentElement;
-  if (wrap) {
-    wrap.style.overflowX = 'auto';
-    wrap.style.overflowY = 'hidden';
-    wrap.style.webkitOverflowScrolling = 'touch';
-  }
+  const spotCol = spot ? allStrikes.findIndex(s => s >= spot) : -1;
 
-  canvas.width        = W;
-  canvas.height       = H;
-  canvas.style.width  = W + 'px';   // 실제 픽셀 크기 고정 (압축 방지)
-  canvas.style.height = H + 'px';
-  canvas.style.display = 'block';
-
-  const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, W, H);
-  ctx.fillStyle = '#0d1117';
-  ctx.fillRect(0, 0, W, H);
-
+  // ── 최대값 계산 ────────────────────────────────────────
   const maxVal = Math.max(
     ...Object.values(expirations)
       .flatMap(e => Array.isArray(e) ? e : (e.strikes ?? []))
@@ -330,286 +313,242 @@ function _renderHeatmap(expirations, weighted) {
   );
   const maxSum = Math.max(...weighted.map(s => Math.abs(s.netDex)), 1);
 
-  const spotCol = spot ? allStrikes.findIndex(s => s >= spot) : -1;
+  // ── 색상 상수 ──────────────────────────────────────────
+  const C_M = `rgb(${C_CALL.r},${C_CALL.g},${C_CALL.b})`;
+  const C_m = `rgb(${C_PUT.r},${C_PUT.g},${C_PUT.b})`;
+  const C_G = 'rgb(139,92,246)';
 
-  // ── 마커 그리기 헬퍼 ─────────────────────────────────────
-  // hasM, hasm, hasG 조합에 따라 테두리·사선·라벨을 자동 결정
-  // 그리기 순서: ① 사선(클립) → ② 테두리 → ③ 라벨
-  // Spot 실선은 모든 셀/마커 이후 별도 패스로 최상위 렌더링
-  const C_M = `rgb(${C_CALL.r},${C_CALL.g},${C_CALL.b})`;  // 초록
-  const C_m = `rgb(${C_PUT.r},${C_PUT.g},${C_PUT.b})`;     // 빨강
-  const C_G = 'rgb(139,92,246)';                             // 보라
-
-  function _drawMarker(x, y, cellW, cellH, hasM, hasm, hasG) {
+  // ── 마커 그리기 헬퍼 ───────────────────────────────────
+  function drawMarker(ctx, x, y, cellW, cellH, hasM, hasm, hasG) {
     if (!hasM && !hasm && !hasG) return;
+    const x1 = x + 1, y1 = y + 1, w = cellW - 2, h = cellH - 2;
 
-    const x1 = x + 1, y1 = y + 1;
-    const w  = cellW - 2, h = cellH - 2;
-
-    // ① 사선 (클리핑 범위 = 셀 내부)
+    // ① 사선 (클리핑)
     ctx.save();
-    ctx.beginPath();
-    ctx.rect(x1, y1, w, h);
-    ctx.clip();
-
-    // M+G : 좌상→우하 보라 사선
-    if (hasM && hasG) {
-      ctx.strokeStyle = C_G;
-      ctx.lineWidth   = 1.5;
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      ctx.moveTo(x1,      y1 + h);
-      ctx.lineTo(x1 + w,  y1);
-      ctx.stroke();
+    ctx.beginPath(); ctx.rect(x1, y1, w, h); ctx.clip();
+    if ((hasM && hasG) || (hasm && hasG && !hasM)) {
+      ctx.strokeStyle = C_G; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(x1, y1+h); ctx.lineTo(x1+w, y1); ctx.stroke();
     }
-    // m+G : 좌상→우하 보라 사선
-    if (hasm && hasG && !hasM) {
-      ctx.strokeStyle = C_G;
-      ctx.lineWidth   = 1.5;
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      ctx.moveTo(x1,      y1 + h);
-      ctx.lineTo(x1 + w,  y1);
-      ctx.stroke();
-    }
-    // M+m : 좌상→우하 빨강 사선
     if (hasM && hasm && !hasG) {
-      ctx.strokeStyle = C_m;
-      ctx.lineWidth   = 1.5;
-      ctx.setLineDash([]);
-      ctx.beginPath();
-      ctx.moveTo(x1,      y1 + h);
-      ctx.lineTo(x1 + w,  y1);
-      ctx.stroke();
+      ctx.strokeStyle = C_m; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(x1, y1+h); ctx.lineTo(x1+w, y1); ctx.stroke();
     }
-    // M+m+G : 빨강 사선(↘) + 보라 사선(↙) 교차
     if (hasM && hasm && hasG) {
-      ctx.strokeStyle = C_m;
-      ctx.lineWidth   = 1.5;
-      ctx.beginPath();
-      ctx.moveTo(x1,     y1 + h);
-      ctx.lineTo(x1 + w, y1);
-      ctx.stroke();
+      ctx.strokeStyle = C_m; ctx.lineWidth = 1.5;
+      ctx.beginPath(); ctx.moveTo(x1, y1+h); ctx.lineTo(x1+w, y1); ctx.stroke();
       ctx.strokeStyle = C_G;
-      ctx.beginPath();
-      ctx.moveTo(x1 + w, y1 + h);
-      ctx.lineTo(x1,     y1);
-      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x1+w, y1+h); ctx.lineTo(x1, y1); ctx.stroke();
     }
-
     ctx.restore();
 
-    // ② 테두리
-    // 단독: 단색 / 겹침: 상+좌 = 주색, 하+우 = 부색
-    ctx.lineWidth   = 1.8;
-    ctx.setLineDash([]);
-
-    const activeCount = [hasM, hasm, hasG].filter(Boolean).length;
-
-    if (activeCount === 1) {
+    // ② 테두리 분할
+    ctx.lineWidth = 1.8; ctx.setLineDash([]);
+    const cnt = [hasM, hasm, hasG].filter(Boolean).length;
+    if (cnt === 1) {
       ctx.strokeStyle = hasM ? C_M : hasm ? C_m : C_G;
       ctx.strokeRect(x1, y1, w, h);
     } else {
-      let colorA, colorB;
-      if (hasM && hasG && !hasm)      { colorA = C_M; colorB = C_G; }
-      else if (hasm && hasG && !hasM) { colorA = C_m; colorB = C_G; }
-      else if (hasM && hasm && !hasG) { colorA = C_M; colorB = C_m; }
-      else                             { colorA = C_M; colorB = C_m; } // M+m+G
-
-      // 상+좌 (colorA)
-      ctx.strokeStyle = colorA;
-      ctx.beginPath();
-      ctx.moveTo(x1 + w, y1);
-      ctx.lineTo(x1,     y1);
-      ctx.lineTo(x1,     y1 + h);
-      ctx.stroke();
-
-      // 하+우 (colorB)
-      ctx.strokeStyle = colorB;
-      ctx.beginPath();
-      ctx.moveTo(x1,     y1 + h);
-      ctx.lineTo(x1 + w, y1 + h);
-      ctx.lineTo(x1 + w, y1);
-      ctx.stroke();
+      let cA, cB;
+      if (hasM && hasG && !hasm)       { cA = C_M; cB = C_G; }
+      else if (hasm && hasG && !hasM)  { cA = C_m; cB = C_G; }
+      else if (hasM && hasm && !hasG)  { cA = C_M; cB = C_m; }
+      else                              { cA = C_M; cB = C_m; }
+      ctx.strokeStyle = cA;
+      ctx.beginPath(); ctx.moveTo(x1+w,y1); ctx.lineTo(x1,y1); ctx.lineTo(x1,y1+h); ctx.stroke();
+      ctx.strokeStyle = cB;
+      ctx.beginPath(); ctx.moveTo(x1,y1+h); ctx.lineTo(x1+w,y1+h); ctx.lineTo(x1+w,y1); ctx.stroke();
     }
 
-    // ③ 라벨 (우상단)
-    const label = [hasM ? 'M' : '', hasm ? 'm' : '', hasG ? 'G' : ''].filter(Boolean).join('');
+    // ③ 라벨
+    const label = [hasM?'M':'', hasm?'m':'', hasG?'G':''].filter(Boolean).join('');
     ctx.fillStyle = '#fff';
-    ctx.font      = `bold ${label.length >= 3 ? 7 : 8}px monospace`;
+    ctx.font = `bold ${label.length >= 3 ? 7 : 8}px monospace`;
     ctx.textAlign = 'right';
-    ctx.fillText(label, x1 + w - 1, y1 + 9);
+    ctx.fillText(label, x1+w-1, y1+9);
   }
 
-  // ── 스트라이크 헤더 ───────────────────────────────────────
-  ctx.font      = '9px monospace';
-  ctx.textAlign = 'center';
-  allStrikes.forEach((strike, i) => {
-    const x      = LABEL_W + i * CELL_W + CELL_W / 2;
-    const isSpot = i === spotCol;
-    ctx.fillStyle = isSpot ? C_SPOT : (strike % 5 === 0 ? '#8b949e' : 'transparent');
-    if (isSpot || strike % 5 === 0) {
-      ctx.fillText(`$${strike}`, x, HEADER_H - 5);
-    }
+  // ── sticky 라벨 Canvas ─────────────────────────────────
+  const lblCanvas = document.createElement('canvas');
+  lblCanvas.width  = LABEL_W;
+  lblCanvas.height = labelH;
+  lblCanvas.style.cssText = `
+    display:block;flex-shrink:0;
+    width:${LABEL_W}px;height:${labelH}px;
+    position:sticky;left:0;z-index:2;`;
+
+  const lctx = lblCanvas.getContext('2d');
+  lctx.fillStyle = '#0d1117';
+  lctx.fillRect(0, 0, LABEL_W, labelH);
+
+  // 헤더 빈칸
+  // 만기별 라벨
+  enabledExpiries.forEach(([expiry, cfg], rowIdx) => {
+    const y = HEADER_H + rowIdx * ROW_H;
+    lctx.fillStyle = cfg.color;
+    lctx.font = '10px monospace';
+    lctx.textAlign = 'right';
+    lctx.fillText(expiry.slice(5), LABEL_W - 4, y + ROW_H/2 + 3);
+    lctx.fillStyle = '#555';
+    lctx.font = '8px monospace';
+    lctx.fillText(cfg.dte === 0 ? '0DTE' : `${cfg.dte}d`, LABEL_W - 4, y + ROW_H/2 + 12);
   });
 
-  // ── 만기별 행 (셀 배경 + 마커) ──────────────────────────
+  // 구분선
+  const sumY = HEADER_H + rows * ROW_H + 4;
+  lctx.strokeStyle = 'rgba(255,255,255,0.12)';
+  lctx.lineWidth = 1; lctx.setLineDash([]);
+  lctx.beginPath(); lctx.moveTo(0, sumY-4); lctx.lineTo(LABEL_W, sumY-4); lctx.stroke();
+
+  // 합산 라벨
+  lctx.fillStyle = '#c9d1d9';
+  lctx.font = '10px monospace';
+  lctx.textAlign = 'right';
+  lctx.fillText('합산', LABEL_W - 4, sumY + SUM_H/2 + 4);
+
+  // ── 데이터 Canvas (스크롤) ─────────────────────────────
+  const dataCanvas = document.createElement('canvas');
+  dataCanvas.width  = canvasW;
+  dataCanvas.height = canvasH;
+  dataCanvas.style.cssText = `display:block;width:${canvasW}px;height:${canvasH}px;`;
+
+  const ctx = dataCanvas.getContext('2d');
+  ctx.fillStyle = '#0d1117';
+  ctx.fillRect(0, 0, canvasW, canvasH);
+
+  // 스트라이크 헤더
+  ctx.font = '9px monospace'; ctx.textAlign = 'center';
+  allStrikes.forEach((strike, i) => {
+    const x = i * CELL_W + CELL_W / 2;
+    const isSpot = i === spotCol;
+    ctx.fillStyle = isSpot ? C_SPOT : (strike % 5 === 0 ? '#8b949e' : 'transparent');
+    if (isSpot || strike % 5 === 0) ctx.fillText(`$${strike}`, x, HEADER_H - 5);
+  });
+
+  // 만기별 행
   enabledExpiries.forEach(([expiry, cfg], rowIdx) => {
     const expiryData = expirations[expiry] ?? {};
     const rawStrikes = Array.isArray(expiryData) ? expiryData : (expiryData.strikes ?? []);
     const flipStrike = Array.isArray(expiryData) ? null : (expiryData.flip_strike ?? null);
     const strikeMap  = {};
     rawStrikes.forEach(s => { strikeMap[s.strike] = s; });
-
     const kl = _extractKeyLevels({ strikes: rawStrikes, flip_strike: flipStrike }, spot);
-
-    const y = HEADER_H + rowIdx * ROW_H;
-
-    ctx.fillStyle = cfg.color;
-    ctx.font      = '10px monospace';
-    ctx.textAlign = 'right';
-    ctx.fillText(expiry.slice(5), LABEL_W - 4, y + ROW_H / 2 + 3);
-
-    ctx.fillStyle = '#555';
-    ctx.font      = '8px monospace';
-    ctx.fillText(cfg.dte === 0 ? '0DTE' : `${cfg.dte}d`, LABEL_W - 4, y + ROW_H / 2 + 12);
+    const y  = HEADER_H + rowIdx * ROW_H;
 
     allStrikes.forEach((strike, i) => {
-      const x = LABEL_W + i * CELL_W;
+      const x = i * CELL_W;
       const s = strikeMap[strike];
-
-      // 셀 배경
       ctx.fillStyle = C_BORDER;
-      ctx.fillRect(x + 1, y + 2, CELL_W - 2, ROW_H - 4);
-
+      ctx.fillRect(x+1, y+2, CELL_W-2, ROW_H-4);
       if (s) {
-        const dex       = s.dex * cfg.weight;
+        const dex = s.dex * cfg.weight;
         const intensity = Math.min(Math.abs(dex) / maxVal, 1);
-        const c         = dex >= 0 ? C_CALL : C_PUT;
-        ctx.fillStyle   = `rgba(${c.r},${c.g},${c.b},${(intensity * 0.8 + 0.1).toFixed(2)})`;
-        ctx.fillRect(x + 1, y + 2, CELL_W - 2, ROW_H - 4);
+        const c = dex >= 0 ? C_CALL : C_PUT;
+        ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${(intensity*0.8+0.1).toFixed(2)})`;
+        ctx.fillRect(x+1, y+2, CELL_W-2, ROW_H-4);
       }
-
-      // 마커 (겹침 포함)
-      _drawMarker(x, y + 2, CELL_W, ROW_H - 4,
-        strike === kl.M,
-        strike === kl.m,
-        strike === kl.G,
-      );
+      drawMarker(ctx, x, y+2, CELL_W, ROW_H-4,
+        strike===kl.M, strike===kl.m, strike===kl.G);
     });
   });
 
-  // ── 구분선 ───────────────────────────────────────────────
-  const sumY = HEADER_H + enabledExpiries.length * ROW_H + 4;
+  // 구분선
   ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-  ctx.lineWidth   = 1;
-  ctx.setLineDash([]);
-  ctx.beginPath();
-  ctx.moveTo(0, sumY - 4);
-  ctx.lineTo(W, sumY - 4);
-  ctx.stroke();
+  ctx.lineWidth = 1; ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(0, sumY-4); ctx.lineTo(canvasW, sumY-4); ctx.stroke();
 
-  // ── 합산 행 ──────────────────────────────────────────────
+  // 합산 행
   const weightedAsRaw = weighted.map(s => ({ strike: s.strike, dex: s.netDex }));
   const sumKl = _extractKeyLevels({ strikes: weightedAsRaw, flip_strike: null }, spot);
-
   ctx.fillStyle = 'rgba(255,255,255,0.03)';
-  ctx.fillRect(0, sumY, W, SUM_H);
-
-  ctx.fillStyle = '#c9d1d9';
-  ctx.font      = '10px monospace';
-  ctx.textAlign = 'right';
-  ctx.fillText('합산', LABEL_W - 4, sumY + SUM_H / 2 + 4);
+  ctx.fillRect(0, sumY, canvasW, SUM_H);
 
   allStrikes.forEach((strike, i) => {
-    const x = LABEL_W + i * CELL_W;
+    const x = i * CELL_W;
     const s = weighted.find(w => w.strike === strike);
-
     ctx.fillStyle = C_BORDER;
-    ctx.fillRect(x + 1, sumY + 2, CELL_W - 2, SUM_H - 4);
-
+    ctx.fillRect(x+1, sumY+2, CELL_W-2, SUM_H-4);
     if (s && s.netDex !== 0) {
       const intensity = Math.min(Math.abs(s.netDex) / maxSum, 1);
-      const c         = s.netDex >= 0 ? C_CALL : C_PUT;
-      ctx.fillStyle   = `rgba(${c.r},${c.g},${c.b},${(intensity * 0.9 + 0.1).toFixed(2)})`;
-      ctx.fillRect(x + 1, sumY + 2, CELL_W - 2, SUM_H - 4);
+      const c = s.netDex >= 0 ? C_CALL : C_PUT;
+      ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${(intensity*0.9+0.1).toFixed(2)})`;
+      ctx.fillRect(x+1, sumY+2, CELL_W-2, SUM_H-4);
     }
-
-    // 마커 (겹침 포함)
-    _drawMarker(x, sumY + 2, CELL_W, SUM_H - 4,
-      strike === sumKl.M,
-      strike === sumKl.m,
-      strike === sumKl.G,
-    );
+    drawMarker(ctx, x, sumY+2, CELL_W, SUM_H-4,
+      strike===sumKl.M, strike===sumKl.m, strike===sumKl.G);
   });
 
-  // ── 범례 ─────────────────────────────────────────────────
+  // 범례
   const legY = sumY + SUM_H + 6;
   const legItems = [
-    { label: 'M = Call Wall',      color: C_M },
-    { label: 'm = Put Wall',       color: C_m },
-    { label: 'G = GEX Flip Zone',  color: C_G },
-    { label: '사선 = 레벨 겹침',   color: '#8b949e' },
+    { label: 'M = Call Wall', color: C_M },
+    { label: 'm = Put Wall', color: C_m },
+    { label: 'G = GEX Flip', color: C_G },
+    { label: '사선 = 레벨 겹침', color: '#8b949e' },
   ];
-  let legX = LABEL_W;
-  ctx.font      = '9px monospace';
-  ctx.textAlign = 'left';
+  let legX = 4;
+  ctx.font = '9px monospace'; ctx.textAlign = 'left';
   legItems.forEach(({ label, color }) => {
-    ctx.strokeStyle = color;
-    ctx.lineWidth   = 1.5;
-    ctx.setLineDash([]);
-    ctx.strokeRect(legX, legY + 2, 10, 10);
+    ctx.strokeStyle = color; ctx.lineWidth = 1.5; ctx.setLineDash([]);
+    ctx.strokeRect(legX, legY+2, 10, 10);
     ctx.fillStyle = color;
-    ctx.fillText(label, legX + 14, legY + 11);
+    ctx.fillText(label, legX+14, legY+11);
     legX += label.length * 6 + 24;
   });
 
-  // ── Spot 실선 + 삼각형 마커 (z-order 최상위 — 모든 셀/마커 위에 덮어 그림)
+  // Spot 실선 (z-order 최상위)
   if (spot && spotCol >= 0) {
-    const sx = LABEL_W + spotCol * CELL_W;
+    const sx = spotCol * CELL_W;
     const mx = sx + CELL_W / 2;
-
-    // 전체 높이 관통 실선 (헤더 아래 ~ 합산 행 끝)
     ctx.save();
-    ctx.strokeStyle = C_SPOT;
-    ctx.lineWidth   = 1.5;
-    ctx.setLineDash([]);
-    ctx.globalAlpha = 0.85;
-    ctx.beginPath();
-    ctx.moveTo(sx, HEADER_H);
-    ctx.lineTo(sx, sumY + SUM_H);
-    ctx.stroke();
-    ctx.globalAlpha = 1;
-    ctx.restore();
+    ctx.strokeStyle = C_SPOT; ctx.lineWidth = 1.5;
+    ctx.setLineDash([]); ctx.globalAlpha = 0.85;
+    ctx.beginPath(); ctx.moveTo(sx, HEADER_H); ctx.lineTo(sx, sumY+SUM_H); ctx.stroke();
+    ctx.globalAlpha = 1; ctx.restore();
 
-    // 삼각형 마커 (구분선 위)
     ctx.fillStyle = C_SPOT;
     ctx.beginPath();
-    ctx.moveTo(mx,     sumY - 2);
-    ctx.lineTo(mx - 5, sumY - 9);
-    ctx.lineTo(mx + 5, sumY - 9);
-    ctx.closePath();
-    ctx.fill();
-
-    // 현재가 텍스트
-    ctx.fillStyle = C_SPOT;
-    ctx.font      = '9px monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText(`$${spot.toFixed(0)}`, mx, sumY - 11);
+    ctx.moveTo(mx, sumY-2); ctx.lineTo(mx-5, sumY-9); ctx.lineTo(mx+5, sumY-9);
+    ctx.closePath(); ctx.fill();
+    ctx.font = '9px monospace'; ctx.textAlign = 'center';
+    ctx.fillText(`$${spot.toFixed(0)}`, mx, sumY-11);
   }
 
-  // ── 드래그 스크롤 + 최초 spot 중앙 스크롤 ───────────────
-  if (wrap) {
-    // 최초 1회: spot 열이 중앙에 오도록 스크롤
-    if (spotCol >= 0) {
-      const scrollTarget = LABEL_W + spotCol * CELL_W - wrap.clientWidth / 2 + CELL_W / 2;
-      wrap.scrollLeft = Math.max(0, scrollTarget);
-    }
-    // 드래그 스크롤 (중복 등록 방지)
-    if (!wrap._dragScrollBound) {
-      _attachDragScroll(wrap);
-      wrap._dragScrollBound = true;
-    }
+  // ── DOM 조립 ───────────────────────────────────────────
+  // container(mk-heatmap-canvas)를 flex row로 사용
+  // 왼쪽: sticky 라벨 canvas / 오른쪽: 스크롤 data canvas
+  const scrollDiv = document.createElement('div');
+  scrollDiv.style.cssText = `
+    overflow-x:auto;overflow-y:hidden;
+    -webkit-overflow-scrolling:touch;
+    flex:1;min-width:0;`;
+
+  scrollDiv.appendChild(dataCanvas);
+
+  container.innerHTML = '';
+  container.style.cssText = `
+    display:flex;flex-direction:row;align-items:stretch;
+    border-top:1px solid var(--border);
+    border-bottom:1px solid var(--border);`;
+  container.appendChild(lblCanvas);
+  container.appendChild(scrollDiv);
+
+  // 범례 div
+  const legDiv = document.createElement('div');
+  legDiv.style.cssText = 'padding:4px 8px 0;display:flex;justify-content:space-between;font-size:10px;color:var(--text3)';
+  legDiv.innerHTML = '<span>■ 녹색: 딜러 매수 헤지 &nbsp;■ 빨간색: 딜러 매도 헤지</span><span>색상 농도 = 헤징 압력 강도</span>';
+
+  // container의 부모에 범례 추가 (container 다음)
+  container.parentElement?.insertBefore(legDiv, container.nextSibling);
+
+  // spot 중앙 스크롤 + 드래그 스크롤
+  if (spotCol >= 0) {
+    const scrollTarget = spotCol * CELL_W - scrollDiv.clientWidth / 2 + CELL_W / 2;
+    scrollDiv.scrollLeft = Math.max(0, scrollTarget);
+  }
+  if (!scrollDiv._dragScrollBound) {
+    _attachDragScroll(scrollDiv);
+    scrollDiv._dragScrollBound = true;
   }
 }
 
