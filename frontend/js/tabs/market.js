@@ -386,11 +386,11 @@ function _renderHeatmap(expirations, weighted) {
   enabledExpiries.forEach(([expiry, cfg], rowIdx) => {
     const y = HEADER_H + rowIdx * ROW_H;
     lctx.fillStyle = cfg.color;
-    lctx.font = '10px monospace';
+    lctx.font = '13px monospace';
     lctx.textAlign = 'right';
     lctx.fillText(expiry.slice(5), LABEL_W - 4, y + ROW_H/2 + 3);
     lctx.fillStyle = '#555';
-    lctx.font = '8px monospace';
+    lctx.font = '11px monospace';
     lctx.fillText(cfg.dte === 0 ? '0DTE' : `${cfg.dte}d`, LABEL_W - 4, y + ROW_H/2 + 12);
   });
 
@@ -402,7 +402,7 @@ function _renderHeatmap(expirations, weighted) {
 
   // 합산 라벨
   lctx.fillStyle = '#c9d1d9';
-  lctx.font = '10px monospace';
+  lctx.font = '13px monospace';
   lctx.textAlign = 'right';
   lctx.fillText('합산', LABEL_W - 4, sumY + SUM_H/2 + 4);
 
