@@ -268,7 +268,9 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     const scrollEl = document.getElementById(scrollId);
     if (!scrollEl) return;
 
-    if (prevScrollLeft !== null) {
+    // prevScrollLeft가 null이 아니고 0보다 크면 사용자가 보던 위치 복원
+    // 0이면 DOM이 새로 생성된 것이므로 spot 중앙으로 이동
+    if (prevScrollLeft !== null && prevScrollLeft > 0) {
       scrollEl.scrollLeft = prevScrollLeft;
     } else {
       const colOffset  = LBL_W + spotIdx * COL_W;
