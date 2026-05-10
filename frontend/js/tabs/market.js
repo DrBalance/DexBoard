@@ -293,7 +293,7 @@ function _renderHeatmap(expirations, weighted) {
 
   const ROW_H    = 28;
   const LABEL_W  = 68;
-  const CELL_W   = 22;
+  const CELL_W   = 28;   // 모바일에서도 읽기 적당한 셀 너비
   const HEADER_H = 22;
   const SUM_H    = 32;
   const LEGEND_H = 18;
@@ -301,10 +301,21 @@ function _renderHeatmap(expirations, weighted) {
   const W = LABEL_W + allStrikes.length * CELL_W;
   const H = HEADER_H + enabledExpiries.length * ROW_H + SUM_H + LEGEND_H + 10;
 
-  canvas.width  = W;
-  canvas.height = H;
-  canvas.style.width  = '100%';
+  // ── 스크롤 컨테이너 설정 ──────────────────────────────
+  // Canvas 부모를 overflow-x:auto 스크롤 컨테이너로 만들고
+  // Canvas는 실제 픽셀 크기 그대로 (100% 압축 금지)
+  const wrap = canvas.parentElement;
+  if (wrap) {
+    wrap.style.overflowX = 'auto';
+    wrap.style.overflowY = 'hidden';
+    wrap.style.webkitOverflowScrolling = 'touch';
+  }
+
+  canvas.width        = W;
+  canvas.height       = H;
+  canvas.style.width  = W + 'px';   // 실제 픽셀 크기 고정 (압축 방지)
   canvas.style.height = H + 'px';
+  canvas.style.display = 'block';
 
   const ctx = canvas.getContext('2d');
   ctx.clearRect(0, 0, W, H);
@@ -588,8 +599,6 @@ function _renderHeatmap(expirations, weighted) {
   }
 
   // ── 드래그 스크롤 + 최초 spot 중앙 스크롤 ───────────────
-  // Canvas의 부모 overflow 컨테이너에 적용
-  const wrap = canvas.parentElement;
   if (wrap) {
     // 최초 1회: spot 열이 중앙에 오도록 스크롤
     if (spotCol >= 0) {
