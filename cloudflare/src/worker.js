@@ -216,6 +216,66 @@ export default {
       return json(data, 200, corsHeaders);
     }
 
+    // ── GET /api/options-strikes/:symbol ───────────────────────
+    // Structure 탭 Smile 곡선용: 스트라이크별 IV 데이터
+    const strikesMatch = path.match(/^\/api\/options-strikes\/([a-zA-Z]+)$/);
+    if (request.method === "GET" && strikesMatch) {
+      const sym    = strikesMatch[1].toUpperCase();
+      const expiry = url.searchParams.get("expiry") || null;
+      const date   = url.searchParams.get("date")   || null;
+
+      let query, params;
+      if (expiry && date) {
+        query  = `SELECT * FROM options_strikes WHERE symbol=? AND date=? AND expiry_date=? ORDER BY strike ASC`;
+        params = [sym, date, expiry];
+      } else if (expiry) {
+        query  = `SELECT * FROM options_strikes WHERE symbol=? AND expiry_date=? AND date=(SELECT MAX(date) FROM options_strikes WHERE symbol=? AND expiry_date=?) ORDER BY strike ASC`;
+        params = [sym, expiry, sym, expiry];
+      } else {
+        // expiry 없으면 가장 최신 날짜의 첫번째 만기
+        query  = `SELECT * FROM options_strikes WHERE symbol=? AND date=(SELECT MAX(date) FROM options_strikes WHERE symbol=?) ORDER BY dte ASC, strike ASC`;
+        params = [sym, sym];
+      }
+
+      const rows = await env.DB.prepare(query).bind(...params).all();
+      return json({ symbol: sym, rows: rows.results ?? [] }, 200, corsHeaders);
+    }
+
+    // ── POST /d1/options-strikes ────────────────────────────────
+    // Railway → D1 스트라이크별 IV 저장
+    if (request.method === "POST" && path === "/d1/options-strikes") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      const { rows } = await request.json();
+      if (!Array.isArray(rows) || !rows.length) {
+        return json({ ok: false, error: "rows 배열 필요" }, 400, corsHeaders);
+      }
+
+      // 배치 INSERT (100행씩)
+      const BATCH = 100;
+      let inserted = 0;
+      for (let i = 0; i < rows.length; i += BATCH) {
+        const batch = rows.slice(i, i + BATCH);
+        const placeholders = batch.map(() =>
+          '(?,?,?,?,?,?,?,?,?,?,?)'
+        ).join(',');
+        const values = batch.flatMap(r => [
+          r.date, r.symbol, r.expiry_date, r.dte,
+          r.strike, r.call_iv, r.put_iv, r.avg_iv,
+          r.call_delta, r.call_oi, r.put_oi,
+        ]);
+        await env.DB.prepare(`
+          INSERT OR REPLACE INTO options_strikes
+          (date, symbol, expiry_date, dte, strike, call_iv, put_iv, avg_iv, call_delta, call_oi, put_oi)
+          VALUES ${placeholders}
+        `).bind(...values).run();
+        inserted += batch.length;
+      }
+      return json({ ok: true, inserted }, 200, corsHeaders);
+    }
+
     // ── GET /api/options-dex/:symbol ───────────────────────────
     // Structure 탭용: 종목의 만기별 options_dex 데이터 반환
     const optDexMatch = path.match(/^\/api\/options-dex\/([a-zA-Z]+)$/);
