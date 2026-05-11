@@ -10,9 +10,6 @@ import { fmt } from '../fmt.js';
 // ── 내부 상태
 let currentSymbol = null;
 let currentData   = null;
-let expiryFilter  = 'all';   // 'all' | '0-30' | '31-60'
-let chartInstance = null;
-let heatChartInst = null;
 
 // ============================================
 // 진입점 — tabs.js에서 탭 전환 시 호출
@@ -54,11 +51,6 @@ function renderShell() {
         autocomplete="off" spellcheck="false">
       <div class="struct-sym-dd" id="struct-sym-dd"></div>
     </div>
-    <div class="struct-filter-pills" id="struct-expiry-pills">
-      <button class="pill active" data-f="all">전체</button>
-      <button class="pill" data-f="0-30">1개월 이내</button>
-      <button class="pill" data-f="31-60">1~2개월</button>
-    </div>
     <button class="struct-refresh-btn" id="struct-refresh-btn" title="새로고침">↻</button>
   </div>
 
@@ -81,52 +73,30 @@ function renderShell() {
       <div class="struct-score-strip" id="struct-score-strip"></div>
     </div>
 
-    <!-- 메트릭 카드 행 -->
-    <div class="struct-metrics" id="struct-metrics"></div>
-
-    <!-- IV 스큐 커브 -->
+    <!-- 섹션 1: 만기 구조 카드 -->
     <div class="struct-panel">
       <div class="struct-panel-title">
-        <span class="panel-icon">◉</span> ATM IV 만기 스펙트럼
-        <span class="panel-sub" id="struct-iv-note"></span>
+        <span class="panel-icon">◉</span> 만기 구조
+        <span class="panel-sub">Monthly 2개 + 이상 베팅 Weekly</span>
       </div>
-      <div class="struct-chart-wrap" style="height:220px">
-        <canvas id="struct-iv-chart"
-          role="img" aria-label="만기별 ATM IV 및 IV스큐 차트">
-          만기별 IV 데이터가 없습니다.
-        </canvas>
-      </div>
+      <div id="struct-expiry-cards"></div>
     </div>
 
-    <!-- PCR / OI 분포 차트 -->
+    <!-- 섹션 2: 타이밍 컨텍스트 -->
     <div class="struct-panel">
       <div class="struct-panel-title">
-        <span class="panel-icon">◈</span> 만기별 Put/Call 비율 & OI
-        <span class="panel-sub">PCR OI (막대) / PCR Vol (라인)</span>
+        <span class="panel-icon">⏱</span> 타이밍 컨텍스트
+        <span class="panel-sub">OPEX 사이클 · Vanna/Charm 방향</span>
       </div>
-      <div class="struct-chart-wrap" style="height:220px">
-        <canvas id="struct-pcr-chart"
-          role="img" aria-label="만기별 PCR OI 및 PCR Vol 차트">
-          만기별 PCR 데이터가 없습니다.
-        </canvas>
-      </div>
+      <div id="struct-timing"></div>
     </div>
 
-    <!-- 히트맵: ATM 풋 OI 집중도 -->
+    <!-- 섹션 3: 메카닉 판단 -->
     <div class="struct-panel">
       <div class="struct-panel-title">
-        <span class="panel-icon">⬡</span> ATM ±5% 풋 OI 집중도
-        <span class="panel-sub">ATM 풋 OI / 전체 풋 OI</span>
+        <span class="panel-icon">▤</span> 딜러 메카닉 판단
       </div>
-      <div id="struct-atm-bars" class="struct-atm-bars"></div>
-    </div>
-
-    <!-- 점수 분해 테이블 -->
-    <div class="struct-panel">
-      <div class="struct-panel-title">
-        <span class="panel-icon">▤</span> 스크리너 점수 분해
-      </div>
-      <div id="struct-score-table" class="struct-score-table"></div>
+      <div id="struct-mechanic"></div>
     </div>
 
   </div>
@@ -157,16 +127,6 @@ function bindEvents() {
 
   document.addEventListener('click', e => {
     if (!e.target.closest('.sym-search-wrap')) hideDd();
-  });
-
-  // 만기 필터 pills
-  document.getElementById('struct-expiry-pills')?.addEventListener('click', e => {
-    const btn = e.target.closest('.pill');
-    if (!btn) return;
-    document.querySelectorAll('#struct-expiry-pills .pill').forEach(b => b.classList.remove('active'));
-    btn.classList.add('active');
-    expiryFilter = btn.dataset.f;
-    if (currentData) renderContent(currentData);
   });
 
   // 새로고침
@@ -222,7 +182,6 @@ async function loadStructure(symbol) {
   showState('loading', `${symbol} 분석 중...`);
 
   try {
-    // D1 스크리너 데이터 + 옵션 플로우 조회
     const [screenerRes, flowRes] = await Promise.all([
       fetch(`${CF_API}/api/screener`),
       fetch(`${CF_API}/api/structure/${symbol}`),
@@ -231,17 +190,21 @@ async function loadStructure(symbol) {
     const screenerAll = await screenerRes.json();
     const flowData    = flowRes.ok ? await flowRes.json() : null;
 
-    // 해당 종목 스크리너 점수
     const scoreRow = Array.isArray(screenerAll)
       ? screenerAll.find(r => r.symbol === symbol)
       : null;
 
-    if (!scoreRow && (!flowData || !flowData.length)) {
+    // 새 API: { monthly, weekly, context } 구조
+    const monthly = flowData?.monthly ?? [];
+    const weekly  = flowData?.weekly  ?? null;
+    const context = flowData?.context ?? null;
+
+    if (!scoreRow && !monthly.length) {
       showState('empty', `${symbol} 데이터가 없습니다. 스크리너 실행 후 조회하세요.`);
       return;
     }
 
-    currentData = { symbol, scoreRow, flowData };
+    currentData = { symbol, scoreRow, monthly, weekly, context };
     renderContent(currentData);
 
   } catch (err) {
@@ -253,7 +216,7 @@ async function loadStructure(symbol) {
 // ============================================
 // 렌더링
 // ============================================
-function renderContent({ symbol, scoreRow, flowData }) {
+function renderContent({ symbol, scoreRow, monthly, weekly, context }) {
   document.getElementById('struct-state').style.display   = 'none';
   document.getElementById('struct-content').style.display = 'block';
 
@@ -263,356 +226,355 @@ function renderContent({ symbol, scoreRow, flowData }) {
   document.getElementById('struct-updated').textContent      = scoreRow?.date
     ? `기준일: ${scoreRow.date}` : '';
 
-  // 만기 필터 적용
-  const rows = filterByExpiry(flowData || []);
+  // 섹션 1: 만기 구조 카드
+  renderExpiryCards(monthly, weekly, scoreRow);
 
-  // 메트릭 카드
-  renderMetrics(scoreRow, rows);
+  // 섹션 2: 타이밍 컨텍스트
+  renderTimingContext(context, scoreRow);
 
-  // 차트들
-  renderIVChart(rows);
-  renderPCRChart(rows);
-  renderATMBars(rows);
-
-  // 점수 테이블
-  if (scoreRow) renderScoreTable(scoreRow);
+  // 섹션 3: 메카닉 판단 요약
+  renderMechanicSummary(scoreRow, context, monthly);
 }
 
-// ── 만기 필터
-function filterByExpiry(rows) {
-  if (expiryFilter === 'all')   return rows;
-  if (expiryFilter === '0-30')  return rows.filter(r => r.dte <= 30);
-  if (expiryFilter === '31-60') return rows.filter(r => r.dte > 30 && r.dte <= 60);
-  return rows;
-}
+// ── 만기 필터 (제거됨 — 새 구조에서는 백엔드가 분류)
+function filterByExpiry(rows) { return rows; }
 
-// ── 메트릭 카드
-function renderMetrics(score, flowRows) {
-  const el = document.getElementById('struct-metrics');
+// ============================================
+// 섹션 1 — 만기 구조 카드
+// ============================================
+function renderExpiryCards(monthly, weekly, scoreRow) {
+  const el = document.getElementById('struct-expiry-cards');
   if (!el) return;
 
-  const avgAtmIV    = avg(flowRows.map(r => r.atm_iv).filter(Boolean));
-  const avgSkew     = avg(flowRows.map(r => r.iv_skew).filter(v => v != null));
-  const totalCallOI = flowRows.reduce((s, r) => s + (r.call_oi || 0), 0);
-  const totalPutOI  = flowRows.reduce((s, r) => s + (r.put_oi  || 0), 0);
-  const overallPCR  = totalCallOI > 0 ? totalPutOI / totalCallOI : null;
-  const avgATMPut   = avg(flowRows.map(r => r.atm_put_oi_ratio).filter(v => v != null));
+  const spot = scoreRow?.close ?? null;
+  const rows = [...monthly];
+  if (weekly) rows.push({ ...weekly, _isFeaturedWeekly: true });
 
-  const close    = score?.close;
-  const bbPos    = score?.bb_position;
-  const totalSc  = score?.total_score;
-  const bbFlag   = score?.bb_flag;
+  if (!rows.length) {
+    el.innerHTML = '<div class="no-data" style="padding:16px;color:var(--text3)">만기 데이터 없음</div>';
+    return;
+  }
 
-  el.innerHTML = `
-    ${metricCard('총점', totalSc != null ? `${totalSc}/10` : '-', totalSc >= 7 ? 'green' : totalSc >= 4 ? 'amber' : 'red')}
-    ${metricCard('현재가', close ? `$${fmt.price(close)}` : '-', 'neutral')}
-    ${metricCard('BB 위치', bbPos != null ? `${(bbPos * 100).toFixed(0)}%` : '-', bbPosCss(bbPos), bbFlag ? '⚡ BREAKDOWN' : '')}
-    ${metricCard('ATM IV', avgAtmIV ? `${(avgAtmIV * 100).toFixed(1)}%` : '-', 'neutral')}
-    ${metricCard('IV 스큐', avgSkew != null ? `${(avgSkew * 100).toFixed(1)}%` : '-', avgSkew > 0 ? 'green' : avgSkew < 0 ? 'red' : 'neutral', avgSkew > 0 ? '콜 프리미엄' : avgSkew < 0 ? '풋 프리미엄' : '')}
-    ${metricCard('PCR OI', overallPCR != null ? overallPCR.toFixed(2) : '-', overallPCR > 1.2 ? 'red' : overallPCR < 0.8 ? 'green' : 'neutral')}
-    ${metricCard('ATM풋집중', avgATMPut != null ? `${(avgATMPut * 100).toFixed(0)}%` : '-', avgATMPut > 0.5 ? 'red' : 'neutral')}
-  `;
-}
+  el.innerHTML = rows.map(r => {
+    const isWeekly  = r._isFeaturedWeekly;
+    const netOI     = (r.call_oi || 0) - (r.put_oi || 0);
+    const netDir    = netOI > 0 ? 'CALL' : netOI < 0 ? 'PUT' : '중립';
+    const netColor  = netOI > 0 ? '#22c55e' : netOI < 0 ? '#ef4444' : '#6e7681';
 
-function metricCard(label, value, colorClass = 'neutral', sub = '') {
-  const colors = {
-    green:   '#22c55e',
-    red:     '#ef4444',
-    amber:   '#f59e0b',
-    purple:  '#a78bfa',
-    neutral: 'var(--text)',
-  };
-  const c = colors[colorClass] || colors.neutral;
-  return `
-    <div class="struct-metric-card">
-      <div class="smc-label">${label}</div>
-      <div class="smc-value" style="color:${c}">${value}</div>
-      ${sub ? `<div class="smc-sub">${sub}</div>` : ''}
-    </div>
-  `;
-}
+    const flip      = r.flip_strike ?? null;
+    const aboveFlip = spot && flip ? spot > flip : null;
+    const flipColor = aboveFlip === true ? '#22c55e' : aboveFlip === false ? '#ef4444' : '#6e7681';
+    const flipLabel = aboveFlip === true ? '위 ▲ 롱감마' : aboveFlip === false ? '아래 ▼ 숏감마' : '—';
 
-function bbPosCss(v) {
-  if (v == null) return 'neutral';
-  if (v < 0.05) return 'green';
-  if (v < 0.32) return 'amber';
-  return 'neutral';
-}
+    const skew      = r.iv_skew ?? null;
+    const skewColor = skew > 0 ? '#22c55e' : skew < 0 ? '#ef4444' : '#6e7681';
+    const skewLabel = skew > 0 ? '콜 프리미엄 ▲' : skew < 0 ? '풋 프리미엄 ▼' : '중립';
 
-// ── ATM IV 스펙트럼 차트
-function renderIVChart(rows) {
-  const canvas = document.getElementById('struct-iv-chart');
-  if (!canvas) return;
+    const vanna     = r.vanna ?? 0;
+    const charm     = r.charm ?? 0;
+    const vannaDir  = vanna > 0 ? '▲' : vanna < 0 ? '▼' : '—';
+    const charmDir  = charm > 0 ? '▲' : charm < 0 ? '▼' : '—';
+    const vannaColor= vanna > 0 ? '#22c55e' : vanna < 0 ? '#ef4444' : '#6e7681';
+    const charmColor= charm > 0 ? '#22c55e' : charm < 0 ? '#ef4444' : '#6e7681';
 
-  // 기존 차트 제거
-  if (chartInstance) { chartInstance.destroy(); chartInstance = null; }
-  if (!rows.length) return;
+    const tag = isWeekly
+      ? `<span style="background:#f59e0b22;color:#f59e0b;border:1px solid #f59e0b44;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700">⚡ WEEKLY 이상 베팅</span>`
+      : `<span style="background:#3b82f622;color:#3b82f6;border:1px solid #3b82f644;border-radius:4px;padding:1px 6px;font-size:10px;font-weight:700">MONTHLY</span>`;
 
-  const sorted   = [...rows].sort((a, b) => a.dte - b.dte);
-  const labels   = sorted.map(r => `${r.dte}d\n${r.expiry_date?.slice(5)}`);
-  const atmIVs   = sorted.map(r => r.atm_iv  != null ? +(r.atm_iv  * 100).toFixed(2) : null);
-  const callIVs  = sorted.map(r => r.otm_call_iv != null ? +(r.otm_call_iv * 100).toFixed(2) : null);
-  const putIVs   = sorted.map(r => r.otm_put_iv  != null ? +(r.otm_put_iv  * 100).toFixed(2) : null);
-
-  document.getElementById('struct-iv-note').textContent =
-    `${sorted[0]?.dte ?? '-'}~${sorted[sorted.length-1]?.dte ?? '-'}DTE / ${rows.length}개 만기`;
-
-  chartInstance = new Chart(canvas, {
-    type: 'line',
-    data: {
-      labels,
-      datasets: [
-        {
-          label: 'ATM IV',
-          data: atmIVs,
-          borderColor: '#a78bfa',
-          backgroundColor: 'rgba(167,139,250,0.08)',
-          borderWidth: 2,
-          pointRadius: 4,
-          pointBackgroundColor: '#a78bfa',
-          fill: true,
-          tension: 0.3,
-        },
-        {
-          label: 'OTM Call IV',
-          data: callIVs,
-          borderColor: '#22c55e',
-          borderWidth: 1.5,
-          borderDash: [4, 3],
-          pointRadius: 3,
-          pointBackgroundColor: '#22c55e',
-          fill: false,
-          tension: 0.3,
-        },
-        {
-          label: 'OTM Put IV',
-          data: putIVs,
-          borderColor: '#ef4444',
-          borderWidth: 1.5,
-          borderDash: [4, 3],
-          pointRadius: 3,
-          pointBackgroundColor: '#ef4444',
-          fill: false,
-          tension: 0.3,
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(1) ?? '-'}%`,
-          },
-        },
-      },
-      scales: {
-        x: { ticks: { color: '#8b949e', font: { size: 11 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
-        y: {
-          ticks: {
-            color: '#8b949e', font: { size: 11 },
-            callback: v => v + '%',
-          },
-          grid: { color: 'rgba(255,255,255,0.05)' },
-        },
-      },
-    },
-  });
-}
-
-// ── PCR 차트
-function renderPCRChart(rows) {
-  const canvas = document.getElementById('struct-pcr-chart');
-  if (!canvas) return;
-  if (heatChartInst) { heatChartInst.destroy(); heatChartInst = null; }
-  if (!rows.length) return;
-
-  const sorted  = [...rows].sort((a, b) => a.dte - b.dte);
-  const labels  = sorted.map(r => `${r.dte}d`);
-  const pcrOI   = sorted.map(r => r.pcr_oi  != null ? +r.pcr_oi.toFixed(3)  : null);
-  const pcrVol  = sorted.map(r => r.pcr_vol != null ? +r.pcr_vol.toFixed(3) : null);
-
-  heatChartInst = new Chart(canvas, {
-    type: 'bar',
-    data: {
-      labels,
-      datasets: [
-        {
-          label: 'PCR OI',
-          data: pcrOI,
-          backgroundColor: pcrOI.map(v =>
-            v > 1.2 ? 'rgba(239,68,68,0.6)' : v < 0.8 ? 'rgba(34,197,94,0.6)' : 'rgba(148,163,184,0.4)'
-          ),
-          borderWidth: 0,
-          yAxisID: 'y',
-        },
-        {
-          label: 'PCR Vol',
-          data: pcrVol,
-          type: 'line',
-          borderColor: '#f59e0b',
-          borderWidth: 2,
-          pointRadius: 3,
-          pointBackgroundColor: '#f59e0b',
-          fill: false,
-          tension: 0.3,
-          yAxisID: 'y',
-        },
-      ],
-    },
-    options: {
-      responsive: true,
-      maintainAspectRatio: false,
-      interaction: { mode: 'index', intersect: false },
-      plugins: {
-        legend: { display: false },
-        tooltip: {
-          callbacks: {
-            label: ctx => `${ctx.dataset.label}: ${ctx.parsed.y?.toFixed(2) ?? '-'}`,
-          },
-        },
-        annotation: {
-          annotations: {
-            neutral: {
-              type: 'line',
-              yMin: 1, yMax: 1,
-              borderColor: 'rgba(255,255,255,0.2)',
-              borderWidth: 1,
-              borderDash: [4, 4],
-            },
-          },
-        },
-      },
-      scales: {
-        x: { ticks: { color: '#8b949e', font: { size: 11 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
-        y: { ticks: { color: '#8b949e', font: { size: 11 } }, grid: { color: 'rgba(255,255,255,0.05)' } },
-      },
-    },
-  });
-}
-
-// ── ATM 풋 OI 집중도 바
-function renderATMBars(rows) {
-  const el = document.getElementById('struct-atm-bars');
-  if (!el || !rows.length) { if (el) el.innerHTML = '<div class="no-data">데이터 없음</div>'; return; }
-
-  const sorted = [...rows].sort((a, b) => a.dte - b.dte);
-
-  el.innerHTML = sorted.map(r => {
-    const ratio = r.atm_put_oi_ratio ?? 0;
-    const pct   = (ratio * 100).toFixed(0);
-    const color = ratio > 0.7 ? '#ef4444' : ratio > 0.5 ? '#f59e0b' : '#22c55e';
     return `
-      <div class="atm-bar-row">
-        <div class="atm-bar-label">${r.dte}d <span class="atm-expiry">${r.expiry_date?.slice(5) ?? ''}</span></div>
-        <div class="atm-bar-track">
-          <div class="atm-bar-fill" style="width:${pct}%;background:${color}"></div>
+      <div style="
+        background:var(--bg2);border:1px solid var(--border);border-radius:8px;
+        padding:14px 16px;margin-bottom:10px;
+      ">
+        <!-- 헤더 -->
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+          ${tag}
+          <span style="font-family:var(--mono);font-size:14px;font-weight:700;color:var(--text)">
+            ${r.expiry_date ?? '—'}
+          </span>
+          <span style="font-size:12px;color:var(--text3)">D-${r.dte ?? '?'}</span>
         </div>
-        <div class="atm-bar-val" style="color:${color}">${pct}%</div>
-        <div class="atm-bar-oi">Put OI: ${fmtK(r.put_oi)}</div>
+
+        <!-- 데이터 그리드 -->
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px">
+
+          <!-- Net OI -->
+          <div style="background:var(--bg3);border-radius:6px;padding:10px">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Net OI 방향</div>
+            <div style="font-size:16px;font-weight:800;color:${netColor}">${netDir}</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">
+              C ${fmtK(r.call_oi)} / P ${fmtK(r.put_oi)}
+            </div>
+          </div>
+
+          <!-- 플립존 -->
+          <div style="background:var(--bg3);border-radius:6px;padding:10px">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:4px">플립존</div>
+            <div style="font-size:16px;font-weight:800;font-family:var(--mono);color:${flipColor}">
+              ${flip ? '$' + flip.toFixed(0) : '—'}
+            </div>
+            <div style="font-size:11px;color:${flipColor};margin-top:2px">${flipLabel}</div>
+          </div>
+
+          <!-- IV 스큐 -->
+          <div style="background:var(--bg3);border-radius:6px;padding:10px">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:4px">IV 스큐</div>
+            <div style="font-size:16px;font-weight:800;color:${skewColor}">
+              ${skew != null ? (skew > 0 ? '+' : '') + (skew * 100).toFixed(1) + '%' : '—'}
+            </div>
+            <div style="font-size:11px;color:${skewColor};margin-top:2px">${skewLabel}</div>
+          </div>
+
+          <!-- Vanna -->
+          <div style="background:var(--bg3);border-radius:6px;padding:10px">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Vanna</div>
+            <div style="font-size:15px;font-weight:700;font-family:var(--mono);color:${vannaColor}">
+              ${vannaDir} ${Math.abs(vanna).toFixed(3)}
+            </div>
+            <div style="font-size:10px;color:var(--text3);margin-top:2px">
+              VIX↓ → 딜러 ${vanna > 0 ? '매수' : '매도'} 헤징
+            </div>
+          </div>
+
+          <!-- Charm -->
+          <div style="background:var(--bg3);border-radius:6px;padding:10px">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Charm</div>
+            <div style="font-size:15px;font-weight:700;font-family:var(--mono);color:${charmColor}">
+              ${charmDir} ${Math.abs(charm).toFixed(3)}
+            </div>
+            <div style="font-size:10px;color:var(--text3);margin-top:2px">
+              만기 수렴 → 딜러 ${charm > 0 ? '매수' : '매도'} 압력
+            </div>
+          </div>
+
+          <!-- ATM IV -->
+          <div style="background:var(--bg3);border-radius:6px;padding:10px">
+            <div style="font-size:10px;color:var(--text3);margin-bottom:4px">ATM IV</div>
+            <div style="font-size:15px;font-weight:700;font-family:var(--mono);color:var(--text)">
+              ${r.atm_iv != null ? (r.atm_iv * 100).toFixed(1) + '%' : '—'}
+            </div>
+            <div style="font-size:10px;color:var(--text3);margin-top:2px">
+              C ${r.otm_call_iv != null ? (r.otm_call_iv*100).toFixed(1)+'%' : '—'}
+              / P ${r.otm_put_iv != null ? (r.otm_put_iv*100).toFixed(1)+'%' : '—'}
+            </div>
+          </div>
+
+        </div>
       </div>
     `;
   }).join('');
 }
 
-// ── 점수 분해 테이블 (새 기준: 강도 + 타이밍)
-function renderScoreTable(s) {
-  const el = document.getElementById('struct-score-table');
-  if (!el) return;
+// ============================================
+// 섹션 2 — 타이밍 컨텍스트
+// ============================================
+function renderTimingContext(context, scoreRow) {
+  const el = document.getElementById('struct-timing');
+  if (!el || !context) {
+    if (el) el.innerHTML = '<div class="no-data" style="padding:16px;color:var(--text3)">컨텍스트 데이터 없음</div>';
+    return;
+  }
 
-  const strength = s.strength_score ?? 0;
-  const grade    = s.timing_grade   ?? 'C';
-  const flip     = s.flip_strike    ?? null;
-  const monthly  = s.monthly_count  ?? 0;
+  const opexDte   = context.opex_dte ?? null;
+  const weekDte   = context.this_week_dte ?? null;
+  const weekExp   = context.this_week_expiry ?? null;
+  const vannaSum  = context.vanna_sum ?? 0;
+  const charmSum  = context.charm_sum ?? 0;
+  const aligned   = context.skew_aligned;
+  const featured  = context.weekly_featured;
 
-  // 강도 방향
-  const dir      = strength > 0 ? '콜 ▲' : strength < 0 ? '풋 ▼' : '중립';
-  const dirColor = strength > 0 ? '#22c55e' : strength < 0 ? '#ef4444' : '#6e7681';
+  // OPEX 긴박도 색상
+  const opexColor = opexDte != null
+    ? (opexDte <= 7 ? '#ef4444' : opexDte <= 14 ? '#f59e0b' : '#22c55e')
+    : '#6e7681';
 
-  // 타이밍 등급 설명
-  const gradeDesc = {
-    'A': '⚡ 즉시 진입 — Monthly 2개 + Weekly 방향 일치',
-    'B': '◎ 준비 단계 — Monthly 2개 방향 일치',
-    'C': '○ 관찰 — 타이밍 신호 없음',
-  };
-  const gradeColor = grade === 'A' ? '#f59e0b' : grade === 'B' ? '#3b82f6' : '#6e7681';
+  // 이번 주 위클리 Charm 피크 여부
+  const charmPeak = weekDte != null && weekDte <= 2;
+
+  // Vanna + Charm 방향 일치 여부
+  const vannaDir = vannaSum > 0 ? 1 : vannaSum < 0 ? -1 : 0;
+  const charmDir = charmSum > 0 ? 1 : charmSum < 0 ? -1 : 0;
+  const loopActive = vannaDir !== 0 && vannaDir === charmDir;
 
   el.innerHTML = `
-    <div class="score-summary-box" style="
-      background:var(--bg2);border:1px solid var(--border);
-      border-radius:8px;padding:16px;margin-bottom:12px;
-      display:grid;grid-template-columns:1fr 1fr;gap:12px
-    ">
-      <!-- 강도 점수 -->
-      <div>
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px">
+
+      <!-- OPEX D-day -->
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:6px">다음 OPEX</div>
+        <div style="font-size:28px;font-weight:800;font-family:var(--mono);color:${opexColor}">
+          D-${opexDte ?? '?'}
+        </div>
+        <div style="font-size:11px;color:${opexColor};margin-top:4px">
+          ${opexDte != null
+            ? (opexDte <= 7 ? '⚡ Vanna flow 최대 수렴 구간' : opexDte <= 14 ? '◎ Vanna flow 강화 중' : '○ OPEX 준비 구간')
+            : '—'}
+        </div>
+      </div>
+
+      <!-- 이번 주 위클리 -->
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:6px">이번 주 위클리 만기</div>
+        <div style="font-size:20px;font-weight:800;font-family:var(--mono);color:${charmPeak ? '#ef4444' : 'var(--text)'}">
+          ${weekExp ? weekExp.slice(5) : '없음'}
+          ${weekDte != null ? `<span style="font-size:14px;color:var(--text3)"> D-${weekDte}</span>` : ''}
+        </div>
+        <div style="font-size:11px;margin-top:4px;color:${charmPeak ? '#ef4444' : 'var(--text3)'}">
+          ${charmPeak ? '⚡ Charm 압력 피크 — 자기강화 루프 경계' : weekDte != null ? 'Charm 작동 중' : '이번 주 위클리 없음'}
+        </div>
+      </div>
+
+      <!-- Monthly IV 스큐 일치 -->
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:6px">Monthly IV스큐 일치</div>
+        <div style="font-size:22px;font-weight:800;color:${aligned ? '#22c55e' : '#6e7681'}">
+          ${aligned ? '✓ 일치' : '✗ 불일치'}
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">
+          기관 방향성 베팅 ${aligned ? '확인' : '미확인'}
+        </div>
+      </div>
+
+      <!-- Weekly 이상 베팅 -->
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px">
+        <div style="font-size:11px;color:var(--text3);margin-bottom:6px">Weekly 이상 베팅</div>
+        <div style="font-size:22px;font-weight:800;color:${featured ? '#f59e0b' : '#6e7681'}">
+          ${featured ? '⚡ 감지' : '없음'}
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">
+          ${featured ? 'Charm 자기강화 연료 존재' : '평균 수준 OI'}
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Vanna/Charm 복합 방향 -->
+    <div style="background:var(--bg2);border:1px solid ${loopActive ? '#f59e0b44' : 'var(--border)'};border-radius:8px;padding:14px">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:8px">Vanna + Charm 복합 방향 (Monthly 합산)</div>
+      <div style="display:flex;gap:20px;align-items:center">
+        <div>
+          <span style="font-size:11px;color:var(--text3)">Vanna </span>
+          <span style="font-size:15px;font-weight:700;font-family:var(--mono);color:${vannaSum > 0 ? '#22c55e' : vannaSum < 0 ? '#ef4444' : '#6e7681'}">
+            ${vannaSum > 0 ? '▲' : vannaSum < 0 ? '▼' : '—'} ${Math.abs(vannaSum).toFixed(3)}
+          </span>
+        </div>
+        <div style="color:var(--text3)">+</div>
+        <div>
+          <span style="font-size:11px;color:var(--text3)">Charm </span>
+          <span style="font-size:15px;font-weight:700;font-family:var(--mono);color:${charmSum > 0 ? '#22c55e' : charmSum < 0 ? '#ef4444' : '#6e7681'}">
+            ${charmSum > 0 ? '▲' : charmSum < 0 ? '▼' : '—'} ${Math.abs(charmSum).toFixed(3)}
+          </span>
+        </div>
+        <div style="margin-left:auto;font-size:13px;font-weight:700;color:${loopActive ? '#f59e0b' : '#6e7681'}">
+          ${loopActive ? '⚡ 자기강화 루프 조건 충족' : '방향 불일치 — 루프 없음'}
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// ============================================
+// 섹션 3 — 딜러 메카닉 판단
+// ============================================
+function renderMechanicSummary(scoreRow, context, monthly) {
+  const el = document.getElementById('struct-mechanic');
+  if (!el) return;
+
+  const strength  = scoreRow?.strength_score ?? 0;
+  const grade     = scoreRow?.timing_grade   ?? 'C';
+  const flip      = scoreRow?.flip_strike    ?? null;
+  const spot      = scoreRow?.close          ?? null;
+  const ivSkew    = scoreRow?.iv_skew        ?? null;
+
+  const dir       = strength > 0 ? '콜 방향 ▲' : strength < 0 ? '풋 방향 ▼' : '중립';
+  const dirColor  = strength > 0 ? '#22c55e'   : strength < 0 ? '#ef4444'   : '#6e7681';
+
+  const gradeColor = grade === 'A' ? '#f59e0b' : grade === 'B' ? '#3b82f6' : '#6e7681';
+  const gradeDesc  = {
+    'A': '즉시 진입 — Monthly 2개 + Weekly 방향 일치',
+    'B': '준비 단계 — Monthly 2개 방향 일치',
+    'C': '관찰 — 타이밍 신호 없음',
+  };
+
+  const aboveFlip = spot && flip ? spot > flip : null;
+
+  // 종합 메카닉 상태 판단
+  const vannaSum  = context?.vanna_sum ?? 0;
+  const charmSum  = context?.charm_sum ?? 0;
+  const loopActive = (vannaSum > 0 && charmSum > 0) || (vannaSum < 0 && charmSum < 0);
+  const opexDte   = context?.opex_dte ?? null;
+  const featured  = context?.weekly_featured ?? false;
+
+  // 컨디션 체크리스트
+  const checks = [
+    {
+      label: '딜러 롱감마 (플립존 위)',
+      ok: aboveFlip === true,
+      desc: aboveFlip === true ? `현재가 $${spot?.toFixed(0)} > 플립존 $${flip?.toFixed(0)}` : flip ? `현재가 $${spot?.toFixed(0)} < 플립존 $${flip?.toFixed(0)}` : '플립존 없음',
+    },
+    {
+      label: 'Vanna + Charm 동방향',
+      ok: loopActive,
+      desc: loopActive ? '자기강화 루프 작동 가능' : '두 힘이 상충 — 루프 없음',
+    },
+    {
+      label: 'Monthly IV스큐 일치',
+      ok: context?.skew_aligned ?? false,
+      desc: context?.skew_aligned ? '기관 방향성 베팅 확인' : '방향성 미확인',
+    },
+    {
+      label: 'OPEX 2주 이내',
+      ok: opexDte != null && opexDte <= 14,
+      desc: opexDte != null ? `D-${opexDte}` : '—',
+    },
+    {
+      label: 'Weekly 이상 베팅',
+      ok: featured,
+      desc: featured ? 'Charm 연료 확인' : '평균 수준',
+    },
+  ];
+
+  const passCount = checks.filter(c => c.ok).length;
+  const totalCount = checks.length;
+  const overallColor = passCount >= 4 ? '#22c55e' : passCount >= 3 ? '#f59e0b' : '#ef4444';
+
+  el.innerHTML = `
+    <!-- 강도 + 타이밍 -->
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px">
         <div style="font-size:11px;color:var(--text3);margin-bottom:4px">강도 점수</div>
-        <div style="font-size:32px;font-weight:800;font-family:var(--mono);color:${dirColor}">
+        <div style="font-size:36px;font-weight:800;font-family:var(--mono);color:${dirColor}">
           ${strength > 0 ? '+' : ''}${strength}
         </div>
         <div style="font-size:12px;color:${dirColor};margin-top:2px">${dir}</div>
-        <div style="margin-top:8px;height:6px;background:var(--bg3);border-radius:3px;overflow:hidden">
+        <div style="margin-top:8px;height:5px;background:var(--bg3);border-radius:3px;overflow:hidden">
           <div style="width:${(Math.abs(strength)/3)*100}%;height:100%;background:${dirColor};border-radius:3px"></div>
         </div>
       </div>
-      <!-- 타이밍 등급 -->
-      <div>
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px">
         <div style="font-size:11px;color:var(--text3);margin-bottom:4px">타이밍 등급</div>
-        <div style="font-size:32px;font-weight:800;color:${gradeColor}">${grade}</div>
+        <div style="font-size:36px;font-weight:800;color:${gradeColor}">${grade}</div>
         <div style="font-size:11px;color:${gradeColor};margin-top:2px">${gradeDesc[grade] ?? ''}</div>
       </div>
     </div>
 
-    <table class="score-tbl">
-      <tbody>
-        <tr>
-          <td class="score-item-label">플립존</td>
-          <td class="score-item-val" style="color:${dirColor};font-family:var(--mono)">
-            ${flip ? '$' + flip.toFixed(0) : '—'}
-          </td>
-          <td class="score-item-detail">
-            현재가 기준 ${flip && s.close
-              ? (s.close > flip ? '위 (딜러 롱감마 ✓)' : '아래 (딜러 숏감마)')
-              : '—'}
-          </td>
-        </tr>
-        <tr>
-          <td class="score-item-label">Monthly 수</td>
-          <td class="score-item-val">${monthly}개</td>
-          <td class="score-item-detail">
-            ${monthly >= 2 ? '2개 월물 확인 — 기관 분산 베팅 가능성' : '1개 월물'}
-          </td>
-        </tr>
-        <tr>
-          <td class="score-item-label">IV 스큐</td>
-          <td class="score-item-val" style="color:${(s.iv_skew ?? 0) > 0 ? '#22c55e' : '#ef4444'}">
-            ${s.iv_skew != null
-              ? (s.iv_skew > 0 ? '+' : '') + (s.iv_skew * 100).toFixed(1) + '%'
-              : '—'}
-          </td>
-          <td class="score-item-detail">
-            ${s.iv_skew != null
-              ? (s.iv_skew > 0 ? '콜 프리미엄 — 업사이드 기대' : '풋 프리미엄 — 하방 헷지')
-              : '—'}
-          </td>
-        </tr>
-      </tbody>
-    </table>
-
-    <div class="score-guide" style="
-      margin-top:12px;padding:10px 12px;
-      background:var(--bg3);border-radius:6px;
-      font-size:11px;color:var(--text3);line-height:1.6
-    ">
-      <strong style="color:var(--text2)">기준 안내</strong><br>
-      강도 +3/-3: 헤징 수량 &gt; 일평균거래량×5% × 3배 이상<br>
-      강도 +2/-2: 헤징 수량 &gt; 일평균거래량×5% × 2배<br>
-      강도 +1/-1: 헤징 수량 &gt; 일평균거래량×5% (최소 기준 통과)<br>
-      타이밍 A: Monthly 2개 IV스큐 일치 + Weekly 방향 일치 → 진입 임박<br>
-      타이밍 B: Monthly 2개 IV스큐 일치 → 준비 단계<br>
-      타이밍 C: 필터 통과, 타이밍 신호 없음 → 관찰
+    <!-- 컨디션 체크리스트 -->
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <span style="font-size:12px;font-weight:700;color:var(--text2)">메카닉 조건 체크</span>
+        <span style="font-size:13px;font-weight:800;color:${overallColor}">${passCount}/${totalCount} 충족</span>
+      </div>
+      ${checks.map(c => `
+        <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
+          <div style="font-size:16px;color:${c.ok ? '#22c55e' : '#ef4444'};flex-shrink:0;margin-top:1px">
+            ${c.ok ? '✓' : '✗'}
+          </div>
+          <div style="flex:1">
+            <div style="font-size:12px;font-weight:600;color:${c.ok ? 'var(--text)' : 'var(--text3)'}">${c.label}</div>
+            <div style="font-size:11px;color:var(--text3);margin-top:2px">${c.desc}</div>
+          </div>
+        </div>
+      `).join('')}
     </div>
   `;
 }
