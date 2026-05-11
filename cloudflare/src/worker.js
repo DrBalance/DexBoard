@@ -248,32 +248,29 @@ export default {
       if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
-      const { rows } = await request.json();
-      if (!Array.isArray(rows) || !rows.length) {
-        return json({ ok: false, error: "rows 배열 필요" }, 400, corsHeaders);
-      }
+      try {
+        const { rows } = await request.json();
+        if (!Array.isArray(rows) || !rows.length) {
+          return json({ ok: false, error: "rows 배열 필요" }, 400, corsHeaders);
+        }
 
-      // 배치 INSERT (8행씩 — D1 바인딩 파라미터 100개 제한: 8×11=88)
-      const BATCH = 8;
-      let inserted = 0;
-      for (let i = 0; i < rows.length; i += BATCH) {
-        const batch = rows.slice(i, i + BATCH);
-        const placeholders = batch.map(() =>
-          '(?,?,?,?,?,?,?,?,?,?,?)'
-        ).join(',');
-        const values = batch.flatMap(r => [
-          r.date, r.symbol, r.expiry_date, r.dte,
-          r.strike, r.call_iv, r.put_iv, r.avg_iv,
-          r.call_delta, r.call_oi, r.put_oi,
-        ]);
-        await env.DB.prepare(`
-          INSERT OR REPLACE INTO options_strikes
-          (date, symbol, expiry_date, dte, strike, call_iv, put_iv, avg_iv, call_delta, call_oi, put_oi)
-          VALUES ${placeholders}
-        `).bind(...values).run();
-        inserted += batch.length;
+        // D1 batch — 한 번의 네트워크 요청으로 전체 INSERT
+        const stmts = rows.map(r =>
+          env.DB.prepare(`
+            INSERT OR REPLACE INTO options_strikes
+            (date, symbol, expiry_date, dte, strike, call_iv, put_iv, avg_iv, call_delta, call_oi, put_oi)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+          `).bind(
+            r.date, r.symbol, r.expiry_date, r.dte,
+            r.strike, r.call_iv ?? null, r.put_iv ?? null, r.avg_iv ?? null,
+            r.call_delta ?? null, r.call_oi ?? null, r.put_oi ?? null,
+          )
+        );
+        await env.DB.batch(stmts);
+        return json({ ok: true, inserted: rows.length }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
       }
-      return json({ ok: true, inserted }, 200, corsHeaders);
     }
 
     // ── GET /api/options-dex/:symbol ───────────────────────────
