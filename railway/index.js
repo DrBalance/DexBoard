@@ -941,16 +941,32 @@ for (const { symbol: sym } of symbols) {
 if (allResults.length) {
   console.log(`[Screener] ${allResults.length}개 종목 수집 완료 → D1 저장 시작`);
 
-  const dexRows = [];
+  const dexRows    = [];
+  const strikeRows = [];
 
-  for (const { symbol, rows, meta } of allResults) {
+  for (const { symbol, rows, strikeRows: sRows, meta } of allResults) {
     for (const r of rows) {
       dexRows.push({ date, symbol, ...r });
+    }
+    if (sRows?.length) {
+      for (const s of sRows) {
+        strikeRows.push(s);
+      }
     }
   }
 
   // options_dex 저장
   await d1Write("/d1/options-dex", { rows: dexRows });
+
+  // options_strikes 저장 (Smile 곡선용)
+  if (strikeRows.length) {
+    try {
+      await d1Write("/d1/options-strikes", { rows: strikeRows });
+      console.log(`[Screener] options_strikes 저장: ${strikeRows.length}행`);
+    } catch (e) {
+      console.warn('[Screener] options_strikes 저장 실패 (계속 진행):', e.message);
+    }
+  }
 
   // 새 기준으로 점수 계산 + screener_scores 저장
   let scoreCount = 0;
@@ -972,7 +988,7 @@ if (allResults.length) {
     }
   }
 
-  console.log(`[Screener] D1 저장 완료 -- DEX: ${dexRows.length}행, Scores: ${scoreCount}행`);
+  console.log(`[Screener] D1 저장 완료 -- DEX: ${dexRows.length}행, Strikes: ${strikeRows.length}행, Scores: ${scoreCount}행`);
 }
 
 collectState = {

@@ -364,6 +364,32 @@ const strikeGexList = strikes.map(s => {
 
 const flipStrike = calcFlipStrike(strikeGexList);
 
+// ── 스트라이크별 IV 곡선 데이터 (Smile 곡선용)
+// ATM ± 20% 범위 내, IV가 있는 스트라이크만
+const smileRange = spot * 0.20;
+const strikeIVRows = strikes
+  .filter(s => Math.abs(s.strike - spot) <= smileRange)
+  .map(s => {
+    const cIV = s.callIVCount > 0 ? +(s.callIV / s.callIVCount).toFixed(4) : null;
+    const pIV = s.putIVCount  > 0 ? +(s.putIV  / s.putIVCount).toFixed(4)  : null;
+    const avgIV = (cIV && pIV) ? +((cIV + pIV) / 2).toFixed(4)
+                : cIV ?? pIV ?? null;
+    if (!avgIV) return null;
+    const delta = s.callDeltaCount > 0
+      ? +(s.callDelta / s.callDeltaCount).toFixed(4) : null;
+    return {
+      strike:     s.strike,
+      call_iv:    cIV,
+      put_iv:     pIV,
+      avg_iv:     avgIV,
+      call_delta: delta,
+      call_oi:    s.callOI,
+      put_oi:     s.putOI,
+    };
+  })
+  .filter(Boolean)
+  .sort((a, b) => a.strike - b.strike);
+
 results.push({
   expiry_date:      expiry,
   dte,
@@ -386,6 +412,8 @@ results.push({
   atm_put_oi_ratio: +atmPutRatio.toFixed(4),
   otm_call_theo:    avgOTMCallTheo  != null ? +avgOTMCallTheo.toFixed(4)  : null,
   otm_call_delta:   avgOTMCallDelta != null ? +avgOTMCallDelta.toFixed(4) : null,
+  // Smile 곡선용 스트라이크별 데이터
+  _strikeRows:      strikeIVRows,
 });
 
 }
@@ -557,7 +585,31 @@ if (!spot) throw new Error(`CBOE: ${symbol} 현재가 없음`);
 const rows = aggregateByExpiry(all, spot);
 if (!rows.length) throw new Error(`${symbol}: 60DTE 이내 데이터 없음`);
 
-return { symbol, spot, date, rows };
+// _strikeRows를 별도로 추출 (D1 저장용)
+const strikeRows = [];
+for (const r of rows) {
+  if (r._strikeRows?.length) {
+    for (const s of r._strikeRows) {
+      strikeRows.push({
+        date,
+        symbol,
+        expiry_date: r.expiry_date,
+        dte:         r.dte,
+        strike:      s.strike,
+        call_iv:     s.call_iv,
+        put_iv:      s.put_iv,
+        avg_iv:      s.avg_iv,
+        call_delta:  s.call_delta,
+        call_oi:     s.call_oi,
+        put_oi:      s.put_oi,
+      });
+    }
+  }
+  // D1 저장 시 _strikeRows 제거 (options_dex 스키마에 없는 필드)
+  delete r._strikeRows;
+}
+
+return { symbol, spot, date, rows, strikeRows };
 }
 
 // ─────────────────────────────────────────────────────────────────
