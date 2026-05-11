@@ -560,7 +560,7 @@ export default {
       `).bind(symbol).first();
 
       if (!latestRow?.latest) {
-        return json([], 200, corsHeaders);
+        return json({ monthly: [], weekly: null, context: null }, 200, corsHeaders);
       }
 
       const rows = await env.DB.prepare(`
@@ -570,13 +570,84 @@ export default {
           pcr_vol, pcr_oi,
           atm_iv, otm_call_iv, otm_put_iv,
           atm_put_oi, atm_put_oi_ratio, iv_skew,
-          dex, gex, vanna, charm
+          dex, gex, vanna, charm,
+          flip_strike, otm_call_oi_d, otm_put_oi_d
         FROM options_dex
         WHERE symbol = ? AND date = ? AND dte BETWEEN 0 AND 65
         ORDER BY dte ASC
       `).bind(symbol, latestRow.latest).all();
 
-      return json(rows.results ?? [], 200, corsHeaders);
+      const all = rows.results ?? [];
+
+      // ── isMonthly: 매월 3번째 금요일 판별 ──────────────────────
+      function isMonthly(dateStr) {
+        const d = new Date(dateStr + 'T00:00:00Z');
+        if (d.getUTCDay() !== 5) return false;
+        const day = d.getUTCDate();
+        return day >= 15 && day <= 21;
+      }
+
+      // ── 각 행에 is_monthly + net_oi 추가 ──────────────────────
+      const enriched = all.map(r => ({
+        ...r,
+        is_monthly: isMonthly(r.expiry_date) ? 1 : 0,
+        net_oi: (r.call_oi || 0) - (r.put_oi || 0),
+      }));
+
+      // ── Monthly: 가장 가까운 2개 ───────────────────────────────
+      const monthlyRows = enriched
+        .filter(r => r.is_monthly === 1)
+        .sort((a, b) => a.dte - b.dte)
+        .slice(0, 2);
+
+      // ── Weekly 목록 (Monthly 제외) ─────────────────────────────
+      const weeklyRows = enriched.filter(r => r.is_monthly === 0);
+
+      // ── Weekly 평균 net OI → 1.5배 초과만 표시 ────────────────
+      let featuredWeekly = null;
+      if (weeklyRows.length > 0) {
+        const avgNetOI = weeklyRows.reduce((s, r) => s + Math.abs(r.net_oi), 0) / weeklyRows.length;
+        const threshold = avgNetOI * 1.5;
+        const candidates = weeklyRows
+          .filter(r => Math.abs(r.net_oi) > threshold)
+          .sort((a, b) => Math.abs(b.net_oi) - Math.abs(a.net_oi));
+        if (candidates.length > 0) featuredWeekly = candidates[0];
+      }
+
+      // ── OPEX까지 남은 일수 (가장 가까운 Monthly 기준) ──────────
+      const nextMonthly = monthlyRows[0] ?? null;
+      const opexDte = nextMonthly?.dte ?? null;
+
+      // ── 이번 주 위클리 만기 (DTE 0~6 중 가장 가까운 것) ────────
+      const thisWeekExpiry = weeklyRows
+        .filter(r => r.dte >= 0 && r.dte <= 6)
+        .sort((a, b) => a.dte - b.dte)[0] ?? null;
+
+      // ── Vanna/Charm 방향 판단 (Monthly 합산) ───────────────────
+      const vannaSum = monthlyRows.reduce((s, r) => s + (r.vanna || 0), 0);
+      const charmSum = monthlyRows.reduce((s, r) => s + (r.charm || 0), 0);
+
+      // ── Monthly IV스큐 방향 일치 여부 ──────────────────────────
+      const monthlySkews = monthlyRows.map(r => r.iv_skew).filter(v => v != null);
+      const skewAligned = monthlySkews.length >= 2
+        ? (monthlySkews[0] > 0) === (monthlySkews[1] > 0)
+        : false;
+
+      return json({
+        date:    latestRow.latest,
+        symbol,
+        monthly: monthlyRows,
+        weekly:  featuredWeekly,
+        context: {
+          opex_dte:          opexDte,
+          this_week_expiry:  thisWeekExpiry ? thisWeekExpiry.expiry_date : null,
+          this_week_dte:     thisWeekExpiry?.dte ?? null,
+          vanna_sum:         +vannaSum.toFixed(4),
+          charm_sum:         +charmSum.toFixed(4),
+          skew_aligned:      skewAligned,
+          weekly_featured:   featuredWeekly != null,
+        },
+      }, 200, corsHeaders);
     }
 
     // ── GET /api/etf-holdings/:ticker ───────────────────────────
