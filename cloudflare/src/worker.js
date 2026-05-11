@@ -228,13 +228,45 @@ export default {
         query  = `SELECT * FROM options_dex WHERE symbol=? AND date=? ORDER BY dte ASC`;
         params = [sym, date];
       } else {
-        // date 없으면 가장 최신 날짜 자동 선택
         query  = `SELECT * FROM options_dex WHERE symbol=? AND date=(SELECT MAX(date) FROM options_dex WHERE symbol=?) ORDER BY dte ASC`;
         params = [sym, sym];
       }
 
       const rows = await env.DB.prepare(query).bind(...params).all();
       return json({ symbol: sym, rows: rows.results ?? [] }, 200, corsHeaders);
+    }
+
+    // ── GET /api/options-dex/:symbol/history ───────────────────
+    // Term Structure 전일 비교용: 최근 N일 데이터 반환
+    const optDexHistMatch = path.match(/^\/api\/options-dex\/([a-zA-Z]+)\/history$/);
+    if (request.method === "GET" && optDexHistMatch) {
+      const sym  = optDexHistMatch[1].toUpperCase();
+      const days = parseInt(url.searchParams.get("days") || "3");
+
+      // 최근 N개 날짜 조회
+      const datesRes = await env.DB.prepare(`
+        SELECT DISTINCT date FROM options_dex
+        WHERE symbol=?
+        ORDER BY date DESC
+        LIMIT ?
+      `).bind(sym, days).all();
+
+      const dates = (datesRes.results ?? []).map(r => r.date);
+      if (!dates.length) return json({ symbol: sym, dates: [], rows: [] }, 200, corsHeaders);
+
+      // 해당 날짜들의 전체 데이터 조회
+      const placeholders = dates.map(() => '?').join(',');
+      const rowsRes = await env.DB.prepare(`
+        SELECT * FROM options_dex
+        WHERE symbol=? AND date IN (${placeholders})
+        ORDER BY date DESC, dte ASC
+      `).bind(sym, ...dates).all();
+
+      return json({
+        symbol: sym,
+        dates,
+        rows: rowsRes.results ?? [],
+      }, 200, corsHeaders);
     }
 
     // ── GET /api/symbols (자동완성) ─────────────────────────────
