@@ -117,6 +117,15 @@ function renderShell() {
       <div id="struct-skew"></div>
     </div>
 
+    <!-- 섹션 5b: Volatility Smile 곡선 -->
+    <div class="struct-panel">
+      <div class="struct-panel-title">
+        <span class="panel-icon">◡</span> Volatility Smile
+        <span class="panel-sub">만기 선택 → 스트라이크별 IV 곡선</span>
+      </div>
+      <div id="struct-smile"></div>
+    </div>
+
     <!-- 섹션 6: Expected Move -->
     <div class="struct-panel">
       <div class="struct-panel-title">
@@ -133,6 +142,15 @@ function renderShell() {
         <span class="panel-sub">딜러 헤징 압력 분포</span>
       </div>
       <div id="struct-heatmap"></div>
+    </div>
+
+    <!-- 섹션 8: 종합 판단 -->
+    <div class="struct-panel" style="border:1px solid var(--border);border-radius:12px;padding:0">
+      <div class="struct-panel-title" style="border-radius:12px 12px 0 0">
+        <span class="panel-icon">★</span> 종합 판단
+        <span class="panel-sub">Term Structure · Skew · Flip Zone · Vanna 결합 분석</span>
+      </div>
+      <div id="struct-verdict"></div>
     </div>
 
   </div>
@@ -923,8 +941,10 @@ async function loadAndRenderCharts(symbol, scoreRow) {
     // 각 섹션 렌더링
     renderTermStructure(termData);
     renderSkewChart(skewData);
+    renderSmileSelector(symbol, rows, scoreRow);  // Smile 곡선 (만기 선택)
     renderExpectedMove(emData, spot);
     renderDexHeatmap(rows);
+    renderVerdict({ termData, skewData, emData, spot, flipStrike, vannaSum, rows });
 
   } catch (err) {
     console.error('[structure] chart load error:', err);
@@ -1388,6 +1408,370 @@ function renderDexHeatmap(rows) {
     </div>
     <div style="margin-top:8px;font-size:10px;color:var(--text3)">
       ■ 초록 = 콜 DEX 우세 (딜러 매수 헤징 압력) &nbsp;|&nbsp; ■ 빨강 = 풋 DEX 우세 (딜러 매도 헤징 압력)
+    </div>
+  `;
+}
+
+// ============================================
+// 섹션 5b — Volatility Smile 곡선
+// ============================================
+function renderSmileSelector(symbol, expiryRows, scoreRow) {
+  const el = document.getElementById('struct-smile');
+  if (!el) return;
+
+  if (!expiryRows.length) {
+    el.innerHTML = '<div style="padding:16px;color:var(--text3)">데이터 없음</div>';
+    return;
+  }
+
+  const spot = scoreRow?.close ?? null;
+
+  // 만기 선택 탭 렌더링
+  el.innerHTML = `
+    <div style="margin-bottom:12px">
+      <div style="display:flex;gap:6px;flex-wrap:wrap" id="smile-tab-wrap">
+        ${expiryRows.map((r, i) => `
+          <button class="smile-tab-btn ${i === 0 ? 'active' : ''}"
+            data-expiry="${r.expiry_date}"
+            style="
+              padding:4px 10px;font-size:11px;border-radius:6px;cursor:pointer;
+              background:${i === 0 ? 'var(--accent)' : 'var(--bg3)'};
+              color:${i === 0 ? '#fff' : 'var(--text3)'};
+              border:1px solid ${i === 0 ? 'var(--accent)' : 'var(--border)'};
+            ">
+            ${r.expiry_date.slice(5)} D-${r.dte}
+          </button>
+        `).join('')}
+      </div>
+    </div>
+    <div id="smile-chart-area">
+      <div style="padding:16px;color:var(--text3);font-size:12px">만기를 선택하면 Smile 곡선을 표시합니다</div>
+    </div>
+  `;
+
+  // 탭 클릭 이벤트
+  el.querySelectorAll('.smile-tab-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      // 탭 활성화 스타일
+      el.querySelectorAll('.smile-tab-btn').forEach(b => {
+        b.style.background = 'var(--bg3)';
+        b.style.color      = 'var(--text3)';
+        b.style.border     = '1px solid var(--border)';
+      });
+      btn.style.background = 'var(--accent)';
+      btn.style.color      = '#fff';
+      btn.style.border     = '1px solid var(--accent)';
+
+      const expiry = btn.dataset.expiry;
+      await loadSmileChart(symbol, expiry, spot);
+    });
+  });
+
+  // 첫번째 만기 자동 로드
+  loadSmileChart(symbol, expiryRows[0].expiry_date, spot);
+}
+
+async function loadSmileChart(symbol, expiry, spot) {
+  const area = document.getElementById('smile-chart-area');
+  if (!area) return;
+  area.innerHTML = `<div style="padding:16px;color:var(--text3);font-size:12px">로딩 중...</div>`;
+
+  try {
+    const res  = await fetch(`${CF_API}/api/options-strikes/${symbol}?expiry=${expiry}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const rows = data.rows ?? [];
+
+    if (!rows.length) {
+      area.innerHTML = `<div style="padding:16px;color:var(--text3);font-size:12px">
+        스트라이크 데이터 없음 — 다음 수집 후 이용 가능합니다
+      </div>`;
+      return;
+    }
+
+    renderSmileCurve(area, rows, spot, expiry);
+  } catch (err) {
+    area.innerHTML = `<div style="padding:16px;color:#ef4444;font-size:12px">로드 실패: ${err.message}</div>`;
+  }
+}
+
+function renderSmileCurve(container, rows, spot, expiry) {
+  const W = 520, H = 200, PL = 52, PR = 16, PT = 16, PB = 36;
+  const cW = W - PL - PR, cH = H - PT - PB;
+
+  // avg_iv 기준으로 정렬
+  const sorted = [...rows].sort((a, b) => a.strike - b.strike);
+  const strikes = sorted.map(r => r.strike);
+  const ivs     = sorted.map(r => r.avg_iv ?? 0);
+
+  const minS  = Math.min(...strikes);
+  const maxS  = Math.max(...strikes);
+  const minIV = Math.min(...ivs.filter(v => v > 0)) * 0.9;
+  const maxIV = Math.max(...ivs) * 1.1;
+
+  const xScale = s  => PL + ((s - minS) / (maxS - minS || 1)) * cW;
+  const yScale = iv => PT + (1 - (iv - minIV) / (maxIV - minIV || 1)) * cH;
+
+  // ATM 라인
+  const atmX = spot ? xScale(spot) : null;
+
+  // Call IV / Put IV / Avg IV 세 곡선
+  const callPts = sorted
+    .filter(r => r.call_iv)
+    .map(r => `${xScale(r.strike).toFixed(1)},${yScale(r.call_iv).toFixed(1)}`).join(' ');
+  const putPts = sorted
+    .filter(r => r.put_iv)
+    .map(r => `${xScale(r.strike).toFixed(1)},${yScale(r.put_iv).toFixed(1)}`).join(' ');
+  const avgPts = sorted
+    .filter(r => r.avg_iv)
+    .map(r => `${xScale(r.strike).toFixed(1)},${yScale(r.avg_iv).toFixed(1)}`).join(' ');
+
+  // X축 레이블 (최대 8개)
+  const step = Math.ceil(sorted.length / 8);
+  const xLabels = sorted.filter((_, i) => i % step === 0).map(r => `
+    <text x="${xScale(r.strike).toFixed(1)}" y="${H - 4}"
+      text-anchor="middle" font-size="9" fill="var(--text3)">
+      $${r.strike}
+    </text>
+  `).join('');
+
+  // Y축 레이블
+  const yTicks = [minIV, (minIV + maxIV) / 2, maxIV].map(iv => `
+    <text x="${PL - 4}" y="${(yScale(iv) + 4).toFixed(1)}"
+      text-anchor="end" font-size="9" fill="var(--text3)">${(iv * 100).toFixed(0)}%</text>
+    <line x1="${PL}" y1="${yScale(iv).toFixed(1)}" x2="${W - PR}" y2="${yScale(iv).toFixed(1)}"
+      stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
+  `).join('');
+
+  // Skew 방향 판단 (ATM 기준 좌우 비대칭)
+  const atmStrike = spot
+    ? sorted.reduce((a, b) => Math.abs(b.strike - spot) < Math.abs(a.strike - spot) ? b : a, sorted[0])
+    : null;
+  const otmPutRows  = spot ? sorted.filter(r => r.strike < spot  && r.put_iv) : [];
+  const otmCallRows = spot ? sorted.filter(r => r.strike > spot  && r.call_iv) : [];
+  const avgPutIV    = otmPutRows.length  ? otmPutRows.reduce((s, r) => s + r.put_iv, 0)   / otmPutRows.length  : null;
+  const avgCallIV   = otmCallRows.length ? otmCallRows.reduce((s, r) => s + r.call_iv, 0) / otmCallRows.length : null;
+  const skewDir     = (avgPutIV && avgCallIV)
+    ? (avgPutIV > avgCallIV ? 'put' : 'call')
+    : null;
+  const skewLabel   = skewDir === 'put'  ? '🔴 Put Skew — 하방 공포 우세'
+                    : skewDir === 'call' ? '🟢 Call Skew — 상승 기대 우세'
+                    : '균형';
+  const skewColor   = skewDir === 'put'  ? '#ef4444'
+                    : skewDir === 'call' ? '#22c55e'
+                    : '#f59e0b';
+
+  container.innerHTML = `
+    <!-- Skew 방향 요약 -->
+    <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+      <div style="background:${skewColor}22;border:1px solid ${skewColor}44;border-radius:8px;padding:8px 14px;flex:1">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:2px">${expiry} Smile 방향</div>
+        <div style="font-size:14px;font-weight:800;color:${skewColor}">${skewLabel}</div>
+      </div>
+      ${atmStrike ? `
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:8px 14px;flex:1">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:2px">ATM IV</div>
+        <div style="font-size:14px;font-weight:700;color:var(--text)">
+          ${atmStrike.avg_iv ? (atmStrike.avg_iv * 100).toFixed(1) + '%' : '—'}
+          <span style="font-size:10px;color:var(--text3)"> @ $${atmStrike.strike}</span>
+        </div>
+      </div>
+      ` : ''}
+      ${avgPutIV && avgCallIV ? `
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:8px 14px;flex:1">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:2px">OTM Put / Call IV</div>
+        <div style="font-size:12px;font-weight:700">
+          <span style="color:#ef4444">${(avgPutIV * 100).toFixed(1)}%</span>
+          <span style="color:var(--text3)"> / </span>
+          <span style="color:#22c55e">${(avgCallIV * 100).toFixed(1)}%</span>
+        </div>
+      </div>
+      ` : ''}
+    </div>
+
+    <!-- SVG Smile 곡선 -->
+    <div style="overflow-x:auto">
+      <svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block">
+        ${yTicks}
+        <!-- ATM 수직선 -->
+        ${atmX ? `
+          <line x1="${atmX.toFixed(1)}" y1="${PT}" x2="${atmX.toFixed(1)}" y2="${PT + cH}"
+            stroke="#d29922" stroke-width="1" stroke-dasharray="4,3" opacity="0.7"/>
+          <text x="${atmX.toFixed(1)}" y="${PT - 3}" text-anchor="middle" font-size="8" fill="#d29922">ATM</text>
+        ` : ''}
+        <!-- Put IV 곡선 -->
+        ${putPts ? `<polyline points="${putPts}" fill="none" stroke="#ef4444" stroke-width="1.5" opacity="0.7" stroke-dasharray="4,2"/>` : ''}
+        <!-- Call IV 곡선 -->
+        ${callPts ? `<polyline points="${callPts}" fill="none" stroke="#22c55e" stroke-width="1.5" opacity="0.7" stroke-dasharray="4,2"/>` : ''}
+        <!-- Avg IV 곡선 (메인) -->
+        ${avgPts ? `<polyline points="${avgPts}" fill="none" stroke="#58a6ff" stroke-width="2" opacity="0.9"/>` : ''}
+        ${xLabels}
+        <!-- 축 -->
+        <line x1="${PL}" y1="${PT}" x2="${PL}" y2="${PT + cH}" stroke="var(--border)" stroke-width="1"/>
+        <line x1="${PL}" y1="${PT + cH}" x2="${W - PR}" y2="${PT + cH}" stroke="var(--border)" stroke-width="1"/>
+        <!-- 범례 -->
+        <line x1="${W-PR-110}" y1="${PT+7}" x2="${W-PR-96}" y2="${PT+7}" stroke="#58a6ff" stroke-width="2"/>
+        <text x="${W-PR-92}" y="${PT+11}" font-size="9" fill="var(--text3)">Avg IV</text>
+        <line x1="${W-PR-65}" y1="${PT+7}" x2="${W-PR-51}" y2="${PT+7}" stroke="#22c55e" stroke-width="1.5" stroke-dasharray="4,2"/>
+        <text x="${W-PR-47}" y="${PT+11}" font-size="9" fill="var(--text3)">Call</text>
+        <line x1="${W-PR-25}" y1="${PT+7}" x2="${W-PR-11}" y2="${PT+7}" stroke="#ef4444" stroke-width="1.5" stroke-dasharray="4,2"/>
+        <text x="${W-PR-7}" y="${PT+11}" font-size="9" fill="var(--text3)">Put</text>
+      </svg>
+    </div>
+  `;
+}
+
+// ============================================
+// 섹션 8 — 종합 판단
+// ============================================
+function renderVerdict({ termData, skewData, emData, spot, flipStrike, vannaSum, rows }) {
+  const el = document.getElementById('struct-verdict');
+  if (!el) return;
+
+  // ── 신호 수집
+  const signals = [];
+
+  // 1. Flip Zone
+  const aboveFlip = flipStrike && spot ? spot > flipStrike : null;
+  signals.push({
+    label: 'Flip Zone',
+    value: aboveFlip === true ? '현재가 위 ▲' : aboveFlip === false ? '현재가 아래 ▼' : '—',
+    ok:    aboveFlip === true,
+    color: aboveFlip === true ? '#22c55e' : aboveFlip === false ? '#ef4444' : '#6e7681',
+    weight: 3,
+  });
+
+  // 2. Term Structure
+  const termOk = termData.status === 'contango';
+  const termNeutral = termData.status === 'flat';
+  signals.push({
+    label: 'Term Structure',
+    value: termData.label,
+    ok:    termOk,
+    color: termData.color,
+    weight: 2,
+  });
+
+  // 3. Skew 방향
+  const avgSkew = skewData.length
+    ? skewData.reduce((s, r) => s + r.skew, 0) / skewData.length : 0;
+  const skewOk = avgSkew < 0.01; // Call 편향 or 균형
+  signals.push({
+    label: 'IV Skew',
+    value: avgSkew < -0.01 ? 'Call 과열' : avgSkew < 0.01 ? 'Put/Call 균형' : 'Put 프리미엄',
+    ok:    skewOk,
+    color: avgSkew < -0.01 ? '#f59e0b' : avgSkew < 0.01 ? '#22c55e' : '#ef4444',
+    weight: 1,
+  });
+
+  // 4. Vanna
+  const vannaOk = vannaSum > 0;
+  signals.push({
+    label: 'Vanna',
+    value: vannaSum > 0 ? `양수 ▲ ${vannaSum.toFixed(2)}` : `음수 ▼ ${vannaSum.toFixed(2)}`,
+    ok:    vannaOk,
+    color: vannaOk ? '#22c55e' : '#ef4444',
+    weight: 2,
+  });
+
+  // 5. Expected Move 여유
+  const nearestEM  = emData[0] ?? null;
+  const emHeadroom = (nearestEM && spot && flipStrike)
+    ? ((nearestEM.upper - spot) / spot * 100) : null;
+  const emOk = emHeadroom !== null && emHeadroom > 2;
+  signals.push({
+    label: 'EM 상단 여유',
+    value: emHeadroom !== null ? `+${emHeadroom.toFixed(1)}%` : '—',
+    ok:    emOk,
+    color: emOk ? '#22c55e' : '#f59e0b',
+    weight: 1,
+  });
+
+  // ── 가중 점수 계산
+  const maxScore  = signals.reduce((s, sig) => s + sig.weight, 0);
+  const score     = signals.reduce((s, sig) => s + (sig.ok ? sig.weight : 0), 0);
+  const scorePct  = score / maxScore;
+
+  // ── 최종 판정
+  let verdict, verdictColor, verdictDesc, strategy;
+  if (scorePct >= 0.8) {
+    verdict      = '🟢 진입 후보';
+    verdictColor = '#22c55e';
+    verdictDesc  = '딜러 메카닉과 옵션 구조 모두 상승에 우호적';
+    strategy     = termData.status === 'contango' && Math.abs(avgSkew) < 0.03
+      ? 'Bull Put Spread 또는 Iron Condor (Call Wall 확인 후)'
+      : 'Bull Put Spread';
+  } else if (scorePct >= 0.6) {
+    verdict      = '🟡 상승세 지속 (단기 주의)';
+    verdictColor = '#f59e0b';
+    verdictDesc  = '상승 구조이나 일부 신호 불일치 — 포지션 크기 조절 권고';
+    strategy     = 'Bull Put Spread (좁은 폭)';
+  } else if (scorePct >= 0.4) {
+    verdict      = '🟠 청산 근접 또는 관망';
+    verdictColor = '#f97316';
+    verdictDesc  = '신호 혼재 — 신규 진입 자제, 기존 포지션 청산 검토';
+    strategy     = '신규 진입 자제';
+  } else {
+    verdict      = '🔴 관망';
+    verdictColor = '#ef4444';
+    verdictDesc  = '하락 구조 — 포지션 청산 또는 Bear Call Spread 고려';
+    strategy     = aboveFlip === false
+      ? 'Bear Call Spread (Flip Zone 위 저항)'
+      : '관망';
+  }
+
+  // ── 이벤트 경고
+  const eventExpiries = termData.eventExpiries ?? new Set();
+  const nearestExpiry = rows.find(r => r.dte <= 14);
+  const eventWarning  = eventExpiries.size > 0
+    ? `<div style="margin-top:10px;padding:10px 14px;background:#f59e0b11;border:1px solid #f59e0b33;border-radius:8px;font-size:11px;color:#f59e0b">
+        ⚡ 이벤트 리스크 감지 (${[...eventExpiries].join(', ')}) — 해당 만기 옵션 전략 회피 권고
+       </div>`
+    : '';
+
+  el.innerHTML = `
+    <div style="padding:16px">
+
+      <!-- 최종 판정 -->
+      <div style="background:${verdictColor}22;border:1px solid ${verdictColor}44;border-radius:10px;padding:16px;margin-bottom:14px">
+        <div style="font-size:20px;font-weight:800;color:${verdictColor};margin-bottom:6px">${verdict}</div>
+        <div style="font-size:12px;color:var(--text2);margin-bottom:10px">${verdictDesc}</div>
+        <div style="font-size:11px;color:var(--text3)">
+          종합 점수: <strong style="color:${verdictColor}">${score}/${maxScore}</strong>
+        </div>
+      </div>
+
+      <!-- 추천 전략 -->
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px 16px;margin-bottom:14px">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:4px">추천 옵션 전략</div>
+        <div style="font-size:15px;font-weight:700;color:var(--text)">📋 ${strategy}</div>
+        ${nearestEM ? `
+        <div style="font-size:11px;color:var(--text3);margin-top:6px">
+          최근 만기(D-${nearestEM.dte}) 기대 범위:
+          <span style="color:#22c55e">▲ $${nearestEM.upper.toFixed(1)}</span> ~
+          <span style="color:#ef4444">▼ $${nearestEM.lower.toFixed(1)}</span>
+          (±${nearestEM.em_pct}%)
+        </div>
+        ` : ''}
+      </div>
+
+      <!-- 신호 체크리스트 -->
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px 16px">
+        <div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:10px">신호 체크리스트</div>
+        ${signals.map(sig => `
+          <div style="display:flex;align-items:center;gap:10px;padding:7px 0;border-bottom:1px solid var(--border)">
+            <div style="font-size:15px;color:${sig.color};flex-shrink:0">${sig.ok ? '✓' : '✗'}</div>
+            <div style="flex:1">
+              <span style="font-size:11px;font-weight:600;color:${sig.ok ? 'var(--text)' : 'var(--text3)'}">${sig.label}</span>
+              <span style="font-size:11px;color:${sig.color};margin-left:8px">${sig.value}</span>
+            </div>
+            <div style="font-size:10px;color:var(--text3)">가중치 ${sig.weight}</div>
+          </div>
+        `).join('')}
+      </div>
+
+      ${eventWarning}
+
     </div>
   `;
 }
