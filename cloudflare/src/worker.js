@@ -253,8 +253,8 @@ export default {
         return json({ ok: false, error: "rows 배열 필요" }, 400, corsHeaders);
       }
 
-      // 배치 INSERT (100행씩)
-      const BATCH = 100;
+      // 배치 INSERT (8행씩 — D1 바인딩 파라미터 100개 제한: 8×11=88)
+      const BATCH = 8;
       let inserted = 0;
       for (let i = 0; i < rows.length; i += BATCH) {
         const batch = rows.slice(i, i + BATCH);
