@@ -655,26 +655,120 @@ function fmtK(n) {
 // 공통 분석 함수 (SPY/개별종목 공용)
 // ============================================
 
+// ── 선형 회귀 기울기 계산 (x=DTE, y=ATM IV)
+function linearRegressionSlope(rows) {
+  const n  = rows.length;
+  if (n < 2) return 0;
+  const xMean = rows.reduce((s, r) => s + r.dte, 0) / n;
+  const yMean = rows.reduce((s, r) => s + r.atm_iv, 0) / n;
+  const num   = rows.reduce((s, r) => s + (r.dte - xMean) * (r.atm_iv - yMean), 0);
+  const den   = rows.reduce((s, r) => s + (r.dte - xMean) ** 2, 0);
+  return den === 0 ? 0 : num / den;
+}
+
+// ── 이벤트 만기 감지 (주변 만기 대비 IV가 튀는 구간)
+function detectEventExpiries(rows) {
+  if (rows.length < 3) return new Set();
+  const eventSet = new Set();
+  for (let i = 1; i < rows.length - 1; i++) {
+    const prev = rows[i - 1].atm_iv;
+    const curr = rows[i].atm_iv;
+    const next = rows[i + 1].atm_iv;
+    const localAvg = (prev + next) / 2;
+    // 주변 평균 대비 15% 이상 튀면 이벤트 만기
+    if (curr > localAvg * 1.15) {
+      eventSet.add(rows[i].expiry_date);
+    }
+  }
+  return eventSet;
+}
+
 // Term Structure: 만기별 ATM IV → 콘탱고/백워데이션 판단
-export function calculateTermStructure(expiryRows) {
+// prevRows: 전일 데이터 (있으면 slope 변화 계산)
+export function calculateTermStructure(expiryRows, prevRows = null) {
   const sorted = [...expiryRows]
     .filter(r => r.atm_iv != null && r.dte != null)
     .sort((a, b) => a.dte - b.dte);
   if (sorted.length < 2) return { status: 'unknown', slope: null, rows: sorted };
 
-  const short = sorted[0].atm_iv;
-  const long  = sorted[sorted.length - 1].atm_iv;
-  const slope = short / long;  // >1 = 백워데이션, <1 = 콘탱고
+  // 이벤트 만기 감지
+  const eventExpiries = detectEventExpiries(sorted);
 
+  // 이벤트 만기 제외 후 선형 회귀 기울기 계산
+  const cleanRows = sorted.filter(r => !eventExpiries.has(r.expiry_date));
+  const regSlope  = linearRegressionSlope(cleanRows.length >= 2 ? cleanRows : sorted);
+
+  // 기울기 해석: 양수=우상향=콘탱고, 음수=우하향=백워데이션
+  // regSlope 단위: IV/DTE (매우 작은 값)
   let status, label, color;
-  if (slope > 1.1) {
+  if (regSlope > 0.0003) {
+    status = 'contango';      label = '콘탱고 ✓';      color = '#22c55e';
+  } else if (regSlope < -0.0003) {
     status = 'backwardation'; label = '백워데이션 ⚠️'; color = '#ef4444';
-  } else if (slope < 0.9) {
-    status = 'contango'; label = '콘탱고 ✓'; color = '#22c55e';
   } else {
-    status = 'flat'; label = '플랫 — 변곡점'; color = '#f59e0b';
+    status = 'flat';          label = '플랫 — 변곡점'; color = '#f59e0b';
   }
-  return { status, label, color, slope, rows: sorted };
+
+  // 전일 slope 비교 → 변화 방향
+  let slopeChange = null;
+  let slopeTrend  = null;
+  let priceComment = null;
+
+  if (prevRows && prevRows.length >= 2) {
+    const prevSorted = [...prevRows]
+      .filter(r => r.atm_iv != null && r.dte != null)
+      .sort((a, b) => a.dte - b.dte);
+    const prevEventExpiries = detectEventExpiries(prevSorted);
+    const prevClean = prevSorted.filter(r => !prevEventExpiries.has(r.expiry_date));
+    const prevSlope = linearRegressionSlope(prevClean.length >= 2 ? prevClean : prevSorted);
+
+    slopeChange = regSlope - prevSlope;
+
+    // 변화 방향 판단
+    if (status === 'backwardation') {
+      if (slopeChange < -0.0001) {
+        slopeTrend   = '심화 중 ↓';
+        priceComment = { text: '하락 추세 지속', color: '#ef4444', icon: '🔴' };
+      } else if (slopeChange > 0.0001) {
+        slopeTrend   = '완화 중 ↑';
+        priceComment = { text: '반등 가능성 탐색', color: '#f59e0b', icon: '🟡' };
+      } else {
+        slopeTrend   = '유지';
+        priceComment = { text: '하락 추세 지속', color: '#ef4444', icon: '🔴' };
+      }
+    } else if (status === 'contango') {
+      if (slopeChange > 0.0001) {
+        slopeTrend   = '강화 중 ↑';
+        priceComment = { text: '상승 추세 지속', color: '#22c55e', icon: '🟢' };
+      } else if (slopeChange < -0.0001) {
+        slopeTrend   = '약화 중 ↓';
+        priceComment = { text: '추세 약화 주의', color: '#f97316', icon: '🟠' };
+      } else {
+        slopeTrend   = '유지';
+        priceComment = { text: '상승 추세 지속', color: '#22c55e', icon: '🟢' };
+      }
+    } else {
+      // flat
+      if (slopeChange > 0.0001) {
+        slopeTrend   = '콘탱고 전환 중 ↑';
+        priceComment = { text: '반등 시작 신호', color: '#22c55e', icon: '🟢' };
+      } else if (slopeChange < -0.0001) {
+        slopeTrend   = '백워데이션 전환 중 ↓';
+        priceComment = { text: '반전 하락 주의', color: '#ef4444', icon: '🔴' };
+      } else {
+        slopeTrend   = '방향 탐색 중';
+        priceComment = { text: '방향 불확실', color: '#f59e0b', icon: '🟡' };
+      }
+    }
+  }
+
+  return {
+    status, label, color,
+    slope: regSlope,
+    slopeChange, slopeTrend, priceComment,
+    eventExpiries,
+    rows: sorted,
+  };
 }
 
 // IV Skew: 만기별 Put/Call IV 비대칭 측정
@@ -771,10 +865,27 @@ async function loadAndRenderCharts(symbol, scoreRow) {
   });
 
   try {
-    const res  = await fetch(`${CF_API}/api/options-dex/${symbol}`);
+    // 오늘 + 전일 데이터 동시 로드
+    const [res, histRes] = await Promise.all([
+      fetch(`${CF_API}/api/options-dex/${symbol}`),
+      fetch(`${CF_API}/api/options-dex/${symbol}/history?days=3`),
+    ]);
+
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const data = await res.json();
     const rows = data.rows ?? [];
+
+    // 전일 데이터 (히스토리 API 없으면 null)
+    let prevRows = null;
+    if (histRes.ok) {
+      const histData = await histRes.json();
+      // 오늘 제외한 가장 최근 날짜 데이터
+      const today = rows[0]?.date ?? '';
+      const prevDate = (histData.dates ?? []).find(d => d !== today);
+      if (prevDate) {
+        prevRows = (histData.rows ?? []).filter(r => r.date === prevDate);
+      }
+    }
 
     if (!rows.length) {
       ['struct-term', 'struct-skew', 'struct-em', 'struct-heatmap'].forEach(id => {
@@ -787,10 +898,10 @@ async function loadAndRenderCharts(symbol, scoreRow) {
     const spot = scoreRow?.close ?? null;
 
     // 공통 계산
-    const termData  = calculateTermStructure(rows);
-    const skewData  = calculateSkew(rows);
-    const emData    = calculateExpectedMove(rows, spot);
-    const vannaSum  = rows.reduce((s, r) => s + (r.vanna ?? 0), 0);
+    const termData   = calculateTermStructure(rows, prevRows);
+    const skewData   = calculateSkew(rows);
+    const emData     = calculateExpectedMove(rows, spot);
+    const vannaSum   = rows.reduce((s, r) => s + (r.vanna ?? 0), 0);
     const flipStrike = scoreRow?.flip_strike ?? null;
     const statusResult = evaluateStatus({ termStructure: termData, skewRows: skewData, spot, flipStrike, vannaSum });
 
@@ -831,108 +942,128 @@ function renderTermStructure(termData) {
   const el = document.getElementById('struct-term');
   if (!el) return;
 
-  const { status, label, color, slope, rows } = termData;
+  const { status, label, color, slope, slopeChange, slopeTrend, priceComment, eventExpiries, rows } = termData;
 
   if (!rows.length) {
     el.innerHTML = '<div style="padding:16px;color:var(--text3)">데이터 없음</div>';
     return;
   }
 
-  // 상단 요약 카드
-  const slopeDesc = slope != null
-    ? `단기/장기 IV 비율: ${slope.toFixed(3)}`
-    : '';
-
   const W = 520, H = 180, PL = 48, PR = 16, PT = 16, PB = 36;
   const cW = W - PL - PR, cH = H - PT - PB;
 
   const ivs  = rows.map(r => r.atm_iv);
   const dtes = rows.map(r => r.dte);
-  const minIV = Math.min(...ivs) * 0.9;
-  const maxIV = Math.max(...ivs) * 1.1;
+  const minIV  = Math.min(...ivs) * 0.88;
+  const maxIV  = Math.max(...ivs) * 1.08;
   const minDTE = Math.min(...dtes);
   const maxDTE = Math.max(...dtes);
 
   const xScale = dte => PL + ((dte - minDTE) / (maxDTE - minDTE || 1)) * cW;
   const yScale = iv  => PT + (1 - (iv - minIV) / (maxIV - minIV || 1)) * cH;
 
-  // 폴리라인 포인트
   const pts = rows.map(r => `${xScale(r.dte).toFixed(1)},${yScale(r.atm_iv).toFixed(1)}`).join(' ');
 
-  // X축 레이블 (최대 6개)
   const step = Math.ceil(rows.length / 6);
   const xLabels = rows.filter((_, i) => i % step === 0).map(r => `
-    <text x="${xScale(r.dte).toFixed(1)}" y="${H - 4}" 
-      text-anchor="middle" font-size="9" fill="var(--text3)">
-      ${r.dte}d
-    </text>
+    <text x="${xScale(r.dte).toFixed(1)}" y="${H - 4}"
+      text-anchor="middle" font-size="9" fill="var(--text3)">${r.dte}d</text>
   `).join('');
 
-  // Y축 레이블 (3개)
   const yTicks = [minIV, (minIV + maxIV) / 2, maxIV].map(iv => `
     <text x="${PL - 4}" y="${(yScale(iv) + 4).toFixed(1)}"
-      text-anchor="end" font-size="9" fill="var(--text3)">
-      ${(iv * 100).toFixed(0)}%
-    </text>
+      text-anchor="end" font-size="9" fill="var(--text3)">${(iv * 100).toFixed(0)}%</text>
     <line x1="${PL}" y1="${yScale(iv).toFixed(1)}" x2="${W - PR}" y2="${yScale(iv).toFixed(1)}"
       stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
   `).join('');
 
-  // 데이터 포인트 서클
-  const circles = rows.map(r => `
-    <circle cx="${xScale(r.dte).toFixed(1)}" cy="${yScale(r.atm_iv).toFixed(1)}"
-      r="3" fill="${color}" opacity="0.8">
-      <title>${r.expiry_date} (D-${r.dte}): IV ${(r.atm_iv * 100).toFixed(1)}%</title>
-    </circle>
-  `).join('');
+  // 이벤트 만기 강조 + 일반 포인트
+  const circles = rows.map(r => {
+    const isEvent = eventExpiries?.has(r.expiry_date);
+    return isEvent
+      ? `<circle cx="${xScale(r.dte).toFixed(1)}" cy="${yScale(r.atm_iv).toFixed(1)}"
+           r="5" fill="#f59e0b" stroke="#fff" stroke-width="1" opacity="0.9">
+           <title>⚡ 이벤트 리스크: ${r.expiry_date} (D-${r.dte}) IV ${(r.atm_iv*100).toFixed(1)}%</title>
+         </circle>
+         <text x="${xScale(r.dte).toFixed(1)}" y="${(yScale(r.atm_iv) - 8).toFixed(1)}"
+           text-anchor="middle" font-size="8" fill="#f59e0b">⚡</text>`
+      : `<circle cx="${xScale(r.dte).toFixed(1)}" cy="${yScale(r.atm_iv).toFixed(1)}"
+           r="3" fill="${color}" opacity="0.8">
+           <title>${r.expiry_date} (D-${r.dte}): IV ${(r.atm_iv*100).toFixed(1)}%</title>
+         </circle>`;
+  }).join('');
 
-  el.innerHTML = `
-    <!-- 상태 요약 -->
-    <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">
-      <div style="
-        background:${color}22;border:1px solid ${color}44;
-        border-radius:8px;padding:10px 16px;flex:1;min-width:140px
-      ">
-        <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Term Structure 상태</div>
-        <div style="font-size:16px;font-weight:800;color:${color}">${label}</div>
-        <div style="font-size:10px;color:var(--text3);margin-top:2px">${slopeDesc}</div>
-      </div>
-      <div style="
-        background:var(--bg2);border:1px solid var(--border);
-        border-radius:8px;padding:10px 16px;flex:1;min-width:140px
-      ">
-        <div style="font-size:10px;color:var(--text3);margin-bottom:4px">만기 범위</div>
-        <div style="font-size:14px;font-weight:700;color:var(--text)">
-          D-${minDTE} ~ D-${maxDTE}
-        </div>
-        <div style="font-size:10px;color:var(--text3);margin-top:2px">${rows.length}개 만기</div>
-      </div>
-      <div style="
-        background:var(--bg2);border:1px solid var(--border);
-        border-radius:8px;padding:10px 16px;flex:1;min-width:140px
-      ">
-        <div style="font-size:10px;color:var(--text3);margin-bottom:4px">IV 범위</div>
-        <div style="font-size:14px;font-weight:700;color:var(--text)">
-          ${(Math.min(...ivs) * 100).toFixed(1)}% ~ ${(Math.max(...ivs) * 100).toFixed(1)}%
-        </div>
-        <div style="font-size:10px;color:var(--text3);margin-top:2px">ATM IV</div>
+  // slope 변화 표시
+  const trendHtml = slopeTrend ? `
+    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 16px;flex:1;min-width:140px">
+      <div style="font-size:10px;color:var(--text3);margin-bottom:4px">전일 대비 변화</div>
+      <div style="font-size:13px;font-weight:700;color:var(--text)">${slopeTrend}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">
+        기울기 변화: ${slopeChange > 0 ? '+' : ''}${(slopeChange * 10000).toFixed(1)}
       </div>
     </div>
+  ` : '';
+
+  // 가격 방향성 코멘트
+  const commentHtml = priceComment ? `
+    <div style="
+      background:${priceComment.color}22;border:1px solid ${priceComment.color}44;
+      border-radius:8px;padding:10px 16px;flex:1;min-width:140px
+    ">
+      <div style="font-size:10px;color:var(--text3);margin-bottom:4px">가격 방향성 전망</div>
+      <div style="font-size:15px;font-weight:800;color:${priceComment.color}">
+        ${priceComment.icon} ${priceComment.text}
+      </div>
+      <div style="font-size:10px;color:var(--text3);margin-top:2px">Term Structure 기반</div>
+    </div>
+  ` : '';
+
+  // 이벤트 만기 목록
+  const eventList = eventExpiries?.size > 0
+    ? `<div style="margin-top:8px;padding:8px 12px;background:#f59e0b11;border:1px solid #f59e0b33;border-radius:6px;font-size:11px;color:#f59e0b">
+        ⚡ 이벤트 리스크 감지: ${[...eventExpiries].join(', ')} — 어닝/FOMC 등 단기 이벤트 가능성
+       </div>`
+    : '';
+
+  el.innerHTML = `
+    <!-- 상태 요약 카드 -->
+    <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <div style="background:${color}22;border:1px solid ${color}44;border-radius:8px;padding:10px 16px;flex:1;min-width:140px">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Term Structure</div>
+        <div style="font-size:16px;font-weight:800;color:${color}">${label}</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:2px">
+          ${status === 'contango' ? '단기 IV < 장기 IV · 정상 구조' : status === 'backwardation' ? '단기 IV > 장기 IV · 공포 집중' : '단기 ≈ 장기 IV · 방향 탐색'}
+        </div>
+      </div>
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 16px;flex:1;min-width:140px">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:4px">IV 범위</div>
+        <div style="font-size:14px;font-weight:700;color:var(--text)">
+          ${(Math.min(...ivs)*100).toFixed(1)}% ~ ${(Math.max(...ivs)*100).toFixed(1)}%
+        </div>
+        <div style="font-size:10px;color:var(--text3);margin-top:2px">D-${minDTE} ~ D-${maxDTE} · ${rows.length}개 만기</div>
+      </div>
+      ${trendHtml}
+      ${commentHtml}
+    </div>
+
+    ${eventList}
 
     <!-- SVG 차트 -->
-    <div style="overflow-x:auto">
+    <div style="overflow-x:auto;margin-top:10px">
       <svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block">
         ${yTicks}
-        <!-- IV 곡선 -->
         <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" opacity="0.9"/>
-        <!-- 면적 채우기 -->
-        <polyline points="${PL},${PT + cH} ${pts} ${xScale(maxDTE).toFixed(1)},${PT + cH}"
-          fill="${color}" opacity="0.08"/>
+        <polyline points="${PL},${PT+cH} ${pts} ${xScale(maxDTE).toFixed(1)},${PT+cH}"
+          fill="${color}" opacity="0.07"/>
         ${circles}
         ${xLabels}
-        <!-- 축 -->
-        <line x1="${PL}" y1="${PT}" x2="${PL}" y2="${PT + cH}" stroke="var(--border)" stroke-width="1"/>
-        <line x1="${PL}" y1="${PT + cH}" x2="${W - PR}" y2="${PT + cH}" stroke="var(--border)" stroke-width="1"/>
+        <line x1="${PL}" y1="${PT}" x2="${PL}" y2="${PT+cH}" stroke="var(--border)" stroke-width="1"/>
+        <line x1="${PL}" y1="${PT+cH}" x2="${W-PR}" y2="${PT+cH}" stroke="var(--border)" stroke-width="1"/>
+        <!-- 범례 -->
+        <circle cx="${W-PR-70}" cy="${PT+6}" r="3" fill="${color}"/>
+        <text x="${W-PR-63}" y="${PT+10}" font-size="9" fill="var(--text3)">ATM IV</text>
+        <circle cx="${W-PR-30}" cy="${PT+6}" r="5" fill="#f59e0b" stroke="#fff" stroke-width="1"/>
+        <text x="${W-PR-22}" y="${PT+10}" font-size="9" fill="#f59e0b">이벤트</text>
       </svg>
     </div>
 
@@ -940,28 +1071,43 @@ function renderTermStructure(termData) {
     <div style="margin-top:12px;overflow-x:auto">
       <table style="width:100%;font-size:11px;border-collapse:collapse">
         <thead>
-          <tr style="color:var(--text3)">
-            <th style="text-align:left;padding:4px 8px">만기</th>
-            <th style="text-align:right;padding:4px 8px">DTE</th>
-            <th style="text-align:right;padding:4px 8px">ATM IV</th>
-            <th style="text-align:right;padding:4px 8px">Call IV</th>
-            <th style="text-align:right;padding:4px 8px">Put IV</th>
-            <th style="text-align:right;padding:4px 8px">Skew</th>
+          <tr style="background:var(--bg3)">
+            <th style="text-align:left;padding:5px 8px;color:var(--text3);font-weight:600">만기</th>
+            <th style="text-align:right;padding:5px 8px;color:var(--text3);font-weight:600">DTE</th>
+            <th style="text-align:right;padding:5px 8px;color:var(--text3);font-weight:600">ATM IV</th>
+            <th style="text-align:right;padding:5px 8px;color:#22c55e;font-weight:600">Call IV</th>
+            <th style="text-align:right;padding:5px 8px;color:#ef4444;font-weight:600">Put IV</th>
+            <th style="text-align:right;padding:5px 8px;color:var(--text3);font-weight:600">Skew</th>
+            <th style="text-align:center;padding:5px 8px;color:var(--text3);font-weight:600">비고</th>
           </tr>
         </thead>
         <tbody>
           ${rows.map((r, i) => {
-            const skew = (r.otm_put_iv ?? 0) - (r.otm_call_iv ?? 0);
+            const skew      = (r.otm_put_iv ?? 0) - (r.otm_call_iv ?? 0);
             const skewColor = skew > 0.03 ? '#ef4444' : skew < -0.01 ? '#22c55e' : 'var(--text3)';
-            const rowBg = i % 2 === 0 ? 'var(--bg2)' : 'var(--bg3)';
+            const rowBg     = i % 2 === 0 ? 'var(--bg2)' : 'var(--bg3)';
+            const isEvent   = eventExpiries?.has(r.expiry_date);
             return `
-              <tr style="background:${rowBg}">
-                <td style="padding:5px 8px;font-family:var(--mono)">${r.expiry_date}</td>
+              <tr style="background:${isEvent ? '#f59e0b11' : rowBg}">
+                <td style="padding:5px 8px;font-family:var(--mono);color:${isEvent ? '#f59e0b' : 'var(--text)'}">
+                  ${r.expiry_date}
+                </td>
                 <td style="padding:5px 8px;text-align:right;color:var(--text3)">D-${r.dte}</td>
-                <td style="padding:5px 8px;text-align:right;font-weight:700">${(r.atm_iv * 100).toFixed(1)}%</td>
-                <td style="padding:5px 8px;text-align:right;color:#22c55e">${r.otm_call_iv != null ? (r.otm_call_iv * 100).toFixed(1) + '%' : '—'}</td>
-                <td style="padding:5px 8px;text-align:right;color:#ef4444">${r.otm_put_iv != null ? (r.otm_put_iv * 100).toFixed(1) + '%' : '—'}</td>
-                <td style="padding:5px 8px;text-align:right;color:${skewColor}">${(skew * 100).toFixed(1)}%</td>
+                <td style="padding:5px 8px;text-align:right;font-weight:700;color:${isEvent ? '#f59e0b' : 'var(--text)'}">
+                  ${(r.atm_iv * 100).toFixed(1)}%
+                </td>
+                <td style="padding:5px 8px;text-align:right;color:#22c55e">
+                  ${r.otm_call_iv != null ? (r.otm_call_iv*100).toFixed(1)+'%' : '—'}
+                </td>
+                <td style="padding:5px 8px;text-align:right;color:#ef4444">
+                  ${r.otm_put_iv != null ? (r.otm_put_iv*100).toFixed(1)+'%' : '—'}
+                </td>
+                <td style="padding:5px 8px;text-align:right;color:${skewColor}">
+                  ${(skew*100).toFixed(1)}%
+                </td>
+                <td style="padding:5px 8px;text-align:center;font-size:10px">
+                  ${isEvent ? '<span style="color:#f59e0b">⚡ 이벤트</span>' : ''}
+                </td>
               </tr>
             `;
           }).join('')}
