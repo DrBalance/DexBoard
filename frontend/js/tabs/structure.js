@@ -99,6 +99,42 @@ function renderShell() {
       <div id="struct-mechanic"></div>
     </div>
 
+    <!-- 섹션 4: Term Structure 곡선 -->
+    <div class="struct-panel">
+      <div class="struct-panel-title">
+        <span class="panel-icon">〜</span> Term Structure
+        <span class="panel-sub">만기별 ATM IV 곡선 · 콘탱고/백워데이션</span>
+      </div>
+      <div id="struct-term"></div>
+    </div>
+
+    <!-- 섹션 5: IV Skew 차트 -->
+    <div class="struct-panel">
+      <div class="struct-panel-title">
+        <span class="panel-icon">◐</span> IV Skew
+        <span class="panel-sub">만기별 Put/Call IV 비대칭 · 공포/탐욕 농도</span>
+      </div>
+      <div id="struct-skew"></div>
+    </div>
+
+    <!-- 섹션 6: Expected Move -->
+    <div class="struct-panel">
+      <div class="struct-panel-title">
+        <span class="panel-icon">◎</span> Expected Move
+        <span class="panel-sub">만기별 기대 움직임 범위</span>
+      </div>
+      <div id="struct-em"></div>
+    </div>
+
+    <!-- 섹션 7: DEX 히트맵 -->
+    <div class="struct-panel">
+      <div class="struct-panel-title">
+        <span class="panel-icon">▦</span> 만기별 DEX 히트맵
+        <span class="panel-sub">딜러 헤징 압력 분포</span>
+      </div>
+      <div id="struct-heatmap"></div>
+    </div>
+
   </div>
 </div>
 `;
@@ -234,6 +270,9 @@ function renderContent({ symbol, scoreRow, monthly, weekly, context }) {
 
   // 섹션 3: 메카닉 판단 요약
   renderMechanicSummary(scoreRow, context, monthly);
+
+  // 섹션 4~7: Term Structure / Skew / Expected Move / DEX 히트맵
+  loadAndRenderCharts(symbol, scoreRow);
 }
 
 // ── 만기 필터 (제거됨 — 새 구조에서는 백엔드가 분류)
@@ -610,4 +649,599 @@ function fmtK(n) {
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
   if (n >= 1_000)     return (n / 1_000).toFixed(0)     + 'K';
   return String(n);
+}
+
+// ============================================
+// 공통 분석 함수 (SPY/개별종목 공용)
+// ============================================
+
+// Term Structure: 만기별 ATM IV → 콘탱고/백워데이션 판단
+export function calculateTermStructure(expiryRows) {
+  const sorted = [...expiryRows]
+    .filter(r => r.atm_iv != null && r.dte != null)
+    .sort((a, b) => a.dte - b.dte);
+  if (sorted.length < 2) return { status: 'unknown', slope: null, rows: sorted };
+
+  const short = sorted[0].atm_iv;
+  const long  = sorted[sorted.length - 1].atm_iv;
+  const slope = short / long;  // >1 = 백워데이션, <1 = 콘탱고
+
+  let status, label, color;
+  if (slope > 1.1) {
+    status = 'backwardation'; label = '백워데이션 ⚠️'; color = '#ef4444';
+  } else if (slope < 0.9) {
+    status = 'contango'; label = '콘탱고 ✓'; color = '#22c55e';
+  } else {
+    status = 'flat'; label = '플랫 — 변곡점'; color = '#f59e0b';
+  }
+  return { status, label, color, slope, rows: sorted };
+}
+
+// IV Skew: 만기별 Put/Call IV 비대칭 측정
+export function calculateSkew(expiryRows) {
+  return expiryRows
+    .filter(r => r.atm_iv != null && r.otm_call_iv != null && r.otm_put_iv != null)
+    .sort((a, b) => a.dte - b.dte)
+    .map(r => ({
+      expiry_date: r.expiry_date,
+      dte:         r.dte,
+      atm_iv:      r.atm_iv,
+      call_iv:     r.otm_call_iv,
+      put_iv:      r.otm_put_iv,
+      skew:        r.otm_put_iv - r.otm_call_iv,  // 양수 = Put 프리미엄 (하방 공포)
+      iv_skew:     r.iv_skew,
+    }));
+}
+
+// Expected Move: ATM IV × 현재가 × √(DTE/365)
+export function calculateExpectedMove(expiryRows, spot) {
+  if (!spot) return [];
+  return expiryRows
+    .filter(r => r.atm_iv != null && r.dte != null && r.dte > 0)
+    .sort((a, b) => a.dte - b.dte)
+    .map(r => {
+      const em     = spot * r.atm_iv * Math.sqrt(r.dte / 365);
+      const upper  = spot + em;
+      const lower  = spot - em;
+      // Skew 보정: Put IV가 높으면 하방 편향
+      const skewBias = (r.otm_put_iv != null && r.otm_call_iv != null)
+        ? (r.otm_put_iv - r.otm_call_iv) * spot * Math.sqrt(r.dte / 365) * 0.5
+        : 0;
+      return {
+        expiry_date:   r.expiry_date,
+        dte:           r.dte,
+        em:            +em.toFixed(2),
+        upper:         +(upper - skewBias * 0.3).toFixed(2),
+        lower:         +(lower - skewBias).toFixed(2),
+        em_pct:        +((em / spot) * 100).toFixed(2),
+        atm_iv:        r.atm_iv,
+      };
+    });
+}
+
+// 종합 상태 판단 (🟢🟡🟠🔴)
+export function evaluateStatus({ termStructure, skewRows, spot, flipStrike, vannaSum }) {
+  let score = 0;
+  const reasons = [];
+
+  // 1. Flip Zone 위
+  if (flipStrike && spot > flipStrike) {
+    score += 2; reasons.push('플립존 위');
+  }
+
+  // 2. Term Structure 콘탱고
+  if (termStructure?.status === 'contango') {
+    score += 2; reasons.push('콘탱고');
+  } else if (termStructure?.status === 'backwardation') {
+    score -= 1; reasons.push('백워데이션');
+  }
+
+  // 3. Skew 완화 (Put 프리미엄 낮음)
+  const avgSkew = skewRows.length
+    ? skewRows.reduce((s, r) => s + r.skew, 0) / skewRows.length
+    : null;
+  if (avgSkew != null && avgSkew < 0.02) {
+    score += 1; reasons.push('Skew 완화');
+  } else if (avgSkew != null && avgSkew > 0.05) {
+    score -= 1; reasons.push('Skew 과열');
+  }
+
+  // 4. Vanna 양수
+  if (vannaSum > 0) {
+    score += 1; reasons.push('Vanna 양수');
+  }
+
+  let status, label, color;
+  if (score >= 4)      { status = 'entry';   label = '🟢 진입 후보';    color = '#22c55e'; }
+  else if (score >= 2) { status = 'hold';    label = '🟡 상승세 지속';  color = '#f59e0b'; }
+  else if (score >= 0) { status = 'caution'; label = '🟠 청산 근접';    color = '#f97316'; }
+  else                 { status = 'avoid';   label = '🔴 관망';          color = '#ef4444'; }
+
+  return { status, label, color, score, reasons };
+}
+
+// ============================================
+// D1에서 options_dex 데이터 로드 → 차트 렌더링
+// ============================================
+async function loadAndRenderCharts(symbol, scoreRow) {
+  // 로딩 표시
+  ['struct-term', 'struct-skew', 'struct-em', 'struct-heatmap'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.innerHTML = `<div style="padding:16px;color:var(--text3);font-size:12px">로딩 중...</div>`;
+  });
+
+  try {
+    const res  = await fetch(`${CF_API}/api/options-dex/${symbol}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    const rows = data.rows ?? [];
+
+    if (!rows.length) {
+      ['struct-term', 'struct-skew', 'struct-em', 'struct-heatmap'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.innerHTML = `<div style="padding:16px;color:var(--text3);font-size:12px">데이터 없음</div>`;
+      });
+      return;
+    }
+
+    const spot = scoreRow?.close ?? null;
+
+    // 공통 계산
+    const termData  = calculateTermStructure(rows);
+    const skewData  = calculateSkew(rows);
+    const emData    = calculateExpectedMove(rows, spot);
+    const vannaSum  = rows.reduce((s, r) => s + (r.vanna ?? 0), 0);
+    const flipStrike = scoreRow?.flip_strike ?? null;
+    const statusResult = evaluateStatus({ termStructure: termData, skewRows: skewData, spot, flipStrike, vannaSum });
+
+    // 상태 뱃지를 헤더에 업데이트
+    const strip = document.getElementById('struct-score-strip');
+    if (strip) {
+      strip.innerHTML += `
+        <span style="
+          background:${statusResult.color}22;color:${statusResult.color};
+          border:1px solid ${statusResult.color}44;
+          border-radius:6px;padding:4px 10px;font-size:12px;font-weight:700;margin-left:8px
+        ">${statusResult.label}</span>
+        <span style="font-size:11px;color:var(--text3);margin-left:6px">
+          ${statusResult.reasons.join(' · ')}
+        </span>
+      `;
+    }
+
+    // 각 섹션 렌더링
+    renderTermStructure(termData);
+    renderSkewChart(skewData);
+    renderExpectedMove(emData, spot);
+    renderDexHeatmap(rows);
+
+  } catch (err) {
+    console.error('[structure] chart load error:', err);
+    ['struct-term', 'struct-skew', 'struct-em', 'struct-heatmap'].forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.innerHTML = `<div style="padding:16px;color:#ef4444;font-size:12px">로드 실패: ${err.message}</div>`;
+    });
+  }
+}
+
+// ============================================
+// 섹션 4 — Term Structure SVG 차트
+// ============================================
+function renderTermStructure(termData) {
+  const el = document.getElementById('struct-term');
+  if (!el) return;
+
+  const { status, label, color, slope, rows } = termData;
+
+  if (!rows.length) {
+    el.innerHTML = '<div style="padding:16px;color:var(--text3)">데이터 없음</div>';
+    return;
+  }
+
+  // 상단 요약 카드
+  const slopeDesc = slope != null
+    ? `단기/장기 IV 비율: ${slope.toFixed(3)}`
+    : '';
+
+  const W = 520, H = 180, PL = 48, PR = 16, PT = 16, PB = 36;
+  const cW = W - PL - PR, cH = H - PT - PB;
+
+  const ivs  = rows.map(r => r.atm_iv);
+  const dtes = rows.map(r => r.dte);
+  const minIV = Math.min(...ivs) * 0.9;
+  const maxIV = Math.max(...ivs) * 1.1;
+  const minDTE = Math.min(...dtes);
+  const maxDTE = Math.max(...dtes);
+
+  const xScale = dte => PL + ((dte - minDTE) / (maxDTE - minDTE || 1)) * cW;
+  const yScale = iv  => PT + (1 - (iv - minIV) / (maxIV - minIV || 1)) * cH;
+
+  // 폴리라인 포인트
+  const pts = rows.map(r => `${xScale(r.dte).toFixed(1)},${yScale(r.atm_iv).toFixed(1)}`).join(' ');
+
+  // X축 레이블 (최대 6개)
+  const step = Math.ceil(rows.length / 6);
+  const xLabels = rows.filter((_, i) => i % step === 0).map(r => `
+    <text x="${xScale(r.dte).toFixed(1)}" y="${H - 4}" 
+      text-anchor="middle" font-size="9" fill="var(--text3)">
+      ${r.dte}d
+    </text>
+  `).join('');
+
+  // Y축 레이블 (3개)
+  const yTicks = [minIV, (minIV + maxIV) / 2, maxIV].map(iv => `
+    <text x="${PL - 4}" y="${(yScale(iv) + 4).toFixed(1)}"
+      text-anchor="end" font-size="9" fill="var(--text3)">
+      ${(iv * 100).toFixed(0)}%
+    </text>
+    <line x1="${PL}" y1="${yScale(iv).toFixed(1)}" x2="${W - PR}" y2="${yScale(iv).toFixed(1)}"
+      stroke="var(--border)" stroke-width="0.5" stroke-dasharray="3,3"/>
+  `).join('');
+
+  // 데이터 포인트 서클
+  const circles = rows.map(r => `
+    <circle cx="${xScale(r.dte).toFixed(1)}" cy="${yScale(r.atm_iv).toFixed(1)}"
+      r="3" fill="${color}" opacity="0.8">
+      <title>${r.expiry_date} (D-${r.dte}): IV ${(r.atm_iv * 100).toFixed(1)}%</title>
+    </circle>
+  `).join('');
+
+  el.innerHTML = `
+    <!-- 상태 요약 -->
+    <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <div style="
+        background:${color}22;border:1px solid ${color}44;
+        border-radius:8px;padding:10px 16px;flex:1;min-width:140px
+      ">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Term Structure 상태</div>
+        <div style="font-size:16px;font-weight:800;color:${color}">${label}</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:2px">${slopeDesc}</div>
+      </div>
+      <div style="
+        background:var(--bg2);border:1px solid var(--border);
+        border-radius:8px;padding:10px 16px;flex:1;min-width:140px
+      ">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:4px">만기 범위</div>
+        <div style="font-size:14px;font-weight:700;color:var(--text)">
+          D-${minDTE} ~ D-${maxDTE}
+        </div>
+        <div style="font-size:10px;color:var(--text3);margin-top:2px">${rows.length}개 만기</div>
+      </div>
+      <div style="
+        background:var(--bg2);border:1px solid var(--border);
+        border-radius:8px;padding:10px 16px;flex:1;min-width:140px
+      ">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:4px">IV 범위</div>
+        <div style="font-size:14px;font-weight:700;color:var(--text)">
+          ${(Math.min(...ivs) * 100).toFixed(1)}% ~ ${(Math.max(...ivs) * 100).toFixed(1)}%
+        </div>
+        <div style="font-size:10px;color:var(--text3);margin-top:2px">ATM IV</div>
+      </div>
+    </div>
+
+    <!-- SVG 차트 -->
+    <div style="overflow-x:auto">
+      <svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block">
+        ${yTicks}
+        <!-- IV 곡선 -->
+        <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" opacity="0.9"/>
+        <!-- 면적 채우기 -->
+        <polyline points="${PL},${PT + cH} ${pts} ${xScale(maxDTE).toFixed(1)},${PT + cH}"
+          fill="${color}" opacity="0.08"/>
+        ${circles}
+        ${xLabels}
+        <!-- 축 -->
+        <line x1="${PL}" y1="${PT}" x2="${PL}" y2="${PT + cH}" stroke="var(--border)" stroke-width="1"/>
+        <line x1="${PL}" y1="${PT + cH}" x2="${W - PR}" y2="${PT + cH}" stroke="var(--border)" stroke-width="1"/>
+      </svg>
+    </div>
+
+    <!-- 만기별 상세 테이블 -->
+    <div style="margin-top:12px;overflow-x:auto">
+      <table style="width:100%;font-size:11px;border-collapse:collapse">
+        <thead>
+          <tr style="color:var(--text3)">
+            <th style="text-align:left;padding:4px 8px">만기</th>
+            <th style="text-align:right;padding:4px 8px">DTE</th>
+            <th style="text-align:right;padding:4px 8px">ATM IV</th>
+            <th style="text-align:right;padding:4px 8px">Call IV</th>
+            <th style="text-align:right;padding:4px 8px">Put IV</th>
+            <th style="text-align:right;padding:4px 8px">Skew</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map((r, i) => {
+            const skew = (r.otm_put_iv ?? 0) - (r.otm_call_iv ?? 0);
+            const skewColor = skew > 0.03 ? '#ef4444' : skew < -0.01 ? '#22c55e' : 'var(--text3)';
+            const rowBg = i % 2 === 0 ? 'var(--bg2)' : 'var(--bg3)';
+            return `
+              <tr style="background:${rowBg}">
+                <td style="padding:5px 8px;font-family:var(--mono)">${r.expiry_date}</td>
+                <td style="padding:5px 8px;text-align:right;color:var(--text3)">D-${r.dte}</td>
+                <td style="padding:5px 8px;text-align:right;font-weight:700">${(r.atm_iv * 100).toFixed(1)}%</td>
+                <td style="padding:5px 8px;text-align:right;color:#22c55e">${r.otm_call_iv != null ? (r.otm_call_iv * 100).toFixed(1) + '%' : '—'}</td>
+                <td style="padding:5px 8px;text-align:right;color:#ef4444">${r.otm_put_iv != null ? (r.otm_put_iv * 100).toFixed(1) + '%' : '—'}</td>
+                <td style="padding:5px 8px;text-align:right;color:${skewColor}">${(skew * 100).toFixed(1)}%</td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ============================================
+// 섹션 5 — IV Skew 차트
+// ============================================
+function renderSkewChart(skewData) {
+  const el = document.getElementById('struct-skew');
+  if (!el) return;
+
+  if (!skewData.length) {
+    el.innerHTML = '<div style="padding:16px;color:var(--text3)">데이터 없음</div>';
+    return;
+  }
+
+  const W = 520, H = 160, PL = 48, PR = 16, PT = 16, PB = 36;
+  const cW = W - PL - PR, cH = H - PT - PB;
+
+  const skews = skewData.map(r => r.skew);
+  const dtes  = skewData.map(r => r.dte);
+  const maxAbs = Math.max(...skews.map(Math.abs)) * 1.2 || 0.1;
+  const minDTE = Math.min(...dtes), maxDTE = Math.max(...dtes);
+
+  const xScale = dte  => PL + ((dte - minDTE) / (maxDTE - minDTE || 1)) * cW;
+  const yScale = skew => PT + (1 - (skew + maxAbs) / (2 * maxAbs)) * cH;
+  const zeroY  = yScale(0);
+
+  // 바 차트 (만기별 Skew)
+  const barW = Math.max(4, cW / skewData.length * 0.6);
+  const bars = skewData.map(r => {
+    const x    = xScale(r.dte);
+    const y0   = zeroY;
+    const y1   = yScale(r.skew);
+    const barH = Math.abs(y1 - y0);
+    const barY = Math.min(y0, y1);
+    const col  = r.skew > 0 ? '#ef4444' : '#22c55e';
+    return `
+      <rect x="${(x - barW / 2).toFixed(1)}" y="${barY.toFixed(1)}"
+        width="${barW.toFixed(1)}" height="${barH.toFixed(1)}"
+        fill="${col}" opacity="0.7" rx="1">
+        <title>${r.expiry_date} Skew: ${(r.skew * 100).toFixed(1)}%
+Put IV: ${(r.put_iv * 100).toFixed(1)}% / Call IV: ${(r.call_iv * 100).toFixed(1)}%</title>
+      </rect>
+      <text x="${x.toFixed(1)}" y="${H - 4}" text-anchor="middle" font-size="9" fill="var(--text3)">
+        ${r.dte}d
+      </text>
+    `;
+  }).join('');
+
+  // 평균 Skew 라인
+  const avgSkew = skews.reduce((a, b) => a + b, 0) / skews.length;
+  const avgY = yScale(avgSkew);
+  const avgColor = avgSkew > 0.03 ? '#ef4444' : avgSkew < 0 ? '#22c55e' : '#f59e0b';
+
+  // 요약
+  const maxSkewRow = skewData.reduce((m, r) => r.skew > m.skew ? r : m, skewData[0]);
+  const skewStatus = avgSkew > 0.05
+    ? { label: '공포 과열 ⚠️', color: '#ef4444', desc: '하방 보험료 급등 — 반등 가능성 탐색' }
+    : avgSkew > 0.02
+    ? { label: '보통 Put 편향', color: '#f59e0b', desc: '완만한 하방 우려' }
+    : { label: 'Skew 완화 ✓', color: '#22c55e', desc: '공포 진정 — 상승 구조 우호적' };
+
+  el.innerHTML = `
+    <!-- 요약 -->
+    <div style="display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap">
+      <div style="background:${skewStatus.color}22;border:1px solid ${skewStatus.color}44;border-radius:8px;padding:10px 16px;flex:1">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:4px">Skew 상태</div>
+        <div style="font-size:15px;font-weight:800;color:${skewStatus.color}">${skewStatus.label}</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:2px">${skewStatus.desc}</div>
+      </div>
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 16px;flex:1">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:4px">평균 Skew</div>
+        <div style="font-size:15px;font-weight:700;color:${avgColor}">${avgSkew > 0 ? '+' : ''}${(avgSkew * 100).toFixed(2)}%</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:2px">Put IV − Call IV</div>
+      </div>
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:10px 16px;flex:1">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:4px">최대 Skew 만기</div>
+        <div style="font-size:14px;font-weight:700;color:#ef4444">${maxSkewRow.expiry_date}</div>
+        <div style="font-size:10px;color:var(--text3);margin-top:2px">${(maxSkewRow.skew * 100).toFixed(1)}% (D-${maxSkewRow.dte})</div>
+      </div>
+    </div>
+
+    <!-- SVG 바 차트 -->
+    <div style="overflow-x:auto">
+      <svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block">
+        <!-- 제로 라인 -->
+        <line x1="${PL}" y1="${zeroY.toFixed(1)}" x2="${W - PR}" y2="${zeroY.toFixed(1)}"
+          stroke="var(--text3)" stroke-width="0.8" stroke-dasharray="4,2"/>
+        <text x="${PL - 4}" y="${(zeroY + 4).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--text3)">0%</text>
+        <!-- 평균 라인 -->
+        <line x1="${PL}" y1="${avgY.toFixed(1)}" x2="${W - PR}" y2="${avgY.toFixed(1)}"
+          stroke="${avgColor}" stroke-width="1" stroke-dasharray="6,3" opacity="0.7"/>
+        ${bars}
+        <!-- 축 -->
+        <line x1="${PL}" y1="${PT}" x2="${PL}" y2="${PT + cH}" stroke="var(--border)" stroke-width="1"/>
+        <!-- Y 레이블 -->
+        <text x="${PL - 4}" y="${(PT + 4).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--text3)">+${(maxAbs * 100 / 1.2).toFixed(0)}%</text>
+        <text x="${PL - 4}" y="${(PT + cH + 4).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--text3)">-${(maxAbs * 100 / 1.2).toFixed(0)}%</text>
+        <!-- 범례 -->
+        <rect x="${W - PR - 80}" y="${PT}" width="10" height="10" fill="#ef4444" rx="1"/>
+        <text x="${W - PR - 66}" y="${PT + 9}" font-size="9" fill="var(--text3)">Put 프리미엄</text>
+        <rect x="${W - PR - 80}" y="${PT + 14}" width="10" height="10" fill="#22c55e" rx="1"/>
+        <text x="${W - PR - 66}" y="${PT + 23}" font-size="9" fill="var(--text3)">Call 프리미엄</text>
+      </svg>
+    </div>
+  `;
+}
+
+// ============================================
+// 섹션 6 — Expected Move 시각화
+// ============================================
+function renderExpectedMove(emData, spot) {
+  const el = document.getElementById('struct-em');
+  if (!el) return;
+
+  if (!emData.length || !spot) {
+    el.innerHTML = '<div style="padding:16px;color:var(--text3)">현재가 데이터 필요</div>';
+    return;
+  }
+
+  // 카드 형식으로 만기별 EM 표시
+  const cards = emData.map(r => {
+    const pct    = r.em_pct;
+    const barPct = Math.min(pct * 4, 100); // 최대 25%를 100%로 스케일
+    const col    = pct > 10 ? '#ef4444' : pct > 5 ? '#f59e0b' : '#22c55e';
+
+    return `
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;min-width:140px;flex:1">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:6px">
+          ${r.expiry_date} <span style="color:var(--text3)">D-${r.dte}</span>
+        </div>
+        <!-- 종 모양 단순화: 상단/하단 범위 -->
+        <div style="text-align:center;margin:8px 0">
+          <div style="font-size:11px;color:#22c55e;font-weight:700">▲ $${r.upper.toFixed(1)}</div>
+          <div style="margin:4px 0;height:32px;position:relative">
+            <!-- 종 모양 SVG -->
+            <svg viewBox="0 0 80 32" width="80" style="display:block;margin:0 auto">
+              <path d="M40,2 C52,2 64,8 68,20 L72,30 L8,30 L12,20 C16,8 28,2 40,2 Z"
+                fill="${col}" opacity="0.2" stroke="${col}" stroke-width="1"/>
+              <line x1="40" y1="2" x2="40" y2="30" stroke="${col}" stroke-width="1" stroke-dasharray="2,2" opacity="0.5"/>
+            </svg>
+          </div>
+          <div style="font-size:13px;font-weight:800;color:var(--text)">$${spot.toFixed(1)}</div>
+          <div style="margin:4px 0;height:32px;position:relative">
+            <svg viewBox="0 0 80 32" width="80" style="display:block;margin:0 auto;transform:scaleY(-1)">
+              <path d="M40,2 C52,2 64,8 68,20 L72,30 L8,30 L12,20 C16,8 28,2 40,2 Z"
+                fill="${col}" opacity="0.2" stroke="${col}" stroke-width="1"/>
+            </svg>
+          </div>
+          <div style="font-size:11px;color:#ef4444;font-weight:700">▼ $${r.lower.toFixed(1)}</div>
+        </div>
+        <!-- EM % 바 -->
+        <div style="margin-top:8px">
+          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3);margin-bottom:3px">
+            <span>기대 움직임</span>
+            <span style="color:${col};font-weight:700">±${pct}%</span>
+          </div>
+          <div style="height:4px;background:var(--bg3);border-radius:2px;overflow:hidden">
+            <div style="width:${barPct}%;height:100%;background:${col};border-radius:2px"></div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  el.innerHTML = `
+    <div style="margin-bottom:10px;font-size:11px;color:var(--text3)">
+      현재가 <strong style="color:var(--text)">$${spot.toFixed(2)}</strong> 기준 · ATM IV 내재 기대 범위 · Skew 편향 보정 포함
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap">
+      ${cards}
+    </div>
+  `;
+}
+
+// ============================================
+// 섹션 7 — 만기별 DEX 히트맵
+// ============================================
+function renderDexHeatmap(rows) {
+  const el = document.getElementById('struct-heatmap');
+  if (!el) return;
+
+  if (!rows.length) {
+    el.innerHTML = '<div style="padding:16px;color:var(--text3)">데이터 없음</div>';
+    return;
+  }
+
+  const sorted = [...rows].sort((a, b) => a.dte - b.dte);
+
+  // DEX 절대값 최대치 (색상 스케일 기준)
+  const dexVals = sorted.map(r => r.dex).filter(v => v != null);
+  const maxDex  = Math.max(...dexVals.map(Math.abs)) || 1;
+
+  function dexColor(val) {
+    if (val == null) return 'var(--bg3)';
+    const t = Math.min(Math.abs(val) / maxDex, 1);
+    if (val > 0) {
+      // 초록 (콜 DEX)
+      const g = Math.round(80 + t * 105);
+      const r = Math.round(30 + (1 - t) * 33);
+      return `rgb(${r},${g},${Math.round(30 + (1-t)*50)})`;
+    } else {
+      // 빨강 (풋 DEX)
+      const rv = Math.round(80 + t * 168);
+      return `rgb(${rv},${Math.round(30 + (1-t)*51)},${Math.round(30 + (1-t)*73)})`;
+    }
+  }
+
+  const rows_html = sorted.map(r => {
+    const dexCol   = dexColor(r.dex);
+    const gexCol   = dexColor(r.gex);
+    const vannaCol = dexColor(r.vanna);
+    const charmCol = dexColor(r.charm);
+
+    const pcrColor = (r.pcr_oi ?? 1) > 1.2 ? '#ef4444' : (r.pcr_oi ?? 1) < 0.8 ? '#22c55e' : 'var(--text3)';
+
+    return `
+      <tr>
+        <td style="padding:5px 8px;font-family:var(--mono);font-size:11px;white-space:nowrap">
+          ${r.expiry_date}
+        </td>
+        <td style="padding:5px 8px;text-align:center;font-size:10px;color:var(--text3)">D-${r.dte}</td>
+        <td style="padding:3px 4px">
+          <div style="background:${dexCol};border-radius:4px;padding:4px 8px;text-align:right;font-size:11px;font-weight:700;font-family:var(--mono);color:#fff;white-space:nowrap">
+            ${r.dex != null ? (r.dex > 0 ? '+' : '') + r.dex.toFixed(1) : '—'}
+          </div>
+        </td>
+        <td style="padding:3px 4px">
+          <div style="background:${gexCol};border-radius:4px;padding:4px 8px;text-align:right;font-size:11px;font-family:var(--mono);color:#fff;white-space:nowrap">
+            ${r.gex != null ? (r.gex > 0 ? '+' : '') + r.gex.toFixed(1) : '—'}
+          </div>
+        </td>
+        <td style="padding:3px 4px">
+          <div style="background:${vannaCol};border-radius:4px;padding:4px 8px;text-align:right;font-size:11px;font-family:var(--mono);color:#fff;white-space:nowrap">
+            ${r.vanna != null ? (r.vanna > 0 ? '+' : '') + r.vanna.toFixed(2) : '—'}
+          </div>
+        </td>
+        <td style="padding:3px 4px">
+          <div style="background:${charmCol};border-radius:4px;padding:4px 8px;text-align:right;font-size:11px;font-family:var(--mono);color:#fff;white-space:nowrap">
+            ${r.charm != null ? (r.charm > 0 ? '+' : '') + r.charm.toFixed(2) : '—'}
+          </div>
+        </td>
+        <td style="padding:5px 8px;text-align:right;font-size:11px;color:${pcrColor};font-family:var(--mono)">
+          ${r.pcr_oi != null ? r.pcr_oi.toFixed(2) : '—'}
+        </td>
+        <td style="padding:5px 8px;text-align:right;font-size:11px;font-family:var(--mono);color:var(--text2)">
+          ${r.flip_strike != null ? '$' + r.flip_strike.toFixed(0) : '—'}
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  el.innerHTML = `
+    <div style="overflow-x:auto">
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr style="background:var(--bg3)">
+            <th style="padding:6px 8px;text-align:left;font-size:10px;color:var(--text3);font-weight:600">만기</th>
+            <th style="padding:6px 8px;text-align:center;font-size:10px;color:var(--text3);font-weight:600">DTE</th>
+            <th style="padding:6px 8px;text-align:center;font-size:10px;color:#58a6ff;font-weight:600">DEX</th>
+            <th style="padding:6px 8px;text-align:center;font-size:10px;color:#3fb950;font-weight:600">GEX</th>
+            <th style="padding:6px 8px;text-align:center;font-size:10px;color:#d29922;font-weight:600">Vanna</th>
+            <th style="padding:6px 8px;text-align:center;font-size:10px;color:#bc64dc;font-weight:600">Charm</th>
+            <th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--text3);font-weight:600">PCR</th>
+            <th style="padding:6px 8px;text-align:right;font-size:10px;color:var(--text3);font-weight:600">Flip</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows_html}
+        </tbody>
+      </table>
+    </div>
+    <div style="margin-top:8px;font-size:10px;color:var(--text3)">
+      ■ 초록 = 콜 DEX 우세 (딜러 매수 헤징 압력) &nbsp;|&nbsp; ■ 빨강 = 풋 DEX 우세 (딜러 매도 헤징 압력)
+    </div>
+  `;
 }
