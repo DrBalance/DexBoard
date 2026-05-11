@@ -287,7 +287,7 @@ headers: {
 "x-cron-secret": CRON_SECRET,
 },
 body: JSON.stringify(body),
-signal: AbortSignal.timeout(30_000),
+signal: AbortSignal.timeout(60_000),
 });
 if (!res.ok) {
 const txt = await res.text();
@@ -958,14 +958,19 @@ if (allResults.length) {
   // options_dex 저장
   await d1Write("/d1/options-dex", { rows: dexRows });
 
-  // options_strikes 저장 (Smile 곡선용)
-  if (strikeRows.length) {
+  // options_strikes 저장 (Smile 곡선용) — 종목별로 개별 요청
+  let strikesSaved = 0;
+  for (const { symbol, strikeRows: sRows } of allResults) {
+    if (!sRows?.length) continue;
     try {
-      await d1Write("/d1/options-strikes", { rows: strikeRows });
-      console.log(`[Screener] options_strikes 저장: ${strikeRows.length}행`);
+      await d1Write("/d1/options-strikes", { rows: sRows });
+      strikesSaved += sRows.length;
     } catch (e) {
-      console.warn('[Screener] options_strikes 저장 실패 (계속 진행):', e.message);
+      console.warn(`[${symbol}] options_strikes 저장 실패 (계속 진행):`, e.message);
     }
+  }
+  if (strikesSaved > 0) {
+    console.log(`[Screener] options_strikes 저장: ${strikesSaved}행`);
   }
 
   // 새 기준으로 점수 계산 + screener_scores 저장
