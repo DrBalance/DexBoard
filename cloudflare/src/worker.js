@@ -216,6 +216,27 @@ export default {
       return json(data, 200, corsHeaders);
     }
 
+    // ── GET /api/options-dex/:symbol ───────────────────────────
+    // Structure 탭용: 종목의 만기별 options_dex 데이터 반환
+    const optDexMatch = path.match(/^\/api\/options-dex\/([a-zA-Z]+)$/);
+    if (request.method === "GET" && optDexMatch) {
+      const sym  = optDexMatch[1].toUpperCase();
+      const date = url.searchParams.get("date") || null;
+
+      let query, params;
+      if (date) {
+        query  = `SELECT * FROM options_dex WHERE symbol=? AND date=? ORDER BY dte ASC`;
+        params = [sym, date];
+      } else {
+        // date 없으면 가장 최신 날짜 자동 선택
+        query  = `SELECT * FROM options_dex WHERE symbol=? AND date=(SELECT MAX(date) FROM options_dex WHERE symbol=?) ORDER BY dte ASC`;
+        params = [sym, sym];
+      }
+
+      const rows = await env.DB.prepare(query).bind(...params).all();
+      return json({ symbol: sym, rows: rows.results ?? [] }, 200, corsHeaders);
+    }
+
     // ── GET /api/symbols (자동완성) ─────────────────────────────
     if (request.method === "GET" && path === "/api/symbols") {
       const q    = url.searchParams.get("q")?.toUpperCase() || "";
