@@ -958,19 +958,14 @@ if (allResults.length) {
   // options_dex 저장
   await d1Write("/d1/options-dex", { rows: dexRows });
 
-  // options_strikes 저장 (Smile 곡선용) — 종목별로 개별 요청
-  let strikesSaved = 0;
-  for (const { symbol, strikeRows: sRows } of allResults) {
-    if (!sRows?.length) continue;
+  // options_strikes 저장 (Smile 곡선용) — D1 batch 방식으로 전체 한 번에
+  if (strikeRows.length) {
     try {
-      await d1Write("/d1/options-strikes", { rows: sRows });
-      strikesSaved += sRows.length;
+      await d1Write("/d1/options-strikes", { rows: strikeRows });
+      console.log(`[Screener] options_strikes 저장: ${strikeRows.length}행`);
     } catch (e) {
-      console.warn(`[${symbol}] options_strikes 저장 실패 (계속 진행):`, e.message);
+      console.warn('[Screener] options_strikes 저장 실패 (계속 진행):', e.message);
     }
-  }
-  if (strikesSaved > 0) {
-    console.log(`[Screener] options_strikes 저장: ${strikesSaved}행`);
   }
 
   // 새 기준으로 점수 계산 + screener_scores 저장
