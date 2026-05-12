@@ -82,23 +82,6 @@ function renderShell() {
       <div id="struct-verdict"></div>
     </div>
 
-    <!-- 섹션 2: 타이밍 컨텍스트 -->
-    <div class="struct-panel">
-      <div class="struct-panel-title">
-        <span class="panel-icon">⏱</span> 타이밍 컨텍스트
-        <span class="panel-sub">OPEX 사이클 · Vanna/Charm 방향</span>
-      </div>
-      <div id="struct-timing"></div>
-    </div>
-
-    <!-- 섹션 3: 메카닉 판단 -->
-    <div class="struct-panel">
-      <div class="struct-panel-title">
-        <span class="panel-icon">▤</span> 딜러 메카닉 판단
-      </div>
-      <div id="struct-mechanic"></div>
-    </div>
-
     <!-- 섹션 4: OI 확률 분포 -->
     <div class="struct-panel">
       <div class="struct-panel-title">
@@ -160,15 +143,6 @@ function renderShell() {
         <span class="panel-sub">위클리 만기별 OI · 이상 베팅 감지</span>
       </div>
       <div id="struct-weekly-oi"></div>
-    </div>
-
-    <!-- 섹션 10: Expected Move -->
-    <div class="struct-panel">
-      <div class="struct-panel-title">
-        <span class="panel-icon">◎</span> Expected Move
-        <span class="panel-sub">만기별 기대 움직임 범위</span>
-      </div>
-      <div id="struct-em"></div>
     </div>
 
   </div>
@@ -302,10 +276,8 @@ function renderContent({ symbol, scoreRow, monthly, weekly, context }) {
   renderExpiryCards(monthly, weekly, scoreRow);
 
   // 섹션 2: 타이밍 컨텍스트
-  renderTimingContext(context, scoreRow);
 
   // 섹션 3: 메카닉 판단 요약
-  renderMechanicSummary(scoreRow, context, monthly);
 
   // 섹션 4~7: Term Structure / Skew / Expected Move / DEX 히트맵
   loadAndRenderCharts(symbol, scoreRow);
@@ -441,218 +413,10 @@ function renderExpiryCards(monthly, weekly, scoreRow) {
 }
 
 // ============================================
-// 섹션 2 — 타이밍 컨텍스트
 // ============================================
-function renderTimingContext(context, scoreRow) {
-  const el = document.getElementById('struct-timing');
-  if (!el || !context) {
-    if (el) el.innerHTML = '<div class="no-data" style="padding:16px;color:var(--text3)">컨텍스트 데이터 없음</div>';
-    return;
-  }
-
-  const opexDte   = context.opex_dte ?? null;
-  const weekDte   = context.this_week_dte ?? null;
-  const weekExp   = context.this_week_expiry ?? null;
-  const vannaSum  = context.vanna_sum ?? 0;
-  const charmSum  = context.charm_sum ?? 0;
-  const aligned   = context.skew_aligned;
-  const featured  = context.weekly_featured;
-
-  // OPEX 긴박도 색상
-  const opexColor = opexDte != null
-    ? (opexDte <= 7 ? '#ef4444' : opexDte <= 14 ? '#f59e0b' : '#22c55e')
-    : '#6e7681';
-
-  // 이번 주 위클리 Charm 피크 여부
-  const charmPeak = weekDte != null && weekDte <= 2;
-
-  // Vanna + Charm 방향 일치 여부
-  const vannaDir = vannaSum > 0 ? 1 : vannaSum < 0 ? -1 : 0;
-  const charmDir = charmSum > 0 ? 1 : charmSum < 0 ? -1 : 0;
-  const loopActive = vannaDir !== 0 && vannaDir === charmDir;
-
-  el.innerHTML = `
-    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:10px;margin-bottom:12px">
-
-      <!-- OPEX D-day -->
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px">
-        <div style="font-size:11px;color:var(--text3);margin-bottom:6px">다음 OPEX</div>
-        <div style="font-size:28px;font-weight:800;font-family:var(--mono);color:${opexColor}">
-          D-${opexDte ?? '?'}
-        </div>
-        <div style="font-size:11px;color:${opexColor};margin-top:4px">
-          ${opexDte != null
-            ? (opexDte <= 7 ? '⚡ Vanna flow 최대 수렴 구간' : opexDte <= 14 ? '◎ Vanna flow 강화 중' : '○ OPEX 준비 구간')
-            : '—'}
-        </div>
-      </div>
-
-      <!-- 이번 주 위클리 -->
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px">
-        <div style="font-size:11px;color:var(--text3);margin-bottom:6px">이번 주 위클리 만기</div>
-        <div style="font-size:20px;font-weight:800;font-family:var(--mono);color:${charmPeak ? '#ef4444' : 'var(--text)'}">
-          ${weekExp ? weekExp.slice(5) : '없음'}
-          ${weekDte != null ? `<span style="font-size:14px;color:var(--text3)"> D-${weekDte}</span>` : ''}
-        </div>
-        <div style="font-size:11px;margin-top:4px;color:${charmPeak ? '#ef4444' : 'var(--text3)'}">
-          ${charmPeak ? '⚡ Charm 압력 피크 — 자기강화 루프 경계' : weekDte != null ? 'Charm 작동 중' : '이번 주 위클리 없음'}
-        </div>
-      </div>
-
-      <!-- Monthly IV 스큐 일치 -->
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px">
-        <div style="font-size:11px;color:var(--text3);margin-bottom:6px">Monthly IV스큐 일치</div>
-        <div style="font-size:22px;font-weight:800;color:${aligned ? '#22c55e' : '#6e7681'}">
-          ${aligned ? '✓ 일치' : '✗ 불일치'}
-        </div>
-        <div style="font-size:11px;color:var(--text3);margin-top:4px">
-          기관 방향성 베팅 ${aligned ? '확인' : '미확인'}
-        </div>
-      </div>
-
-      <!-- Weekly 이상 베팅 -->
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px">
-        <div style="font-size:11px;color:var(--text3);margin-bottom:6px">Weekly 이상 베팅</div>
-        <div style="font-size:22px;font-weight:800;color:${featured ? '#f59e0b' : '#6e7681'}">
-          ${featured ? '⚡ 감지' : '없음'}
-        </div>
-        <div style="font-size:11px;color:var(--text3);margin-top:4px">
-          ${featured ? 'Charm 자기강화 연료 존재' : '평균 수준 OI'}
-        </div>
-      </div>
-
-    </div>
-
-    <!-- Vanna/Charm 복합 방향 -->
-    <div style="background:var(--bg2);border:1px solid ${loopActive ? '#f59e0b44' : 'var(--border)'};border-radius:8px;padding:14px">
-      <div style="font-size:11px;color:var(--text3);margin-bottom:8px">Vanna + Charm 복합 방향 (Monthly 합산)</div>
-      <div style="display:flex;gap:20px;align-items:center">
-        <div>
-          <span style="font-size:11px;color:var(--text3)">Vanna </span>
-          <span style="font-size:15px;font-weight:700;font-family:var(--mono);color:${vannaSum > 0 ? '#22c55e' : vannaSum < 0 ? '#ef4444' : '#6e7681'}">
-            ${vannaSum > 0 ? '▲' : vannaSum < 0 ? '▼' : '—'} ${Math.abs(vannaSum).toFixed(3)}
-          </span>
-        </div>
-        <div style="color:var(--text3)">+</div>
-        <div>
-          <span style="font-size:11px;color:var(--text3)">Charm </span>
-          <span style="font-size:15px;font-weight:700;font-family:var(--mono);color:${charmSum > 0 ? '#22c55e' : charmSum < 0 ? '#ef4444' : '#6e7681'}">
-            ${charmSum > 0 ? '▲' : charmSum < 0 ? '▼' : '—'} ${Math.abs(charmSum).toFixed(3)}
-          </span>
-        </div>
-        <div style="margin-left:auto;font-size:13px;font-weight:700;color:${loopActive ? '#f59e0b' : '#6e7681'}">
-          ${loopActive ? '⚡ 자기강화 루프 조건 충족' : '방향 불일치 — 루프 없음'}
-        </div>
-      </div>
-    </div>
-  `;
-}
 
 // ============================================
-// 섹션 3 — 딜러 메카닉 판단
 // ============================================
-function renderMechanicSummary(scoreRow, context, monthly) {
-  const el = document.getElementById('struct-mechanic');
-  if (!el) return;
-
-  const strength  = scoreRow?.strength_score ?? 0;
-  const grade     = scoreRow?.timing_grade   ?? 'C';
-  const flip      = scoreRow?.flip_strike    ?? null;
-  const spot      = scoreRow?.close          ?? null;
-  const ivSkew    = scoreRow?.iv_skew        ?? null;
-
-  const dir       = strength > 0 ? '콜 방향 ▲' : strength < 0 ? '풋 방향 ▼' : '중립';
-  const dirColor  = strength > 0 ? '#22c55e'   : strength < 0 ? '#ef4444'   : '#6e7681';
-
-  const gradeColor = grade === 'A' ? '#f59e0b' : grade === 'B' ? '#3b82f6' : '#6e7681';
-  const gradeDesc  = {
-    'A': '즉시 진입 — Monthly 2개 + Weekly 방향 일치',
-    'B': '준비 단계 — Monthly 2개 방향 일치',
-    'C': '관찰 — 타이밍 신호 없음',
-  };
-
-  const aboveFlip = spot && flip ? spot > flip : null;
-
-  // 종합 메카닉 상태 판단
-  const vannaSum  = context?.vanna_sum ?? 0;
-  const charmSum  = context?.charm_sum ?? 0;
-  const loopActive = (vannaSum > 0 && charmSum > 0) || (vannaSum < 0 && charmSum < 0);
-  const opexDte   = context?.opex_dte ?? null;
-  const featured  = context?.weekly_featured ?? false;
-
-  // 컨디션 체크리스트
-  const checks = [
-    {
-      label: '딜러 롱감마 (플립존 위)',
-      ok: aboveFlip === true,
-      desc: aboveFlip === true ? `현재가 $${spot?.toFixed(0)} > 플립존 $${flip?.toFixed(0)}` : flip ? `현재가 $${spot?.toFixed(0)} < 플립존 $${flip?.toFixed(0)}` : '플립존 없음',
-    },
-    {
-      label: 'Vanna + Charm 동방향',
-      ok: loopActive,
-      desc: loopActive ? '자기강화 루프 작동 가능' : '두 힘이 상충 — 루프 없음',
-    },
-    {
-      label: 'Monthly IV스큐 일치',
-      ok: context?.skew_aligned ?? false,
-      desc: context?.skew_aligned ? '기관 방향성 베팅 확인' : '방향성 미확인',
-    },
-    {
-      label: 'OPEX 2주 이내',
-      ok: opexDte != null && opexDte <= 14,
-      desc: opexDte != null ? `D-${opexDte}` : '—',
-    },
-    {
-      label: 'Weekly 이상 베팅',
-      ok: featured,
-      desc: featured ? 'Charm 연료 확인' : '평균 수준',
-    },
-  ];
-
-  const passCount = checks.filter(c => c.ok).length;
-  const totalCount = checks.length;
-  const overallColor = passCount >= 4 ? '#22c55e' : passCount >= 3 ? '#f59e0b' : '#ef4444';
-
-  el.innerHTML = `
-    <!-- 강도 + 타이밍 -->
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:12px">
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px">
-        <div style="font-size:11px;color:var(--text3);margin-bottom:4px">강도 점수</div>
-        <div style="font-size:36px;font-weight:800;font-family:var(--mono);color:${dirColor}">
-          ${strength > 0 ? '+' : ''}${strength}
-        </div>
-        <div style="font-size:12px;color:${dirColor};margin-top:2px">${dir}</div>
-        <div style="margin-top:8px;height:5px;background:var(--bg3);border-radius:3px;overflow:hidden">
-          <div style="width:${(Math.abs(strength)/3)*100}%;height:100%;background:${dirColor};border-radius:3px"></div>
-        </div>
-      </div>
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px">
-        <div style="font-size:11px;color:var(--text3);margin-bottom:4px">타이밍 등급</div>
-        <div style="font-size:36px;font-weight:800;color:${gradeColor}">${grade}</div>
-        <div style="font-size:11px;color:${gradeColor};margin-top:2px">${gradeDesc[grade] ?? ''}</div>
-      </div>
-    </div>
-
-    <!-- 컨디션 체크리스트 -->
-    <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:14px">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
-        <span style="font-size:12px;font-weight:700;color:var(--text2)">메카닉 조건 체크</span>
-        <span style="font-size:13px;font-weight:800;color:${overallColor}">${passCount}/${totalCount} 충족</span>
-      </div>
-      ${checks.map(c => `
-        <div style="display:flex;align-items:flex-start;gap:10px;padding:8px 0;border-bottom:1px solid var(--border)">
-          <div style="font-size:16px;color:${c.ok ? '#22c55e' : '#ef4444'};flex-shrink:0;margin-top:1px">
-            ${c.ok ? '✓' : '✗'}
-          </div>
-          <div style="flex:1">
-            <div style="font-size:12px;font-weight:600;color:${c.ok ? 'var(--text)' : 'var(--text3)'}">${c.label}</div>
-            <div style="font-size:11px;color:var(--text3);margin-top:2px">${c.desc}</div>
-          </div>
-        </div>
-      `).join('')}
-    </div>
-  `;
-}
 
 // ── 상태 표시 (loading / empty / error)
 function showState(type, msg) {
@@ -823,7 +587,6 @@ export function calculateSkew(expiryRows) {
     }));
 }
 
-// Expected Move: ATM IV × 현재가 × √(DTE/365)
 export function calculateExpectedMove(expiryRows, spot) {
   if (!spot) return [];
   return expiryRows
@@ -895,7 +658,7 @@ export function evaluateStatus({ termStructure, skewRows, spot, flipStrike, vann
 // ============================================
 async function loadAndRenderCharts(symbol, scoreRow) {
   // 로딩 표시
-  ['struct-term', 'struct-skew', 'struct-em', 'struct-heatmap', 'struct-oi-dist', 'struct-weekly-oi'].forEach(id => {
+  ['struct-term', 'struct-skew', 'struct-heatmap', 'struct-oi-dist', 'struct-weekly-oi'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.innerHTML = `<div style="padding:16px;color:var(--text3);font-size:12px">로딩 중...</div>`;
   });
@@ -924,7 +687,7 @@ async function loadAndRenderCharts(symbol, scoreRow) {
     }
 
     if (!rows.length) {
-      ['struct-term', 'struct-skew', 'struct-em', 'struct-heatmap', 'struct-oi-dist', 'struct-weekly-oi'].forEach(id => {
+      ['struct-term', 'struct-skew', 'struct-heatmap', 'struct-oi-dist', 'struct-weekly-oi'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.innerHTML = `<div style="padding:16px;color:var(--text3);font-size:12px">데이터 없음</div>`;
       });
@@ -936,7 +699,6 @@ async function loadAndRenderCharts(symbol, scoreRow) {
     // 공통 계산
     const termData   = calculateTermStructure(rows, prevRows);
     const skewData   = calculateSkew(rows);
-    const emData     = calculateExpectedMove(rows, spot);
     const vannaSum   = rows.reduce((s, r) => s + (r.vanna ?? 0), 0);
     const flipStrike = scoreRow?.flip_strike ?? null;
     const statusResult = evaluateStatus({ termStructure: termData, skewRows: skewData, spot, flipStrike, vannaSum });
@@ -957,19 +719,18 @@ async function loadAndRenderCharts(symbol, scoreRow) {
     }
 
     // 각 섹션 렌더링
-    renderVerdict({ termData, skewData, emData, spot, flipStrike, vannaSum, rows });  // 작업3: 종합판단 개선
-    renderOIDistribution(symbol, rows, spot, flipStrike, emData);                    // 작업2: OI 확률 분포
+    renderVerdict({ termData, skewData, emData: [], spot, flipStrike, vannaSum, rows });  // 작업3: 종합판단 개선
+    renderOIDistribution(symbol, rows, spot, flipStrike, []);                        // 작업2: OI 확률 분포
     renderTermStructure(termData);
     renderSkewChartImproved(skewData, rows);                                          // 작업6: Skew 판정 수정
     renderSmileSelector(symbol, rows, scoreRow);
     renderExpiryCardsMonthlyFocus(rows, scoreRow);                                    // Vanna/Charm Monthly 강조
     renderDexHeatmap2D(rows);                                                         // 작업4: 2D 히트맵
     renderWeeklyOISelector(rows, spot);                                               // 작업5: 주간 OI 선택기
-    renderExpectedMove(emData, spot);
 
   } catch (err) {
     console.error('[structure] chart load error:', err);
-    ['struct-term', 'struct-skew', 'struct-em', 'struct-heatmap'].forEach(id => {
+    ['struct-term', 'struct-skew', 'struct-heatmap'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.innerHTML = `<div style="padding:16px;color:#ef4444;font-size:12px">로드 실패: ${err.message}</div>`;
     });
@@ -1264,71 +1025,7 @@ Put IV: ${(r.put_iv * 100).toFixed(1)}% / Call IV: ${(r.call_iv * 100).toFixed(1
 }
 
 // ============================================
-// 섹션 6 — Expected Move 시각화
 // ============================================
-function renderExpectedMove(emData, spot) {
-  const el = document.getElementById('struct-em');
-  if (!el) return;
-
-  if (!emData.length || !spot) {
-    el.innerHTML = '<div style="padding:16px;color:var(--text3)">현재가 데이터 필요</div>';
-    return;
-  }
-
-  // 카드 형식으로 만기별 EM 표시
-  const cards = emData.map(r => {
-    const pct    = r.em_pct;
-    const barPct = Math.min(pct * 4, 100); // 최대 25%를 100%로 스케일
-    const col    = pct > 10 ? '#ef4444' : pct > 5 ? '#f59e0b' : '#22c55e';
-
-    return `
-      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:8px;padding:12px;min-width:140px;flex:1">
-        <div style="font-size:10px;color:var(--text3);margin-bottom:6px">
-          ${r.expiry_date} <span style="color:var(--text3)">D-${r.dte}</span>
-        </div>
-        <!-- 종 모양 단순화: 상단/하단 범위 -->
-        <div style="text-align:center;margin:8px 0">
-          <div style="font-size:11px;color:#22c55e;font-weight:700">▲ $${r.upper.toFixed(1)}</div>
-          <div style="margin:4px 0;height:32px;position:relative">
-            <!-- 종 모양 SVG -->
-            <svg viewBox="0 0 80 32" width="80" style="display:block;margin:0 auto">
-              <path d="M40,2 C52,2 64,8 68,20 L72,30 L8,30 L12,20 C16,8 28,2 40,2 Z"
-                fill="${col}" opacity="0.2" stroke="${col}" stroke-width="1"/>
-              <line x1="40" y1="2" x2="40" y2="30" stroke="${col}" stroke-width="1" stroke-dasharray="2,2" opacity="0.5"/>
-            </svg>
-          </div>
-          <div style="font-size:13px;font-weight:800;color:var(--text)">$${spot.toFixed(1)}</div>
-          <div style="margin:4px 0;height:32px;position:relative">
-            <svg viewBox="0 0 80 32" width="80" style="display:block;margin:0 auto;transform:scaleY(-1)">
-              <path d="M40,2 C52,2 64,8 68,20 L72,30 L8,30 L12,20 C16,8 28,2 40,2 Z"
-                fill="${col}" opacity="0.2" stroke="${col}" stroke-width="1"/>
-            </svg>
-          </div>
-          <div style="font-size:11px;color:#ef4444;font-weight:700">▼ $${r.lower.toFixed(1)}</div>
-        </div>
-        <!-- EM % 바 -->
-        <div style="margin-top:8px">
-          <div style="display:flex;justify-content:space-between;font-size:10px;color:var(--text3);margin-bottom:3px">
-            <span>기대 움직임</span>
-            <span style="color:${col};font-weight:700">±${pct}%</span>
-          </div>
-          <div style="height:4px;background:var(--bg3);border-radius:2px;overflow:hidden">
-            <div style="width:${barPct}%;height:100%;background:${col};border-radius:2px"></div>
-          </div>
-        </div>
-      </div>
-    `;
-  }).join('');
-
-  el.innerHTML = `
-    <div style="margin-bottom:10px;font-size:11px;color:var(--text3)">
-      현재가 <strong style="color:var(--text)">$${spot.toFixed(2)}</strong> 기준 · ATM IV 내재 기대 범위 · Skew 편향 보정 포함
-    </div>
-    <div style="display:flex;gap:10px;flex-wrap:wrap">
-      ${cards}
-    </div>
-  `;
-}
 
 // ============================================
 // 섹션 7 — 만기별 DEX 히트맵
