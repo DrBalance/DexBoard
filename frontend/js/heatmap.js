@@ -166,7 +166,7 @@ function _classifyMarkers(rows, spotIdx) {
     if (!labels.length && Math.abs(r.dVanna) >= top5Thr && top5Thr > 0)
       labels.push('변곡');
 
-    return { ...r, markerLabels: labels };
+    return { ...r, markerLabels: labels, _top5Thr: top5Thr, _flipSet: flipSet };
   });
 }
 
@@ -315,7 +315,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
   // ── Marker 행 (배경 음영만, 납작하게) ─────────────────
   const markerRow = rows.map((s, i) => {
     const bg    = _markerBg(s.dVanna, s.dCharm, maxAbsDVanna);
-    const label = s.markerLabels.join('');
+    const label = s.markerLabels.join('/');
     // 마커 텍스트 색: 배경과 대비되도록 흰색 고정
     return mkCell(i, 'marker', ROW_H_MK,
       `font-size:10px;font-weight:700;letter-spacing:-.3px;
@@ -463,7 +463,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// updateHeatmapSpot — spot 강조만 업데이트 (DOM 교체 없음)
+// updateHeatmapSpot — spot 강조 + 마커 텍스트 재계산 (DOM 교체 없음)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export function updateHeatmapSpot(containerId, spotPrice) {
   const rows = _cachedAggregated[containerId];
@@ -473,5 +473,43 @@ export function updateHeatmapSpot(containerId, spotPrice) {
   if (!scrollEl) return;
 
   const spotIdx = _findSpotIdx(rows, spotPrice);
+
+  // ── spot 강조 스타일 ──────────────────────────────────
   _applySpotStyles(scrollEl, rows, spotIdx);
+
+  // ── 마커 텍스트/배경 재계산 (천정/바닥은 현재가 기준) ─
+  const maxAbsDVanna = Math.max(...rows.map(s => Math.abs(s.dVanna)));
+
+  // top5Thr, flipSet은 rows[0]에 저장된 값 재사용
+  const top5Thr = rows[0]?._top5Thr ?? 0;
+  const flipSet = rows[0]?._flipSet ?? new Set();
+
+  // 현재가 블록 경계 재탐색
+  const spotType = _markerColorType(rows[spotIdx].dVanna, rows[spotIdx].dCharm);
+  let floorIdx = spotIdx;
+  for (let i = spotIdx - 1; i >= 0; i--) {
+    if (_markerColorType(rows[i].dVanna, rows[i].dCharm) === spotType) floorIdx = i;
+    else break;
+  }
+  let ceilIdx = spotIdx;
+  for (let i = spotIdx + 1; i < rows.length; i++) {
+    if (_markerColorType(rows[i].dVanna, rows[i].dCharm) === spotType) ceilIdx = i;
+    else break;
+  }
+
+  // 마커 셀 DOM 직접 업데이트
+  rows.forEach((r, i) => {
+    const cell = scrollEl.querySelector(`[data-col="${i}"][data-row="marker"]`);
+    if (!cell) return;
+
+    const labels = [];
+    if (i === ceilIdx  && ceilIdx !== floorIdx) labels.push('천정');
+    if (i === floorIdx && ceilIdx !== floorIdx) labels.push('바닥');
+    if (flipSet.has(i)) labels.push('참↑');
+    if (!labels.length && Math.abs(r.dVanna) >= top5Thr && top5Thr > 0)
+      labels.push('변곡');
+
+    cell.textContent  = labels.join('/');
+    cell.style.background = _markerBg(r.dVanna, r.dCharm, maxAbsDVanna);
+  });
 }
