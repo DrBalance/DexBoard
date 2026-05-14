@@ -8,7 +8,7 @@ import {
   fmtM, fmtVold,
   colorBySign, colorVix, COLOR,
 } from '../fmt.js';
-import { renderHeatmap, updateHeatmapSpot }           from '../heatmap.js';
+import { renderHeatmap, updateHeatmapSpot, setHeatmapVix } from '../heatmap.js';
 import { buildNarrative, buildAnalysisPayload }       from '../narrative.js';
 import { renderOIChart, updateOIChart, renderStrikeTable, renderTop5Panel } from '../oi-chart.js';
 import { initVCChart, setVixSeries, setVoldSeries } from '../vc-chart.js';
@@ -108,6 +108,7 @@ async function fetchKV({ fullUpdate = true } = {}) {
             renderVIX();
             if (snap.vix.series?.length) {
               setVixSeries(snap.vix.series, snap.vix.prevClose ?? null);
+              setHeatmapVix(snap.vix.series);   // D-Vanna/D-Charm 기울기 계산용
             }
           }
 
