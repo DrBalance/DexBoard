@@ -1,4 +1,4 @@
-import { CF_API } from '../config.js';
+import { CF_API } from './config.js';
 
 export function linearRegressionSlope(rows) {
   const n  = rows.length;
