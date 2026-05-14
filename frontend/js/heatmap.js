@@ -128,12 +128,10 @@ function _classifyMarkers(rows, spotIdx) {
   const absVals  = rows.map(r => Math.abs(r.dVanna)).sort((a, b) => b - a);
   const top5Thr  = absVals[Math.max(0, Math.floor(absVals.length * 0.05) - 1)] ?? 0;
 
-  // 부호 전환 인덱스
+  // 참↑: D-Vanna와 D-Charm 부호가 서로 다른 지점 (= 마커색 노랑)
   const flipSet = new Set();
-  for (let i = 1; i < n; i++) {
-    const prev = rows[i - 1];
-    if ((prev.dVanna > 0 && rows[i].dVanna <= 0) ||
-        (prev.dVanna < 0 && rows[i].dVanna >= 0)) {
+  for (let i = 0; i < n; i++) {
+    if (_markerColorType(rows[i].dVanna, rows[i].dCharm) === 'yellow') {
       flipSet.add(i);
     }
   }
