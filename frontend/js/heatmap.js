@@ -1,57 +1,43 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // heatmap.js — DEX Strike 히트맵 렌더러
 //
-// 사용법:
-//   renderHeatmap(containerId, strikes, spotPrice)   ← 옵션체인 갱신 시 (15분)
-//   updateHeatmapSpot(containerId, spotPrice)        ← 가격만 갱신 시 (20초)
-//   setHeatmapVix(series)                            ← VIX 시계열 주입 (1분)
-//
-// strikes: KV dex:spy:0dte.strikes 배열 (Call/Put 미합산 raw)
-//   [{ strike, type, dex, gex, vanna, charm }, ...]
+// 공개 API:
+//   renderHeatmap(containerId, strikes, spotPrice)
+//   updateHeatmapSpot(containerId, spotPrice)
+//   setHeatmapVix(series)
 //
 // 행 구조 (위→아래):
-//   Strike  — 스트라이크 가격
-//   Marker  — D-Vanna/D-Charm 도미넌스 컬러바 + 마커 텍스트
-//   D-Van   — VIX 방향 × Vanna → 딜러 헤징 압력 음영
-//   D-Chr   — VIX 방향 × Charm → 시간감쇠 헤징 압력 음영
-//   DEX     — 딜러 델타 익스포저 히트맵
-//   GEX     — 감마 익스포저
-//   Vanna   — 변동성 민감도 (원시값)
-//   Charm   — 시간감쇠 민감도 (원시값)
+//   Strike / Marker / D·Van / D·Chr / DEX / GEX / Vanna / Charm
 //
-// 도미넌스 판별:
-//   |DEX 총합| > |Vanna 총합| × 1.5  → DEX 도미넌스 (극단적 상황)
-//   그 외                             → Vanna 도미넌스 (일상)
+// 스타일 규칙:
+//   - 모든 행 글자 크기·투명도 동일 (font-size:13px)
+//   - DEX: 배경 없음, +초록 / -빨강 (GEX와 동일)
+//   - D·Van: 배경 없음, 색상은 Vanna(보라)와 동일
+//   - D·Chr: 배경 없음, 색상은 Charm(틸)과 동일
+//   - Marker: 배경 음영만 (D-Vanna 절대값 비례, 최소 30% 보장)
+//             글자 없음(천정·바닥·변곡·참↑ 텍스트만)
 //
-// D-Vanna / D-Charm (Vanna 도미넌스):
-//   vixSign  = VIX 5분 기울기 부호 (+1 또는 -1)
-//   D_Vanna  = vanna × (-vixSign)
-//   D_Charm  = charm × (-vixSign)
-//
-// 마커 종류:
-//   F — D-Vanna 최솟값 스트라이크 (바닥)
-//   C — D-Vanna 최댓값 스트라이크 (천장)
-//   G — D-Vanna 절대값 상위 20% 스트라이크 (변곡)
-//   ↑ — D-Vanna 부호 전환 스트라이크 (전환)
+// 마커 종류 (한글):
+//   천정 — 현재가 속한 마커색 블록의 오른쪽 끝 경계
+//   바닥 — 현재가 속한 마커색 블록의 왼쪽 끝 경계
+//   변곡 — D-Vanna 절대값 상위 5%
+//   참↑  — D-Vanna 부호 전환 지점
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 // ── 레이아웃 상수 ─────────────────────────────────────────
-const COL_W          = 72;
-const LBL_W          = 38;   // 라벨 컬럼 너비 (D-Van 등 대응)
-const ROW_H_SM       = 28;
-const ROW_H_MD       = 32;   // Marker / D-Van / D-Chr 행
-const ROW_H_LG       = 52;
+const COL_W      = 72;
+const LBL_W      = 38;
+const ROW_H_SM   = 28;   // Strike / DEX / GEX / Vanna / Charm
+const ROW_H_MK   = 14;   // Marker (납작하게)
+const ROW_H_DG   = 28;   // D·Van / D·Chr
 
-// ── 투명도 ────────────────────────────────────────────────
-const SECONDARY_OPACITY  = 0.5;
-const DVANNA_MAX_OPACITY = 0.75;
+// ── 글자 투명도 (모든 행 동일) ───────────────────────────
+const TEXT_OPACITY = 0.5;
 
 // ── 모듈 상태 ─────────────────────────────────────────────
 const _scrollInitialized = {};
-const _cachedAggregated  = {};   // containerId → rows(D-Greeks 포함)
-
-// VIX 1분봉 시계열 (live.js → setHeatmapVix로 주입)
-let _vixSeries = [];   // [{ ts: ISO, v: number }, ...]
+const _cachedAggregated  = {};
+let   _vixSeries         = [];
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 공개 API: VIX 시계열 주입
@@ -62,15 +48,12 @@ export function setHeatmapVix(series) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// VIX 기울기 계산 (최신값 - N분 전 값)
+// VIX 기울기 (최신값 - N분 전 값)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function _calcVixSlope(minutes) {
   if (_vixSeries.length < 2) return 0;
   const last     = _vixSeries[_vixSeries.length - 1];
-  const nowMs    = new Date(last.ts).getTime();
-  const targetMs = nowMs - minutes * 60_000;
-
-  // targetMs 이전 포인트 중 가장 최신 것
+  const targetMs = new Date(last.ts).getTime() - minutes * 60_000;
   let ref = _vixSeries[0];
   for (const p of _vixSeries) {
     if (new Date(p.ts).getTime() <= targetMs) ref = p;
@@ -84,7 +67,7 @@ function _calcVixSlope(minutes) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function _calcDGreeks(aggregated) {
   const slope5m  = _calcVixSlope(5);
-  const vixSign  = slope5m >= 0 ? 1 : -1;   // VIX 상승=+1, 하락=-1
+  const vixSign  = slope5m >= 0 ? 1 : -1;
 
   const totalDex   = aggregated.reduce((s, r) => s + r.dex,   0);
   const totalVanna = aggregated.reduce((s, r) => s + r.vanna, 0);
@@ -93,12 +76,10 @@ function _calcDGreeks(aggregated) {
   return aggregated.map(r => {
     let dVanna, dCharm;
     if (isDexDom) {
-      // DEX 도미넌스: DEX 부호가 방향을 결정
       const sign = r.dex >= 0 ? 1 : -1;
       dVanna = sign * Math.abs(r.vanna);
       dCharm = sign * Math.abs(r.charm);
     } else {
-      // Vanna 도미넌스: VIX 방향 반전 적용
       dVanna = r.vanna * (-vixSign);
       dCharm = r.charm * (-vixSign);
     }
@@ -107,59 +88,86 @@ function _calcDGreeks(aggregated) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 마커 분류 (F / C / G / ↑)
+// 마커 색상 분류 (D-Vanna + D-Charm 부호 조합)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-function _classifyMarkers(rows) {
+function _markerColorType(dVanna, dCharm) {
+  const vPos = dVanna > 0, cPos = dCharm > 0;
+  if (vPos && cPos)   return 'green';
+  if (!vPos && !cPos) return 'red';
+  return 'yellow';
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 마커행 배경색
+// D-Vanna 절대값 비례 투명도, 최솟값 30% 보장
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function _markerBg(dVanna, dCharm, maxAbsDVanna) {
+  const type = _markerColorType(dVanna, dCharm);
+  const MIN_OP  = 0.30;
+  const MAX_OP  = 0.85;
+  const ratio   = maxAbsDVanna > 0
+    ? Math.min(Math.abs(dVanna) / maxAbsDVanna, 1)
+    : 0;
+  const op = (MIN_OP + ratio * (MAX_OP - MIN_OP)).toFixed(2);
+
+  if (type === 'green')  return `rgba(34,197,94,${op})`;
+  if (type === 'red')    return `rgba(239,68,68,${op})`;
+  return `rgba(245,158,11,${op})`;
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// 마커 텍스트 분류
+//   천정/바닥: 현재가가 속한 색상 블록의 오른쪽/왼쪽 끝
+//   변곡: D-Vanna 절대값 상위 5%
+//   참↑: D-Vanna 부호 전환 지점
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function _classifyMarkers(rows, spotIdx) {
+  const n = rows.length;
+
+  // 상위 5% 절대값 임계치
   const absVals  = rows.map(r => Math.abs(r.dVanna)).sort((a, b) => b - a);
-  const top20Thr = absVals[Math.floor(absVals.length * 0.2)] ?? 0;
-  const minVal   = Math.min(...rows.map(r => r.dVanna));
-  const maxVal   = Math.max(...rows.map(r => r.dVanna));
+  const top5Thr  = absVals[Math.max(0, Math.floor(absVals.length * 0.05) - 1)] ?? 0;
+
+  // 부호 전환 인덱스
+  const flipSet = new Set();
+  for (let i = 1; i < n; i++) {
+    const prev = rows[i - 1];
+    if ((prev.dVanna > 0 && rows[i].dVanna <= 0) ||
+        (prev.dVanna < 0 && rows[i].dVanna >= 0)) {
+      flipSet.add(i);
+    }
+  }
+
+  // 현재가 블록 경계 탐색
+  // 현재가 스트라이크의 색상 타입(green/red/yellow)과 연속된 구간 찾기
+  const spotType = _markerColorType(rows[spotIdx].dVanna, rows[spotIdx].dCharm);
+
+  // 왼쪽 끝(바닥): spotIdx에서 왼쪽으로 같은 타입이 계속되는 마지막 인덱스
+  let floorIdx = spotIdx;
+  for (let i = spotIdx - 1; i >= 0; i--) {
+    if (_markerColorType(rows[i].dVanna, rows[i].dCharm) === spotType) floorIdx = i;
+    else break;
+  }
+
+  // 오른쪽 끝(천정): spotIdx에서 오른쪽으로 같은 타입이 계속되는 마지막 인덱스
+  let ceilIdx = spotIdx;
+  for (let i = spotIdx + 1; i < n; i++) {
+    if (_markerColorType(rows[i].dVanna, rows[i].dCharm) === spotType) ceilIdx = i;
+    else break;
+  }
 
   return rows.map((r, i) => {
-    const markers = [];
-    if (r.dVanna === minVal) markers.push('F');
-    if (r.dVanna === maxVal) markers.push('C');
-    if (!markers.length && Math.abs(r.dVanna) >= top20Thr && top20Thr > 0)
-      markers.push('G');
-    if (i > 0) {
-      const prev = rows[i - 1];
-      if ((prev.dVanna > 0 && r.dVanna <= 0) ||
-          (prev.dVanna < 0 && r.dVanna >= 0)) {
-        markers.push('↑');
-      }
-    }
-    return { ...r, markers };
-  });
-}
+    const labels = [];
 
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// 색상 헬퍼
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-function _markerBg(dVanna, dCharm) {
-  const vPos = dVanna > 0, cPos = dCharm > 0;
-  if (vPos && cPos)   return 'rgba(34,197,94,0.18)';
-  if (!vPos && !cPos) return 'rgba(239,68,68,0.18)';
-  return 'rgba(245,158,11,0.13)';
-}
-function _markerColor(dVanna, dCharm) {
-  const vPos = dVanna > 0, cPos = dCharm > 0;
-  if (vPos && cPos)   return '#22c55e';
-  if (!vPos && !cPos) return '#ef4444';
-  return '#f59e0b';
-}
-function _dGradBg(value, maxAbs) {
-  if (!value || maxAbs === 0) return 'transparent';
-  const op = (Math.min(Math.abs(value) / maxAbs, 1) * DVANNA_MAX_OPACITY).toFixed(2);
-  return value > 0
-    ? `rgba(34,197,94,${op})`
-    : `rgba(239,68,68,${op})`;
-}
-function _dexColor(value, maxAbs) {
-  if (!value || maxAbs === 0) return 'transparent';
-  const op = Math.min(Math.abs(value) / maxAbs, 1).toFixed(2);
-  return value > 0
-    ? `rgba(34,197,94,${op})`
-    : `rgba(239,68,68,${op})`;
+    if (i === ceilIdx && ceilIdx !== floorIdx) labels.push('천정');
+    if (i === floorIdx && ceilIdx !== floorIdx) labels.push('바닥');
+    if (flipSet.has(i)) labels.push('참↑');
+    // 변곡: 천정/바닥/참↑이 없는 곳만, 상위 5%
+    if (!labels.length && Math.abs(r.dVanna) >= top5Thr && top5Thr > 0)
+      labels.push('변곡');
+
+    return { ...r, markerLabels: labels };
+  });
 }
 
 // ── M단위 수치 포매터 ─────────────────────────────────────
@@ -230,10 +238,10 @@ function _applySpotStyles(scrollEl, rows, spotIdx) {
         td.style.color      = isSpot ? '#fff' : 'var(--text2)';
         td.style.fontWeight = isSpot ? '700'  : '400';
         td.style.background = isSpot ? 'rgba(255,255,255,.08)' : 'transparent';
-      } else if (row === 'gex' || row === 'vanna' || row === 'charm') {
-        // D-Greeks / DEX / Marker 행은 자체 배경이 있어 건드리지 않음
-        td.style.background = isSpot ? 'rgba(255,255,255,.08)' : 'transparent';
+      } else if (['gex','vanna','charm','dex','dvanna','dcharm'].includes(row)) {
+        td.style.background = isSpot ? 'rgba(255,255,255,.06)' : 'transparent';
       }
+      // marker 행은 배경이 자체 계산값이므로 건드리지 않음
     });
   });
 }
@@ -250,26 +258,28 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     return;
   }
 
-  // 1. 합산 → D-Greeks → 마커
+  // 1. 합산 → D-Greeks
   const aggregated = _aggregateStrikes(strikes);
   const withD      = _calcDGreeks(aggregated);
-  const rows       = _classifyMarkers(withD);
+
+  // 2. spot 인덱스 (마커 분류에 필요)
+  const spotIdx = _findSpotIdx(withD, spotPrice);
+
+  // 3. 마커 분류 (spotIdx 전달)
+  const rows = _classifyMarkers(withD, spotIdx);
   _cachedAggregated[containerId] = rows;
 
-  // 2. 정규화 기준
-  const maxAbsDex    = Math.max(...rows.map(s => Math.abs(s.dex)));
+  // 4. 정규화 기준
   const maxAbsDVanna = Math.max(...rows.map(s => Math.abs(s.dVanna)));
   const maxAbsDCharm = Math.max(...rows.map(s => Math.abs(s.dCharm)));
 
-  // 3. spot 열
-  const spotIdx  = _findSpotIdx(rows, spotPrice);
-  const spotBdr  = 'border-left:1px solid rgba(255,255,255,.3);border-right:1px solid rgba(255,255,255,.3);';
-
-  // 4. VIX 기울기 (범례용)
+  // 5. VIX 기울기 (범례용)
   const slope5m  = _calcVixSlope(5);
   const slope15m = _calcVixSlope(15);
   const hasVix   = _vixSeries.length >= 2;
   const isDexDom = rows[0]?.isDexDom ?? false;
+
+  const spotBdr = 'border-left:1px solid rgba(255,255,255,.3);border-right:1px solid rgba(255,255,255,.3);';
 
   // ── sticky 라벨 셀 ────────────────────────────────────
   const stickyCell = (html, h, extraStyle = '') =>
@@ -283,7 +293,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
       ${extraStyle}
     ">${html}</td>`;
 
-  // ── 행 생성 헬퍼 ──────────────────────────────────────
+  // ── 데이터 셀 헬퍼 ────────────────────────────────────
   const mkCell = (i, row, h, style, content) =>
     `<td data-col="${i}" data-row="${row}" style="
       min-width:${COL_W}px;max-width:${COL_W}px;height:${h}px;
@@ -292,7 +302,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
       ${i === spotIdx ? spotBdr : ''}
     ">${content}</td>`;
 
-  // Strike 행
+  // ── Strike 행 ─────────────────────────────────────────
   const strikeRow = rows.map((s, i) => mkCell(i, 'strike', ROW_H_SM,
     `font-size:13px;
      color:${i === spotIdx ? '#fff' : 'var(--text2)'};
@@ -302,88 +312,100 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     s.strike.toFixed(0)
   )).join('');
 
-  // Marker 행
-  const markerRow = rows.map((s, i) => mkCell(i, 'marker', ROW_H_MD,
-    `font-size:11px;font-weight:700;
-     color:${_markerColor(s.dVanna, s.dCharm)};
-     background:${_markerBg(s.dVanna, s.dCharm)};
-     border-right:1px solid var(--border);`,
-    s.markers.join('') || ''
-  )).join('');
+  // ── Marker 행 (배경 음영만, 납작하게) ─────────────────
+  const markerRow = rows.map((s, i) => {
+    const bg    = _markerBg(s.dVanna, s.dCharm, maxAbsDVanna);
+    const label = s.markerLabels.join('');
+    // 마커 텍스트 색: 배경과 대비되도록 흰색 고정
+    return mkCell(i, 'marker', ROW_H_MK,
+      `font-size:10px;font-weight:700;letter-spacing:-.3px;
+       color:rgba(255,255,255,.9);background:${bg};
+       border-right:1px solid rgba(255,255,255,.04);
+       line-height:1;`,
+      label
+    );
+  }).join('');
 
-  // D-Vanna 행
-  const dVannaRow = rows.map((s, i) => mkCell(i, 'dvanna', ROW_H_MD,
-    `font-size:11px;color:rgba(255,255,255,.75);
-     background:${_dGradBg(s.dVanna, maxAbsDVanna)};
-     border-right:1px solid rgba(255,255,255,.04);`,
+  // ── D·Van 행 (Vanna 색, 투명도 없음, 배경 없음) ───────
+  const dVannaRow = rows.map((s, i) => mkCell(i, 'dvanna', ROW_H_DG,
+    `font-size:13px;
+     color:rgba(167,139,250,1);
+     background:${i === spotIdx ? 'rgba(255,255,255,.06)' : 'transparent'};
+     border-right:1px solid var(--border);`,
     _fmtM(s.dVanna)
   )).join('');
 
-  // D-Charm 행
-  const dCharmRow = rows.map((s, i) => mkCell(i, 'dcharm', ROW_H_MD,
-    `font-size:11px;color:rgba(255,255,255,.75);
-     background:${_dGradBg(s.dCharm, maxAbsDCharm)};
-     border-right:1px solid rgba(255,255,255,.04);`,
+  // ── D·Chr 행 (Charm 색, 투명도 없음, 배경 없음) ────────
+  const dCharmRow = rows.map((s, i) => mkCell(i, 'dcharm', ROW_H_DG,
+    `font-size:13px;
+     color:${s.dCharm >= 0 ? 'rgba(45,212,191,1)' : 'rgba(239,68,68,0.85)'};
+     background:${i === spotIdx ? 'rgba(255,255,255,.06)' : 'transparent'};
+     border-right:1px solid var(--border);`,
     _fmtM(s.dCharm)
   )).join('');
 
-  // DEX 행
-  const dexRow = rows.map((s, i) => mkCell(i, 'dex', ROW_H_LG,
-    `font-size:13px;font-weight:800;color:#fff;
-     background:${_dexColor(s.dex, maxAbsDex)};
-     border-right:1px solid rgba(255,255,255,.06);`,
-    _fmtM(s.dex)
-  )).join('');
+  // ── DEX 행 (GEX와 동일 스타일, 배경 없음) ─────────────
+  const dexRow = rows.map((s, i) => {
+    const c = s.dex > 0
+      ? `rgba(34,197,94,${TEXT_OPACITY})`
+      : s.dex < 0 ? `rgba(239,68,68,${TEXT_OPACITY})` : 'var(--text3)';
+    return mkCell(i, 'dex', ROW_H_SM,
+      `font-size:13px;color:${c};
+       background:${i === spotIdx ? 'rgba(255,255,255,.06)' : 'transparent'};
+       border-right:1px solid var(--border);`,
+      _fmtM(s.dex)
+    );
+  }).join('');
 
-  // GEX 행
+  // ── GEX 행 ────────────────────────────────────────────
   const gexRow = rows.map((s, i) => {
     const c = s.gex > 0
-      ? `rgba(34,197,94,${SECONDARY_OPACITY})`
-      : s.gex < 0 ? `rgba(239,68,68,${SECONDARY_OPACITY})` : 'var(--text3)';
+      ? `rgba(34,197,94,${TEXT_OPACITY})`
+      : s.gex < 0 ? `rgba(239,68,68,${TEXT_OPACITY})` : 'var(--text3)';
     return mkCell(i, 'gex', ROW_H_SM,
       `font-size:13px;color:${c};
-       background:${i === spotIdx ? 'rgba(255,255,255,.08)' : 'transparent'};
+       background:${i === spotIdx ? 'rgba(255,255,255,.06)' : 'transparent'};
        border-right:1px solid var(--border);`,
       _fmtM(s.gex)
     );
   }).join('');
 
-  // Vanna 행
+  // ── Vanna 행 ──────────────────────────────────────────
   const vannaRow = rows.map((s, i) => mkCell(i, 'vanna', ROW_H_SM,
-    `font-size:13px;color:rgba(167,139,250,${SECONDARY_OPACITY});
-     background:${i === spotIdx ? 'rgba(255,255,255,.08)' : 'transparent'};
+    `font-size:13px;color:rgba(167,139,250,${TEXT_OPACITY});
+     background:${i === spotIdx ? 'rgba(255,255,255,.06)' : 'transparent'};
      border-right:1px solid var(--border);`,
     _fmtM(s.vanna)
   )).join('');
 
-  // Charm 행
+  // ── Charm 행 ──────────────────────────────────────────
   const charmRow = rows.map((s, i) => mkCell(i, 'charm', ROW_H_SM,
-    `font-size:13px;color:rgba(45,212,191,${SECONDARY_OPACITY});
-     background:${i === spotIdx ? 'rgba(255,255,255,.08)' : 'transparent'};
+    `font-size:13px;color:rgba(45,212,191,${TEXT_OPACITY});
+     background:${i === spotIdx ? 'rgba(255,255,255,.06)' : 'transparent'};
      border-right:1px solid var(--border);`,
     _fmtM(s.charm)
   )).join('');
 
   // ── 스크롤 위치 기억 ──────────────────────────────────
-  const scrollId     = `hm-scroll-${containerId}`;
-  const totalW       = rows.length * COL_W + LBL_W;
+  const scrollId       = `hm-scroll-${containerId}`;
+  const totalW         = rows.length * COL_W + LBL_W;
   const prevScrollLeft = _scrollInitialized[containerId]
     ? (document.getElementById(scrollId)?.scrollLeft ?? null)
     : null;
 
   // ── VIX 배지 ──────────────────────────────────────────
-  const slopeColor = (v) => v > 0 ? '#ef4444' : v < 0 ? '#22c55e' : '#9ca3af';
+  const sc = (v) => v > 0 ? '#ef4444' : v < 0 ? '#22c55e' : '#9ca3af';
   const vixBadge = hasVix
-    ? `<span style="display:inline-flex;align-items:center;gap:4px;
+    ? `<span style="display:inline-flex;align-items:center;gap:5px;
          padding:2px 7px;border-radius:3px;font-size:10px;
          background:rgba(255,255,255,.05);color:var(--text2);">
         ${isDexDom
           ? '<span style="color:#f59e0b;font-weight:700">DEX Dom</span>'
           : '<span style="color:#a78bfa">Vanna Dom</span>'}
-        &nbsp;VIX 5m<span style="color:${slopeColor(slope5m)}">${slope5m >= 0 ? '+' : ''}${slope5m.toFixed(2)}</span>
-        15m<span style="color:${slopeColor(slope15m)}">${slope15m >= 0 ? '+' : ''}${slope15m.toFixed(2)}</span>
+        VIX 5m<span style="color:${sc(slope5m)}">${slope5m >= 0 ? '+' : ''}${slope5m.toFixed(2)}</span>
+        15m<span style="color:${sc(slope15m)}">${slope15m >= 0 ? '+' : ''}${slope15m.toFixed(2)}</span>
       </span>`
-    : `<span style="font-size:10px;color:var(--text3)">VIX 시계열 수신 대기 중</span>`;
+    : `<span style="font-size:10px;color:var(--text3)">VIX 시계열 대기 중</span>`;
 
   // ── 조립 ──────────────────────────────────────────────
   el.innerHTML = `
@@ -394,14 +416,14 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     ">
       <table style="border-collapse:collapse;table-layout:fixed;width:${totalW}px">
         <tbody>
-          <tr>${stickyCell('Strike',  ROW_H_SM)}${strikeRow}</tr>
-          <tr>${stickyCell('Marker',  ROW_H_MD, 'font-size:9px')}${markerRow}</tr>
-          <tr>${stickyCell('D·Van',   ROW_H_MD, 'color:rgba(34,197,94,.8)')}${dVannaRow}</tr>
-          <tr>${stickyCell('D·Chr',   ROW_H_MD, 'color:rgba(45,212,191,.8)')}${dCharmRow}</tr>
-          <tr>${stickyCell('DEX',     ROW_H_LG)}${dexRow}</tr>
-          <tr>${stickyCell('GEX',     ROW_H_SM)}${gexRow}</tr>
-          <tr>${stickyCell('Vanna',   ROW_H_SM)}${vannaRow}</tr>
-          <tr>${stickyCell('Charm',   ROW_H_SM)}${charmRow}</tr>
+          <tr>${stickyCell('Strike', ROW_H_SM)}${strikeRow}</tr>
+          <tr>${stickyCell('',       ROW_H_MK, 'border-right:2px solid var(--border2,rgba(255,255,255,.12))')}${markerRow}</tr>
+          <tr>${stickyCell('D·Van',  ROW_H_DG, 'color:rgba(167,139,250,.8)')}${dVannaRow}</tr>
+          <tr>${stickyCell('D·Chr',  ROW_H_DG, 'color:rgba(45,212,191,.8)')}${dCharmRow}</tr>
+          <tr>${stickyCell('DEX',    ROW_H_SM)}${dexRow}</tr>
+          <tr>${stickyCell('GEX',    ROW_H_SM)}${gexRow}</tr>
+          <tr>${stickyCell('Vanna',  ROW_H_SM)}${vannaRow}</tr>
+          <tr>${stickyCell('Charm',  ROW_H_SM)}${charmRow}</tr>
         </tbody>
       </table>
     </div>
@@ -414,7 +436,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
         <span><span style="color:#22c55e">■</span> 딜러 매수헤지</span>
         <span><span style="color:#ef4444">■</span> 딜러 매도헤지</span>
         <span><span style="color:#f59e0b">■</span> 혼조</span>
-        <span style="opacity:.6">F=바닥 C=천장 G=변곡 ↑=전환</span>
+        <span style="opacity:.6">천정·바닥=현재가 블록경계 변곡=상위5% 참↑=전환</span>
       </div>
       ${vixBadge}
     </div>`;
