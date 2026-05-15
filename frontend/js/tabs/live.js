@@ -18,6 +18,8 @@ import { initVCChart, setVixSeries, setVoldSeries } from '../vc-chart.js';
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 const _state = {
   spy:     { price: null, change: null, changePct: null },
+  qqq:     { price: null, change: null, changePct: null },
+  iwm:     { price: null, change: null, changePct: null },
   vix:     { price: null, change: null, changePct: null },
   dex:     null,
   gex:     null,
@@ -27,7 +29,7 @@ const _state = {
   spot:    null,
 
   spyLive: null,
-  vold:    0,
+  vold:    null,
 
   putWall:  null,
   callWall: null,
@@ -95,7 +97,7 @@ async function fetchKV({ fullUpdate = true } = {}) {
     }
     const [snapRes, dex0dteRes] = await Promise.all(requests);
 
-    // ── snapshot: SPY/VIX ────────────────────────────────
+    // ── snapshot: SPY / QQQ / IWM / VIX / VOLD ──────────────
     if (snapRes.ok) {
       const snap = await snapRes.json();
       if (!snap.error) {
@@ -114,6 +116,18 @@ async function fetchKV({ fullUpdate = true } = {}) {
 
           if (snap.spy?.price) {
             _updateSpy({ ...snap.spy, source: 'kv', ts: snap.ts });
+          }
+
+          // QQQ / IWM — 값만 저장 (표시는 추후)
+          if (snap.qqq?.price) _state.qqq = snap.qqq;
+          if (snap.iwm?.price) _state.iwm = snap.iwm;
+
+          // VOLD — 웹훅으로 수신한 실제값 반영
+          if (snap.vold != null && !isNaN(snap.vold)) {
+            _state.vold = snap.vold;
+            renderVOLD();
+            // VOLD 차트 시리즈 — 1분봉마다 포인트 누적 (append=true)
+            setVoldSeries([{ ts: snap.ts, v: snap.vold }], true);
           }
         }
       }
@@ -227,48 +241,10 @@ function _updateSpy(data) {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// VOLD — Twelve Data OBV (RSP, 1min, 정규장 1분 폴링)
+// VOLD — TradingView 웹훅으로 수신 (snapshot KV 경유)
+// fetchKV() → snap.vold → _state.vold → renderVOLD()
+// Twelve Data OBV 폴링 제거됨
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-async function _fetchVold() {
-  try {
-    if (!TWELVE_KEY) return;
-    const url =
-      `https://api.twelvedata.com/time_series?symbol=SPY&interval=1min` +
-      `&outputsize=390&apikey=${TWELVE_KEY}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!res.ok) return;
-    const data = await res.json();
-    if (data.status === 'error' || !Array.isArray(data.values)) return;
-
-    const values = data.values;
-    if (!values.length) return;
-
-    // prev를 values[i+1]로 참조하면 더 오래된 봉을 가리키는 오류가 있어
-    // 직전 처리봉의 close를 별도 변수로 추적하는 방식으로 변경
-    let obv = 0;
-    let prevClose = null;
-    const series = [];
-
-    for (let i = values.length - 1; i >= 0; i--) {
-      const vol   = parseFloat(values[i].volume) || 0;
-      const close = parseFloat(values[i].close);
-
-      if (prevClose === null)      obv += vol;  // 첫 봉
-      else if (close > prevClose)  obv += vol;  // 상승봉
-      else if (close < prevClose)  obv -= vol;  // 하락봉
-
-      prevClose = close;
-      series.push({ ts: values[i].datetime, v: obv });
-    }
-
-    setVoldSeries(series);
-    _state.vold = obv;
-    renderVOLD();
-
-  } catch (e) {
-    console.warn('[Live] VOLD 폴링 실패:', e.message);
-  }
-}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 장 상태 변경 시 차트 표시/숨김 처리
@@ -356,7 +332,7 @@ function renderDEX() {
 function renderVOLD() {
   const color = colorBySign(_state.vold);
   setEl('m-vold',     fmtVold(_state.vold), color);
-  setEl('m-vold-sub', 'SPY OBV',        COLOR.muted);
+  setEl('m-vold-sub', 'NYSE VOLD',      COLOR.muted);
 }
 
 function renderCards() {
@@ -670,18 +646,10 @@ export async function initLive() {
   _onMarketStateChanged(window._marketState ?? 'CLOSED');
 
   await fetchKV();
-  if (window._marketState === 'REGULAR') {
-    _state.vold = 0;
-    _fetchVold();
-  }
 
   window.addEventListener('marketStateChanged', ({ detail }) => {
     _onMarketStateChanged(detail.marketState);
     fetchKV();
-    if (detail.marketState === 'REGULAR') {
-      _state.vold = 0;
-      _fetchVold();
-    }
   });
 
   document.getElementById('oi-zoom-slider')?.addEventListener('input', (e) => {
@@ -769,12 +737,9 @@ function onLiveTick({ h, m, s }) {
         // 15분: 옵션 데이터 풀업데이트 (CBOE :00 → Railway :01 → 프론트 :02:05)
         fetchKV({ fullUpdate: true });
       } else {
-        // 1분: SPY+VIX 메트릭 카드 갱신
+        // 1분: SPY+VIX+VOLD 메트릭 카드 갱신 (웹훅 → KV → 여기서 폴링)
         fetchKV({ fullUpdate: false });
       }
-
-      // 1분: VOLD + VIX 차트
-      _fetchVold();
 
       // 30분: AI 분석
       if (m % 30 === 2) {
@@ -783,7 +748,7 @@ function onLiveTick({ h, m, s }) {
     }
 
     if (s === 35) {
-      // 30초: SPY+VIX 메트릭 카드 갱신
+      // 30초: SPY+VIX+VOLD 메트릭 카드 갱신
       fetchKV({ fullUpdate: false });
     }
   }
