@@ -440,28 +440,27 @@ if (req.method === "POST" && req.url === "/webhook/tradingview") {
   const body = await readBody(req);
 
   // 필수 필드 검증
-  const { spy, qqq, iwm, vix, vold, time } = body;
-  if (spy == null && vix == null) {
+  if (body.spy == null && body.vix == null) {
     return sendJSON(res, 400, { ok: false, error: "spy 또는 vix 값이 필요합니다." });
   }
 
-  // 심볼별 가격 갱신 헬퍼
-  // raw: { price, prev } 객체 또는 숫자 (하위 호환)
-  function updatePrice(cacheKey, raw) {
-    if (raw == null) return;
-    const price     = parseFloat(raw?.price ?? raw);
-    const prevClose = parseFloat(raw?.prev)  || _cache[cacheKey]?.prevClose || null;
-    if (isNaN(price) || price <= 0) return;
-    const change    = prevClose != null ? Math.round((price - prevClose) * 100) / 100 : null;
-    const changePct = prevClose != null ? Math.round((price - prevClose) / prevClose * 10000) / 100 : null;
-    _cache[cacheKey] = { ..._cache[cacheKey], price, prevClose, change, changePct };
-    console.log(`[webhook] ${cacheKey.toUpperCase()}: $${price} prev=$${prevClose} (${changePct ?? '?'}%)`);
+  // 심볼별 가격 갱신 헬퍼 (flat 구조: price + prev 별도 필드)
+  function updatePrice(cacheKey, price, prev) {
+    const p = parseFloat(price);
+    if (isNaN(p) || p <= 0) return;
+    const prevClose = parseFloat(prev) || _cache[cacheKey]?.prevClose || null;
+    const change    = prevClose != null ? Math.round((p - prevClose) * 100) / 100 : null;
+    const changePct = prevClose != null ? Math.round((p - prevClose) / prevClose * 10000) / 100 : null;
+    _cache[cacheKey] = { ..._cache[cacheKey], price: p, prevClose, change, changePct };
+    console.log(`[webhook] ${cacheKey.toUpperCase()}: $${p} prev=$${prevClose} (${changePct ?? '?'}%)`);
   }
 
-  updatePrice('spy', spy);
-  updatePrice('qqq', qqq);
-  updatePrice('iwm', iwm);
-  updatePrice('vix', vix);
+  const { spy, spy_prev, qqq, qqq_prev, iwm, iwm_prev, vix, vix_prev, vold, time } = body;
+
+  updatePrice('spy', spy, spy_prev);
+  updatePrice('qqq', qqq, qqq_prev);
+  updatePrice('iwm', iwm, iwm_prev);
+  updatePrice('vix', vix, vix_prev);
 
   // VOLD 갱신 (USI:VOLD -- 정규장 09:30~16:00 ET에만 저장, 이후엔 기존값 유지)
   if (vold != null) {
