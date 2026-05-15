@@ -78,6 +78,14 @@ export default {
       return json({ series: data }, 200, corsHeaders);
     }
 
+    // ── GET /api/prevclose ─────────────────────────────────────
+    // 전일 종가 KV (snapshot:prevclose) 조회
+    if (request.method === "GET" && path === "/api/prevclose") {
+      const data = await env.DEX_KV.get("snapshot:prevclose", { type: "json" });
+      if (!data) return json({ error: "No prevclose data" }, 200, corsHeaders);
+      return json(data, 200, corsHeaders);
+    }
+
     // ── GET /api/snapshot/prev ──────────────────────────────────
     if (request.method === "GET" && path === "/api/snapshot/prev") {
       const data = await env.DEX_KV.get("snapshot:prev", { type: "json" });
