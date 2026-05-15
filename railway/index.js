@@ -1276,7 +1276,7 @@ scheduleSnapshot();
 console.log(’[scheduler] 서버 시작 – DEX 즉시 1회 실행’);
 calculateAndStore().catch(e => console.error(’[scheduler] calculateAndStore error (init):’, e.message));
 }
- 
+
 // ─────────────────────────────────────────────────────────────────
 // 유틸
 // ─────────────────────────────────────────────────────────────────
