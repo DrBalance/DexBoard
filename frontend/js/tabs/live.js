@@ -91,11 +91,14 @@ let _lastKvTs = 0;
 
 async function fetchKV({ fullUpdate = true } = {}) {
   try {
-    const requests = [fetch(`${CF_API}/api/snapshot`)];
+    const requests = [
+      fetch(`${CF_API}/api/snapshot`),
+      fetch(`${CF_API}/api/timeseries`),
+    ];
     if (fullUpdate) {
       requests.push(fetch(`${CF_API}/api/dex/0dte`));
     }
-    const [snapRes, dex0dteRes] = await Promise.all(requests);
+    const [snapRes, tsRes, dex0dteRes] = await Promise.all(requests);
 
     // ── snapshot: SPY / QQQ / IWM / VIX / VOLD ──────────────
     if (snapRes.ok) {
@@ -126,9 +129,31 @@ async function fetchKV({ fullUpdate = true } = {}) {
           if (snap.vold != null && !isNaN(snap.vold)) {
             _state.vold = snap.vold;
             renderVOLD();
-            // VOLD 차트 시리즈 — 1분봉마다 포인트 누적 (append=true)
-            setVoldSeries([{ ts: snap.ts, v: snap.vold }], true);
           }
+        }
+      }
+    }
+
+    // ── 시계열 링버퍼 → VIX / VOLD 차트 ────────────────────
+    if (tsRes?.ok) {
+      const tsData = await tsRes.json();
+      const series = tsData.series ?? [];
+      if (series.length > 0) {
+        // VIX 시리즈
+        const vixSeries = series
+          .filter(d => d.vix != null)
+          .map(d => ({ ts: d.ts, v: d.vix }));
+        if (vixSeries.length > 0) {
+          const prevClose = _state.vix?.prevClose ?? null;
+          setVixSeries(vixSeries, prevClose);
+          setHeatmapVix(vixSeries);
+        }
+        // VOLD 시리즈
+        const voldSeries = series
+          .filter(d => d.vold != null)
+          .map(d => ({ ts: d.ts, v: d.vold }));
+        if (voldSeries.length > 0) {
+          setVoldSeries(voldSeries, false);
         }
       }
     }
