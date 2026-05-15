@@ -463,10 +463,10 @@ if (req.method === "POST" && req.url === "/webhook/tradingview") {
   updatePrice('iwm', iwm);
   updatePrice('vix', vix);
 
-  // VOLD 갱신 (USI:VOLD — 부호 있는 누적값)
+  // VOLD 갱신 (USI:VOLD — 정규장 09:30~16:00 ET에만 저장, 이후엔 기존값 유지)
   if (vold != null) {
     const v = parseFloat(vold);
-    if (!isNaN(v)) {
+    if (!isNaN(v) && v !== 0 && isRegularSession()) {
       _cache.vold = v;
       console.log(`[webhook] VOLD: ${v}`);
     }
@@ -764,6 +764,10 @@ return new Date(etStr).getDay(); // 0=일, 1=월 ... 5=금, 6=토
 function isWeekday() {
 const day = getETDay();
 return day >= 1 && day <= 5;
+}
+
+function isRegularSession() {
+return getMarketSession() === 'REGULAR';
 }
 
 function getMarketSession() {
