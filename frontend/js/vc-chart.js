@@ -169,13 +169,35 @@ export function setVixSeries(series, prevClose = null) {
   _renderPane('vix');
 }
 
-export function setVoldSeries(series) {
+// append=false: 전체 교체 (기존 방식)
+// append=true:  단일 포인트 누적 (웹훅 1분 수신 시)
+export function setVoldSeries(series, append = false) {
   if (!Array.isArray(series) || !series.length) return;
-  _voldData = series
+
+  // ts가 UTC ISO("2026-05-15T14:30:00Z") 또는 ET 문자열("2026-05-15 14:30:00") 모두 처리
+  const toMs = (ts) => {
+    if (!ts) return NaN;
+    if (ts.includes('T') || ts.includes('Z')) return _isoToMs(ts);
+    return _etStrToMs(ts);
+  };
+
+  const newPoints = series
     .filter(d => d.v != null && !isNaN(d.v))
-    .map(d => ({ ms: _etStrToMs(d.ts), v: d.v }))
-    .filter(d => d.ms >= _axisStartMs && d.ms <= _axisEndMs)
-    .sort((a, b) => a.ms - b.ms);
+    .map(d => ({ ms: toMs(d.ts), v: d.v }))
+    .filter(d => !isNaN(d.ms) && d.ms >= _axisStartMs && d.ms <= _axisEndMs);
+
+  if (append) {
+    // 같은 ms 포인트는 덮어쓰기, 없으면 추가
+    for (const pt of newPoints) {
+      const idx = _voldData.findIndex(d => d.ms === pt.ms);
+      if (idx >= 0) _voldData[idx] = pt;
+      else _voldData.push(pt);
+    }
+    _voldData.sort((a, b) => a.ms - b.ms);
+  } else {
+    _voldData = newPoints.sort((a, b) => a.ms - b.ms);
+  }
+
   _renderPane('vold');
 }
 
@@ -234,7 +256,7 @@ function _buildShell() {
             position:absolute;left:2px;top:4px;
             font-size:9px;font-weight:700;color:#8b949e;
             pointer-events:none;letter-spacing:.5px;
-          ">OBV</span>
+          ">VOLD</span>
         </div>
         <!-- x축 페인 빈 공간 -->
         <div style="height:${XAXIS_H}px"></div>
@@ -737,7 +759,7 @@ function _renderXAxis() {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 function _emptyPane(W, pane) {
-  const msg  = pane === 'vix' ? 'VIX 데이터 없음' : '정규장 시작 후 표시';
+  const msg  = pane === 'vix' ? 'VIX 데이터 없음' : '장 시작 후 표시됩니다';
   const midY = ((PANE_H - PAD_T - PAD_B) / 2 + PAD_T).toFixed(0);
   return `
     <rect width="${W}" height="${PANE_H}" fill="transparent"/>
