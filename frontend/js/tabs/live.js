@@ -761,30 +761,25 @@ function onLiveTick({ h, m, s }) {
   const state = window._marketState;
 
   if (state === 'REGULAR') {
-    if (s === 5) {
-      if (m % 15 === 2) {
+    if (s === 5 || s === 20 || s === 35 || s === 50) {
+      if (m % 15 === 2 && s === 5) {
         // 15분: 옵션 데이터 풀업데이트 (CBOE :00 → Railway :01 → 프론트 :02:05)
         fetchKV({ fullUpdate: true });
       } else {
-        // 1분: SPY+VIX+VOLD 메트릭 카드 갱신 (웹훅 → KV → 여기서 폴링)
+        // 15초: SPY+VIX+VOLD 메트릭 카드 갱신
         fetchKV({ fullUpdate: false });
       }
 
       // 30분: AI 분석
-      if (m % 30 === 2) {
+      if (m % 30 === 2 && s === 5) {
         requestAIAnalysis(true);
       }
-    }
-
-    if (s === 35) {
-      // 30초: SPY+VIX+VOLD 메트릭 카드 갱신
-      fetchKV({ fullUpdate: false });
     }
   }
 
   if (state === 'PRE' || state === 'AFTER') {
-    if (s === 5) {
-      // 1분: SPY+VIX 메트릭 카드 + vc차트 갱신 (웹훅 → KV → 폴링)
+    if (s === 5 || s === 20 || s === 35 || s === 50) {
+      // 15초: SPY+VIX 메트릭 카드 + vc차트 갱신
       fetchKV({ fullUpdate: false });
     }
   }
