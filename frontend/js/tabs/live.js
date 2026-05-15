@@ -686,7 +686,8 @@ if (s === 35) {
 }
 
 if (state === ‘PRE’ || state === ‘AFTER’) {
-if (s === 5 && m % 3 === 0) {
+if (s === 5) {
+// 1분: SPY+VIX 메트릭 카드 + vc차트 갱신 (웹훅 → KV → 폴링)
 fetchKV({ fullUpdate: false });
 }
 }
