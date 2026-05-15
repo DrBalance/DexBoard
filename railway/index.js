@@ -501,10 +501,10 @@ if (req.method === "POST" && req.url === "/webhook/tradingview") {
   updatePrice('iwm', iwm, iwm_prev);
   updatePrice('vix', vix, vix_prev);
 
-  // VOLD 갱신 (USI:VOLD -- 정규장 09:30~16:00 ET에만 저장, 이후엔 기존값 유지)
+  // VOLD 갱신 (USI:VOLD — 부호 있는 누적값, 0 제외)
   if (vold != null) {
     const v = parseFloat(vold);
-    if (!isNaN(v) && v !== 0 && isRegularSession()) {
+    if (!isNaN(v) && v !== 0) {
       _cache.vold = v;
       console.log(`[webhook] VOLD: ${v}`);
     }
@@ -810,12 +810,15 @@ return getMarketSession() === 'REGULAR';
 
 function getMarketSession() {
 if (!isWeekday()) return 'CLOSED';
-const h = getETHour();
-if (h >= 4  && h < 9)  return 'PRE';      // 04:00~08:59
-if (h === 9)           return 'PRE';      // 09:00~09:29 (분 체크 생략)
-if (h >= 9  && h < 16) return 'REGULAR';  // 09:30~15:59
-if (h >= 16 && h < 20) return 'AFTER';    // 16:00~19:59
-if (h >= 20 && h < 24) return 'AFTER';    // 20:00~23:59
+const etStr = new Date().toLocaleString("en-US", { timeZone: "America/New_York" });
+const etDate = new Date(etStr);
+const h = etDate.getHours();
+const m = etDate.getMinutes();
+if (h >= 4  && h < 9)               return 'PRE';      // 04:00~08:59
+if (h === 9 && m < 30)              return 'PRE';      // 09:00~09:29
+if ((h === 9 && m >= 30) || (h >= 10 && h < 16)) return 'REGULAR'; // 09:30~15:59
+if (h >= 16 && h < 20)              return 'AFTER';    // 16:00~19:59
+if (h >= 20 && h < 24)              return 'AFTER';    // 20:00~23:59
 return 'CLOSED';
 }
 
