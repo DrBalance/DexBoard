@@ -792,6 +792,69 @@ console.log(`[KV] dex:spy:0dte 저장 완료 -- 만기일 ${nextTradingDate}, ${
 const expiryCount  = Object.keys(expirations).length;
 const totalStrikes = Object.values(expirations).reduce((a, b) => a + b.length, 0);
 
+// ── 10. SPY 0DTE 스트라이크 스냅샷 D1 저장 ──────────────────────
+// 매 평일 15분마다 실행 — 나중에 그날을 리뷰하기 위한 아카이브
+if (zeroStrikes.length > 0 && CF_KV_URL) {
+  try {
+    // 전체 집계값 계산
+    const totalGex   = zeroStrikes.reduce((a, s) => a + (s.gex   ?? 0), 0);
+    const totalVanna = zeroStrikes.reduce((a, s) => a + (s.vanna ?? 0), 0);
+    const totalCharm = zeroStrikes.reduce((a, s) => a + (s.charm ?? 0), 0);
+    const totalDex   = zeroStrikes.reduce((a, s) => a + (s.dex   ?? 0), 0);
+    const totalCallOI = zeroStrikes.reduce((a, s) => a + (s.callOI ?? 0), 0);
+    const totalPutOI  = zeroStrikes.reduce((a, s) => a + (s.putOI  ?? 0), 0);
+    const pcr = totalCallOI > 0 ? totalPutOI / totalCallOI : null;
+
+    // flip_zone: expirations[nextTradingDate].flip_strike
+    const flipZone = expirations[nextTradingDate]?.flip_strike ?? null;
+
+    // 스트라이크별 데이터 구성 (newStrikes 기반 — oi15m 포함)
+    const snapshotStrikes = newStrikes.map(s => ({
+      strike:      s.strike,
+      call_oi:     s.callOI,
+      put_oi:      s.putOI,
+      call_oi_15m: s.callOi15m,
+      put_oi_15m:  s.putOi15m,
+      dex:         s.dex,
+      gex:         s.gex,
+      vanna:       s.vanna,
+      charm:       s.charm,
+    }));
+
+    const snapshotPayload = {
+      ts:          updatedAt,
+      date:        todayET,
+      spot,
+      total_gex:   +totalGex.toFixed(4),
+      total_vanna: +totalVanna.toFixed(4),
+      total_charm: +totalCharm.toFixed(4),
+      total_dex:   +totalDex.toFixed(4),
+      pcr:         pcr != null ? +pcr.toFixed(4) : null,
+      flip_zone:   flipZone,
+      strikes:     snapshotStrikes,
+    };
+
+    const snapRes = await fetch(`${CF_KV_URL}/d1/spy-snapshot`, {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'x-cron-secret': CF_KV_SECRET,
+      },
+      body:   JSON.stringify(snapshotPayload),
+      signal: AbortSignal.timeout(15000),
+    });
+    if (snapRes.ok) {
+      const snapData = await snapRes.json();
+      console.log(`[D1] spy-snapshot 저장 완료 — ${snapData.inserted}건 (${updatedAt})`);
+    } else {
+      console.warn(`[D1] spy-snapshot 저장 실패 — ${snapRes.status}`);
+    }
+  } catch (snapErr) {
+    // 스냅샷 저장 실패해도 메인 흐름에 영향 없음
+    console.warn(`[D1] spy-snapshot 예외:`, snapErr.message);
+  }
+}
+
 return {
 ok:          true,
 updated_at:  updatedAt,
