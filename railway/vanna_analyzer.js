@@ -662,6 +662,7 @@ if (!expiryMap[expiry][strike]) {
   expiryMap[expiry][strike] = {
     strike, dte, expiry,
     callOI: 0, putOI: 0,
+    callVolume: 0, putVolume: 0,
     iv: 0, ivCount: 0,
   };
 }
@@ -671,8 +672,8 @@ const oi  = o.open_interest || 0;
 const vol = o.volume        || 0;
 const oiEff = oi > 0 ? oi : vol;
 
-if (type === "C") s.callOI += oiEff;
-else              s.putOI  += oiEff;
+if (type === "C") { s.callOI += oiEff; s.callVolume += vol; }
+else              { s.putOI  += oiEff; s.putVolume  += vol; }
 if (o.iv > 0) { s.iv += o.iv; s.ivCount++; }
 
 }
@@ -684,7 +685,7 @@ for (const [expiry, strikeMap] of Object.entries(expiryMap)) {
 const strikes = [];
 
 for (const s of Object.values(strikeMap)) {
-  const { strike, dte, callOI, putOI } = s;
+  const { strike, dte, callOI, putOI, callVolume, putVolume } = s;
   const iv = s.ivCount > 0 ? s.iv / s.ivCount : 0.20;
   const dteForGreeks = dte === 0 ? 0.001 : dte;
   const greeks = calcGreeks(spot, strike, dteForGreeks, iv);
@@ -697,6 +698,8 @@ for (const s of Object.values(strikeMap)) {
     expiry,
     callOI,
     putOI,
+    callVolume,
+    putVolume,
     dex:   (greeks.delta * callOI * 100 - greeks.delta * putOI * 100) / 1e6,
     gex:   netOI * greeks.gamma * 100 * spot / 1e6,
     vanna: greeks.vanna * netOI * 100 * spot / 1e6,
@@ -766,6 +769,8 @@ const newStrikes = zeroStrikes.map(s => {
     expiry:      s.expiry,
     callOI:      s.callOI,
     putOI:       s.putOI,
+    callVolume:  s.callVolume ?? 0,
+    putVolume:   s.putVolume  ?? 0,
     callOi15m,   // 15분 증감 (계약수)
     putOi15m,    // 15분 증감 (계약수)
     callOiOpen,  // 장 시작 대비 누적 증감 (계약수)
@@ -801,8 +806,10 @@ if (zeroStrikes.length > 0 && CF_KV_URL) {
     const totalVanna = zeroStrikes.reduce((a, s) => a + (s.vanna ?? 0), 0);
     const totalCharm = zeroStrikes.reduce((a, s) => a + (s.charm ?? 0), 0);
     const totalDex   = zeroStrikes.reduce((a, s) => a + (s.dex   ?? 0), 0);
-    const totalCallOI = zeroStrikes.reduce((a, s) => a + (s.callOI ?? 0), 0);
-    const totalPutOI  = zeroStrikes.reduce((a, s) => a + (s.putOI  ?? 0), 0);
+    const totalCallOI     = zeroStrikes.reduce((a, s) => a + (s.callOI     ?? 0), 0);
+    const totalPutOI      = zeroStrikes.reduce((a, s) => a + (s.putOI      ?? 0), 0);
+    const totalCallVolume = zeroStrikes.reduce((a, s) => a + (s.callVolume ?? 0), 0);
+    const totalPutVolume  = zeroStrikes.reduce((a, s) => a + (s.putVolume  ?? 0), 0);
     const pcr = totalCallOI > 0 ? totalPutOI / totalCallOI : null;
 
     // flip_zone: expirations[nextTradingDate].flip_strike
@@ -815,6 +822,8 @@ if (zeroStrikes.length > 0 && CF_KV_URL) {
       put_oi:      s.putOI,
       call_oi_15m: s.callOi15m,
       put_oi_15m:  s.putOi15m,
+      call_volume: s.callVolume ?? 0,
+      put_volume:  s.putVolume  ?? 0,
       dex:         s.dex,
       gex:         s.gex,
       vanna:       s.vanna,
@@ -822,16 +831,18 @@ if (zeroStrikes.length > 0 && CF_KV_URL) {
     }));
 
     const snapshotPayload = {
-      ts:          updatedAt,
-      date:        todayET,
+      ts:                updatedAt,
+      date:              todayET,
       spot,
-      total_gex:   +totalGex.toFixed(4),
-      total_vanna: +totalVanna.toFixed(4),
-      total_charm: +totalCharm.toFixed(4),
-      total_dex:   +totalDex.toFixed(4),
-      pcr:         pcr != null ? +pcr.toFixed(4) : null,
-      flip_zone:   flipZone,
-      strikes:     snapshotStrikes,
+      total_gex:         +totalGex.toFixed(4),
+      total_vanna:       +totalVanna.toFixed(4),
+      total_charm:       +totalCharm.toFixed(4),
+      total_dex:         +totalDex.toFixed(4),
+      total_call_volume: totalCallVolume,
+      total_put_volume:  totalPutVolume,
+      pcr:               pcr != null ? +pcr.toFixed(4) : null,
+      flip_zone:         flipZone,
+      strikes:           snapshotStrikes,
     };
 
     const snapRes = await fetch(`${CF_KV_URL}/d1/spy-snapshot`, {
