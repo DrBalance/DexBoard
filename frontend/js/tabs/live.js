@@ -128,6 +128,12 @@ async function fetchKV({ fullUpdate = true } = {}) {
       const tsData = await tsRes.json();
       const series = tsData.series ?? [];
       if (series.length > 0) {
+        // 마지막 포인트 → 메트릭 카드도 동기화 (snapshot보다 최신일 수 있음)
+        const last = series[series.length - 1];
+        if (last.spy) _updateSpy({ price: last.spy, change: _state.spy.change, changePct: _state.spy.changePct, source: 'ts', ts: last.ts });
+        if (last.vix) { _state.vix = { ..._state.vix, price: last.vix }; renderVIX(); }
+        if (last.vold != null) { _state.vold = last.vold; renderVOLD(); }
+
         // VIX 시리즈
         const vixSeries = series
           .filter(d => d.vix != null)
