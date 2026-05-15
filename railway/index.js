@@ -433,6 +433,59 @@ return sendJSON(res, 429, { ok: false, error: "서버 요청 한도 초과 (IP �
 
 }
 
+// ── POST /webhook/tradingview ────────────────────────────────────
+// TradingView Alert → SPY / QQQ / IWM / VIX / VOLD 수신 → _cache 갱신 → KV 저장
+if (req.method === "POST" && req.url === "/webhook/tradingview") {
+  const body = await readBody(req);
+
+  // 필수 필드 검증
+  const { spy, qqq, iwm, vix, vold, time } = body;
+  if (spy == null && vix == null) {
+    return sendJSON(res, 400, { ok: false, error: "spy 또는 vix 값이 필요합니다." });
+  }
+
+  // 심볼별 가격 갱신 헬퍼
+  function updatePrice(cacheKey, raw) {
+    if (raw == null) return;
+    const price = parseFloat(raw);
+    if (isNaN(price) || price <= 0) return;
+    const prevClose = _cache[cacheKey]?.prevClose ?? null;
+    const change    = prevClose != null ? Math.round((price - prevClose) * 100) / 100 : null;
+    const changePct = prevClose != null ? Math.round((price - prevClose) / prevClose * 10000) / 100 : null;
+    _cache[cacheKey] = { ..._cache[cacheKey], price, change, changePct };
+    console.log(`[webhook] ${cacheKey.toUpperCase()}: $${price} (${changePct ?? '?'}%)`);
+  }
+
+  updatePrice('spy', spy);
+  updatePrice('qqq', qqq);
+  updatePrice('iwm', iwm);
+  updatePrice('vix', vix);
+
+  // VOLD 갱신 (USI:VOLD — 부호 있는 누적값)
+  if (vold != null) {
+    const v = parseFloat(vold);
+    if (!isNaN(v)) {
+      _cache.vold = v;
+      console.log(`[webhook] VOLD: ${v}`);
+    }
+  }
+
+  _cache._lastWebhookTs = time ?? new Date().toISOString();
+
+  // KV 즉시 저장 (비동기, 응답 블로킹 안 함)
+  saveSnapshot().catch(e => console.error('[webhook] saveSnapshot 실패:', e.message));
+
+  return sendJSON(res, 200, {
+    ok:   true,
+    spy:  _cache.spy.price,
+    qqq:  _cache.qqq?.price,
+    iwm:  _cache.iwm?.price,
+    vix:  _cache.vix.price,
+    vold: _cache.vold,
+    ts:   _cache._lastWebhookTs,
+  });
+}
+
 // ── POST /calculate ──────────────────────────────────────────────
 if (req.method === "POST" && req.url === "/calculate") {
 const auth = req.headers["x-cron-secret"];
@@ -763,8 +816,12 @@ return { price: Math.round(price * 100) / 100, change, changePct, prevClose, ser
 // SPY: Twelve Data 30초, VIX: Yahoo 1분 -- 각자 독립 갱신, KV는 30초마다 합산 저장
 // ─────────────────────────────────────────────────────────────────
 const _cache = {
-spy: { price: null, change: null, changePct: null, prevClose: null },
-vix: { price: null, change: null, changePct: null, prevClose: null, series: [] },
+spy:  { price: null, change: null, changePct: null, prevClose: null },
+qqq:  { price: null, change: null, changePct: null, prevClose: null },
+iwm:  { price: null, change: null, changePct: null, prevClose: null },
+vix:  { price: null, change: null, changePct: null, prevClose: null, series: [] },
+vold: null,           // TradingView 웹훅 수신값 (USI:VOLD)
+_lastWebhookTs: null, // 마지막 웹훅 수신 시각 (ISO)
 };
 
 // SPY 현재가 -- Twelve Data /quote (정규장 30초)
@@ -807,14 +864,17 @@ console.warn('[vix] Yahoo 실패 (직전값 유지):', e.message);
 }
 }
 
-// KV 저장 -- _cache.spy + _cache.vix 합산 → snapshot:1min
+// KV 저장 -- _cache.spy + _cache.vix + _cache.vold 합산 → snapshot:1min
 async function saveSnapshot() {
 if (!_cache.spy.price && !_cache.vix.price) return; // 둘 다 없으면 스킵
 try {
 const snapshot = {
-spy: _cache.spy,
-vix: _cache.vix,
-ts:  new Date().toISOString(),
+spy:  _cache.spy,
+qqq:  _cache.qqq,
+iwm:  _cache.iwm,
+vix:  _cache.vix,
+vold: _cache.vold,
+ts:   new Date().toISOString(),
 };
 await fetch(`${CF_WORKER_URL}/kv-write`, {
 method:  'POST',
@@ -822,7 +882,7 @@ headers: { 'Content-Type': 'application/json', 'x-kv-secret': CF_KV_SECRET },
 body:    JSON.stringify({ key: 'snapshot:1min', value: JSON.stringify(snapshot) }),
 signal:  AbortSignal.timeout(5000),
 });
-console.log(`[snapshot] saved SPY=${_cache.spy.price} VIX=${_cache.vix.price}`);
+console.log(`[snapshot] saved SPY=${_cache.spy.price} VIX=${_cache.vix.price} VOLD=${_cache.vold}`);
 } catch (e) {
 console.error('[snapshot] KV 저장 실패:', e.message);
 }
@@ -1040,11 +1100,9 @@ if (h === 0) { screenerDone = false; openDone = false; }
 
 // 1분마다 세션 체크 → 폴링 주기 동적 조정
 let snapshotTimer = null;
-let vixTimer      = null;  // VIX 1분 독립 루프 (REGULAR 전용)
 
 function scheduleSnapshot() {
 if (snapshotTimer) clearInterval(snapshotTimer);
-if (vixTimer)      { clearInterval(vixTimer); vixTimer = null; }
 
 const session = getMarketSession();
 
@@ -1055,23 +1113,23 @@ if (session === 'CLOSED') {
 }
 
 if (session === 'REGULAR') {
-  // ── REGULAR: SPY 30초(Twelve Data) + VIX 1분(Yahoo) → KV 30초 저장
-  console.log('[scheduler] REGULAR -- SPY 30초(Twelve) + VIX 1분(Yahoo)');
+  // ── REGULAR: TradingView 웹훅 수신 대기 (1분봉 Alert)
+  // SPY / VIX / VOLD 는 /webhook/tradingview 로 수신됨
+  // 웹훅이 끊겼을 때를 대비해 5분 무수신 시 Yahoo fallback 실행
+  console.log('[scheduler] REGULAR -- TradingView 웹훅 대기 중 (fallback: Yahoo 5분)');
 
-  // 즉시 1회 (SPY+VIX 동시 조회 후 KV 저장)
-  (async () => {
-    await Promise.all([fetchSpyTwelve(), fetchVixYahoo()]);
-    await saveSnapshot();
-  })();
+  // 즉시 1회 Yahoo fallback (서버 재시작 직후 _cache가 비어 있을 수 있음)
+  fetchSnapshot();
 
-  // SPY 30초마다 조회 → KV 저장 (직전 VIX 캐시 포함)
+  // 5분마다 웹훅 수신 여부 확인 → 미수신 시 Yahoo fallback
   snapshotTimer = setInterval(async () => {
-    await fetchSpyTwelve();
-    await saveSnapshot();
-  }, 30_000);
-
-  // VIX 1분마다 독립 조회 (KV 저장은 snapshotTimer가 다음 :30에 담당)
-  vixTimer = setInterval(fetchVixYahoo, 60_000);
+    const lastTs  = _cache._lastWebhookTs ? new Date(_cache._lastWebhookTs).getTime() : 0;
+    const staleSec = (Date.now() - lastTs) / 1000;
+    if (staleSec > 5 * 60) {
+      console.warn(`[scheduler] 웹훅 ${Math.round(staleSec / 60)}분 미수신 → Yahoo fallback`);
+      await fetchSnapshot();
+    }
+  }, 5 * 60_000);
 
 } else {
   // ── PRE / AFTER: Yahoo SPY+VIX 묶음 3분
