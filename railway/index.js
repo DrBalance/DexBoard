@@ -435,6 +435,7 @@ return sendJSON(res, 429, { ok: false, error: "서버 요청 한도 초과 (IP �
 
 // ── POST /webhook/tradingview ────────────────────────────────────
 // TradingView Alert → SPY / QQQ / IWM / VIX / VOLD 수신 → _cache 갱신 → KV 저장
+// payload 구조: { spy:{price, prev}, qqq:{price, prev}, iwm:{price, prev}, vix:{price, prev}, vold, time }
 if (req.method === "POST" && req.url === "/webhook/tradingview") {
   const body = await readBody(req);
 
@@ -445,15 +446,16 @@ if (req.method === "POST" && req.url === "/webhook/tradingview") {
   }
 
   // 심볼별 가격 갱신 헬퍼
+  // raw: { price, prev } 객체 또는 숫자 (하위 호환)
   function updatePrice(cacheKey, raw) {
     if (raw == null) return;
-    const price = parseFloat(raw);
+    const price     = parseFloat(raw?.price ?? raw);
+    const prevClose = parseFloat(raw?.prev)  || _cache[cacheKey]?.prevClose || null;
     if (isNaN(price) || price <= 0) return;
-    const prevClose = _cache[cacheKey]?.prevClose ?? null;
     const change    = prevClose != null ? Math.round((price - prevClose) * 100) / 100 : null;
     const changePct = prevClose != null ? Math.round((price - prevClose) / prevClose * 10000) / 100 : null;
-    _cache[cacheKey] = { ..._cache[cacheKey], price, change, changePct };
-    console.log(`[webhook] ${cacheKey.toUpperCase()}: $${price} (${changePct ?? '?'}%)`);
+    _cache[cacheKey] = { ..._cache[cacheKey], price, prevClose, change, changePct };
+    console.log(`[webhook] ${cacheKey.toUpperCase()}: $${price} prev=$${prevClose} (${changePct ?? '?'}%)`);
   }
 
   updatePrice('spy', spy);
@@ -476,13 +478,13 @@ if (req.method === "POST" && req.url === "/webhook/tradingview") {
   saveSnapshot().catch(e => console.error('[webhook] saveSnapshot 실패:', e.message));
 
   return sendJSON(res, 200, {
-    ok:   true,
-    spy:  _cache.spy.price,
-    qqq:  _cache.qqq?.price,
-    iwm:  _cache.iwm?.price,
-    vix:  _cache.vix.price,
-    vold: _cache.vold,
-    ts:   _cache._lastWebhookTs,
+    ok:        true,
+    spy:       { price: _cache.spy.price, changePct: _cache.spy.changePct },
+    qqq:       { price: _cache.qqq?.price, changePct: _cache.qqq?.changePct },
+    iwm:       { price: _cache.iwm?.price, changePct: _cache.iwm?.changePct },
+    vix:       { price: _cache.vix.price, changePct: _cache.vix.changePct },
+    vold:      _cache.vold,
+    ts:        _cache._lastWebhookTs,
   });
 }
 
