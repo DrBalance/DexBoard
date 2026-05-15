@@ -440,6 +440,38 @@ if (req.method === "POST" && req.url === "/trigger-prevclose") {
   return sendJSON(res, 200, { ok: true, message: 'prevClose 조회 시작' });
 }
 
+// ── POST /webhook/prevclose ───────────────────────────────────────
+// Google Sheets Apps Script → 장 마감 후 전일 종가 수신
+if (req.method === "POST" && req.url === "/webhook/prevclose") {
+  const body = await readBody(req);
+  const { spy, vix, qqq, iwm, sentAt } = body;
+
+  if (!spy || !vix) {
+    return sendJSON(res, 400, { ok: false, error: "spy, vix 필수" });
+  }
+
+  const data = {
+    spy:  Math.round(parseFloat(spy)  * 100) / 100,
+    vix:  Math.round(parseFloat(vix)  * 100) / 100,
+    qqq:  qqq ? Math.round(parseFloat(qqq) * 100) / 100 : null,
+    iwm:  iwm ? Math.round(parseFloat(iwm) * 100) / 100 : null,
+    date: getTodayET(),
+    ts:   sentAt ?? new Date().toISOString(),
+  };
+
+  // _cache 즉시 적용
+  _cache.spy.prevClose = data.spy;
+  _cache.vix.prevClose = data.vix;
+  if (data.qqq) _cache.qqq.prevClose = data.qqq;
+  if (data.iwm) _cache.iwm.prevClose = data.iwm;
+
+  // KV 저장 (비동기)
+  savePrevClose(data).catch(e => console.error('[prevClose] KV 저장 실패:', e.message));
+
+  console.log(`[prevClose] Google Sheets 수신: SPY=${data.spy} VIX=${data.vix} QQQ=${data.qqq} IWM=${data.iwm}`);
+  return sendJSON(res, 200, { ok: true, spy: data.spy, vix: data.vix, qqq: data.qqq, iwm: data.iwm });
+}
+
 // ── POST /webhook/tradingview ────────────────────────────────────
 // TradingView Alert → SPY / QQQ / IWM / VIX / VOLD 수신 → _cache 갱신 → KV 저장
 // payload 구조: { spy:{price, prev}, qqq:{price, prev}, iwm:{price, prev}, vix:{price, prev}, vold, time }
@@ -805,13 +837,14 @@ const price      = quotes.filter(Boolean).pop();
 if (!price) throw new Error(`Yahoo ${symbol}: no close data`);
 
 // 전날 종가(prevClose) -- interval=1d&range=2d로 별도 조회
-// meta.chartPreviousClose가 2일 전 값을 반환하는 오류가 있어 조회 방식 변경
 let prevClose = null;
 const dayRes = await fetch(`${YAHOO_BASE}/${symbol}?interval=1d&range=2d`, { headers: { 'User-Agent': 'Mozilla/5.0' } });
 if (dayRes.ok) {
 const dayData  = await dayRes.json();
 const dayClose = dayData?.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [];
-if (dayClose.length >= 2) prevClose = Math.round(dayClose[0] * 100) / 100;
+// 마지막에서 두 번째 = 전일 확정 종가 (마지막은 당일 미확정일 수 있음)
+const validClose = dayClose.filter(v => v != null);
+if (validClose.length >= 2) prevClose = Math.round(validClose[validClose.length - 2] * 100) / 100;
 }
 
 const change    = prevClose != null ? Math.round((price - prevClose) * 100) / 100 : null;
@@ -912,34 +945,50 @@ try {
 }
 }
 
-// Yahoo에서 prevClose 조회 후 _cache에 적용 + KV 저장
+// Twelve Data EOD → prevClose 조회 후 _cache에 적용 + KV 저장
 async function fetchAndSavePrevClose() {
 try {
+  // EOD 엔드포인트: 가장 최근 확정 거래일 종가 반환
+  const fetchEOD = async (symbol) => {
+    const url = `https://api.twelvedata.com/eod?symbol=${symbol}&apikey=${TWELVE_KEY_SPY}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+    if (!res.ok) throw new Error(`EOD ${symbol}: ${res.status}`);
+    const data = await res.json();
+    if (data.status === 'error') throw new Error(`EOD ${symbol}: ${data.message}`);
+    const close = parseFloat(data.close);
+    if (isNaN(close)) throw new Error(`EOD ${symbol}: invalid close`);
+    return { close: Math.round(close * 100) / 100, date: data.datetime };
+  };
+
+  // 4개 심볼 병렬 조회 (VIX는 Twelve Data에서 VIX 심볼 사용)
   const [spy, qqq, iwm, vix] = await Promise.all([
-    fetchYahoo('SPY'),
-    fetchYahoo('QQQ'),
-    fetchYahoo('IWM'),
-    fetchYahoo('%5EVIX'),
+    fetchEOD('SPY'),
+    fetchEOD('QQQ'),
+    fetchEOD('IWM'),
+    fetchEOD('VIX'),
   ]);
+
   const data = {
-    spy: spy.prevClose,
-    qqq: qqq.prevClose,
-    iwm: iwm.prevClose,
-    vix: vix.prevClose,
-    date: getTodayET(),
+    spy:  spy.close,
+    qqq:  qqq.close,
+    iwm:  iwm.close,
+    vix:  vix.close,
+    date: spy.date,
     ts:   new Date().toISOString(),
   };
+
   // _cache에 즉시 적용
   _cache.spy.prevClose = data.spy;
   _cache.qqq.prevClose = data.qqq;
   _cache.iwm.prevClose = data.iwm;
   _cache.vix.prevClose = data.vix;
-  console.log(`[prevClose] Yahoo 조회: SPY=${data.spy} QQQ=${data.qqq} IWM=${data.iwm} VIX=${data.vix}`);
+  console.log(`[prevClose] Twelve Data EOD: SPY=${data.spy} QQQ=${data.qqq} IWM=${data.iwm} VIX=${data.vix} (${data.date})`);
+
   // KV 저장
   await savePrevClose(data);
   return data;
 } catch (e) {
-  console.warn('[prevClose] Yahoo 조회 실패 (기존값 유지):', e.message);
+  console.warn('[prevClose] Twelve Data EOD 조회 실패 (기존값 유지):', e.message);
   return null;
 }
 }
