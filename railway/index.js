@@ -5,36 +5,36 @@
 // GET  /screener-status  → 오늘 수집 여부 확인
 // setInterval 스케줄러   → fetchSnapshot (Yahoo→KV), snapshotOpen, triggerScreener
 
-import http from "http";
-import { calculateAndStore, collectSymbol, getTodayET } from "./vanna_analyzer.js";
-import { collectPriceIndicators as collectPriceIndicatorsNew, calcAndSaveScore } from "./screener-engine.js";
+import http from “http”;
+import { calculateAndStore, collectSymbol, getTodayET } from “./vanna_analyzer.js”;
+import { collectPriceIndicators as collectPriceIndicatorsNew, calcAndSaveScore } from “./screener-engine.js”;
 
-const TWELVE_KEY = process.env.TWELVE_KEY || process.env.TWELVE_KEY_SPY || "";
+const TWELVE_KEY = process.env.TWELVE_KEY || process.env.TWELVE_KEY_SPY || “”;
 
 const PORT        = process.env.PORT        || 8080;
-const CRON_SECRET = process.env.CRON_SECRET || "";
-const GEMINI_KEY  = process.env.GEMINI_KEY  || "";
-const CF_WORKER_URL = process.env.CF_WORKER_URL || "";
-const CF_KV_SECRET  = process.env.CF_KV_SECRET  || "";
-const TWELVE_KEY_SPY = process.env.TWELVE_KEY_SPY || "";
+const CRON_SECRET = process.env.CRON_SECRET || “”;
+const GEMINI_KEY  = process.env.GEMINI_KEY  || “”;
+const CF_WORKER_URL = process.env.CF_WORKER_URL || “”;
+const CF_KV_SECRET  = process.env.CF_KV_SECRET  || “”;
+const TWELVE_KEY_SPY = process.env.TWELVE_KEY_SPY || “”;
 
 // ─────────────────────────────────────────────────────────────────
 // 가격 수집 + BB 계산 → CF Worker D1 저장
 // ─────────────────────────────────────────────────────────────────
-const YAHOO_CHART = 'https://query1.finance.yahoo.com/v8/finance/chart';
+const YAHOO_CHART = ‘https://query1.finance.yahoo.com/v8/finance/chart’;
 
 async function collectPriceIndicators(symbol, cfWorkerUrl, cronSecret) {
 try {
 const url = `${YAHOO_CHART}/${encodeURIComponent(symbol)}?interval=1d&range=3mo`;
 const res = await fetch(url, {
-headers: { 'User-Agent': 'Mozilla/5.0' },
+headers: { ‘User-Agent’: ‘Mozilla/5.0’ },
 signal: AbortSignal.timeout(10000),
 });
 if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
 
 const json   = await res.json();
 const result = json?.chart?.result?.[0];
-if (!result) throw new Error('Yahoo: no result');
+if (!result) throw new Error(‘Yahoo: no result’);
 
 const timestamps = result.timestamp ?? [];
 const closes     = result.indicators?.quote?.[0]?.close ?? [];
@@ -42,66 +42,66 @@ const highs      = result.indicators?.quote?.[0]?.high  ?? [];
 const lows       = result.indicators?.quote?.[0]?.low   ?? [];
 
 const candles = timestamps
-  .map((ts, i) => ({
-    date:  new Date(ts * 1000).toISOString().slice(0, 10),
-    close: closes[i] ?? null,
-    high:  highs[i]  ?? null,
-    low:   lows[i]   ?? null,
-  }))
-  .filter(c => c.close != null);
+.map((ts, i) => ({
+date:  new Date(ts * 1000).toISOString().slice(0, 10),
+close: closes[i] ?? null,
+high:  highs[i]  ?? null,
+low:   lows[i]   ?? null,
+}))
+.filter(c => c.close != null);
 
-if (candles.length < 20) throw new Error('insufficient_data');
+if (candles.length < 20) throw new Error(‘insufficient_data’);
 
 const cls = candles.map(c => c.close);
 
 // 캔들 전체에 대해 BB/ATR 계산 → 전체 행 생성 (INSERT OR IGNORE로 기존 보존)
 const rows = [];
 for (let i = 19; i < candles.length; i++) {
-  const { date, close, high, low } = candles[i];
+const { date, close, high, low } = candles[i];
 
-  // 볼린저밴드 (20일 rolling)
-  const slice = cls.slice(i - 19, i + 1);
-  const sma   = slice.reduce((a, b) => a + b, 0) / 20;
-  const std   = Math.sqrt(slice.reduce((a, b) => a + (b - sma) ** 2, 0) / 20);
-  const upper2 = sma + std * 2;
-  const lower2 = sma - std * 2;
-  const bbRange    = upper2 - lower2;
-  const bbPosition = bbRange > 0 ? (close - lower2) / bbRange : 0.5;
+// 볼린저밴드 (20일 rolling)
+const slice = cls.slice(i - 19, i + 1);
+const sma   = slice.reduce((a, b) => a + b, 0) / 20;
+const std   = Math.sqrt(slice.reduce((a, b) => a + (b - sma) ** 2, 0) / 20);
+const upper2 = sma + std * 2;
+const lower2 = sma - std * 2;
+const bbRange    = upper2 - lower2;
+const bbPosition = bbRange > 0 ? (close - lower2) / bbRange : 0.5;
 
-  // ATR (5일/20일) -- i 기준 슬라이스
-  const atr = (n) => {
-    if (i < n - 1) return null;
-    const s = candles.slice(i - n + 1, i + 1);
-    return s.reduce((a, c) => a + (c.high - c.low), 0) / n;
-  };
-  const atr5  = atr(5);
-  const atr20 = atr(20);
+// ATR (5일/20일) – i 기준 슬라이스
+const atr = (n) => {
+if (i < n - 1) return null;
+const s = candles.slice(i - n + 1, i + 1);
+return s.reduce((a, c) => a + (c.high - c.low), 0) / n;
+};
+const atr5  = atr(5);
+const atr20 = atr(20);
 
-  rows.push({
-    date,
-    symbol,
-    close,
-    bb_mid:      +sma.toFixed(4),
-    bb_upper1:   +(sma + std).toFixed(4),
-    bb_lower1:   +(sma - std).toFixed(4),
-    bb_upper2:   +upper2.toFixed(4),
-    bb_lower2:   +lower2.toFixed(4),
-    bb_position: +bbPosition.toFixed(4),
-    atr5:        atr5  ? +atr5.toFixed(4)  : null,
-    atr20:       atr20 ? +atr20.toFixed(4) : null,
-    vol_ratio:   (atr5 && atr20) ? +(atr5 / atr20).toFixed(4) : null,
-  });
+rows.push({
+date,
+symbol,
+close,
+bb_mid:      +sma.toFixed(4),
+bb_upper1:   +(sma + std).toFixed(4),
+bb_lower1:   +(sma - std).toFixed(4),
+bb_upper2:   +upper2.toFixed(4),
+bb_lower2:   +lower2.toFixed(4),
+bb_position: +bbPosition.toFixed(4),
+atr5:        atr5  ? +atr5.toFixed(4)  : null,
+atr20:       atr20 ? +atr20.toFixed(4) : null,
+vol_ratio:   (atr5 && atr20) ? +(atr5 / atr20).toFixed(4) : null,
+});
 }
 
-// CF Worker D1 저장 -- INSERT OR IGNORE (기존 날짜 데이터 보존, 신규만 추가)
+// CF Worker D1 저장 – INSERT OR IGNORE (기존 날짜 데이터 보존, 신규만 추가)
 const writeRes = await fetch(`${cfWorkerUrl}/d1/price-indicators`, {
-  method:  'POST',
-  headers: {
-    'Content-Type':  'application/json',
-    'x-cron-secret': cronSecret,
-  },
-  body: JSON.stringify({ rows, mode: 'ignore' }),
-  signal: AbortSignal.timeout(15000),
+method:  ‘POST’,
+headers: {
+‘Content-Type’:  ‘application/json’,
+‘x-cron-secret’: cronSecret,
+},
+body: JSON.stringify({ rows, mode: ‘ignore’ }),
+signal: AbortSignal.timeout(15000),
 });
 if (!writeRes.ok) throw new Error(`D1 write failed: ${writeRes.status}`);
 
@@ -116,7 +116,7 @@ return null;
 }
 
 const GEMINI_URL =
-"https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent";
+“https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent”;
 
 // ─────────────────────────────────────────────────────────────────
 // Rate Limiter
@@ -147,7 +147,7 @@ for (let i = 0; i < retries; i++) {
 try {
 return await callGemini(payload);
 } catch (err) {
-const is429 = err.message?.includes("429");
+const is429 = err.message?.includes(“429”);
 if (is429 && i < retries - 1) {
 const wait = Math.pow(2, i) * 1500;
 console.warn(`[Gemini] 429 -- ${wait}ms 후 재시도 (${i + 1}/${retries - 1})`);
@@ -160,15 +160,15 @@ throw err;
 }
 
 async function callGemini(payload) {
-if (!GEMINI_KEY) throw new Error("GEMINI_KEY not set");
+if (!GEMINI_KEY) throw new Error(“GEMINI_KEY not set”);
 
 const compressedStrikes = (payload.strikes ?? [])
 .sort((a, b) => Math.abs(b.dex) - Math.abs(a.dex))
 .slice(0, 10)
 .map(s => ({
 s:  s.strike,
-cd: s.type === 'C' ? +(s.dex / 1e6).toFixed(1) : 0,
-pd: s.type === 'P' ? +(s.dex / 1e6).toFixed(1) : 0,
+cd: s.type === ‘C’ ? +(s.dex / 1e6).toFixed(1) : 0,
+pd: s.type === ‘P’ ? +(s.dex / 1e6).toFixed(1) : 0,
 g:  +(s.gex   / 1e6).toFixed(1),
 v:  +(s.vanna  / 1e6).toFixed(1),
 c:  +(s.charm  / 1e6).toFixed(1),
@@ -201,44 +201,44 @@ s=strike, cd=call_dex(M), pd=put_dex(M), g=gex(M), v=vanna(M), c=charm(M)
 [Strike 데이터 (DEX 상위 10개)]
 ${JSON.stringify(compressedStrikes)}
 
-[응답 JSON 형식 -- 한국어, 각 필드를 구체적이고 충분히 서술할 것]
+[응답 JSON 형식 – 한국어, 각 필드를 구체적이고 충분히 서술할 것]
 {
-"market_regime": {
-"phase": "시장 국면 (예: 감마 압축 구간, 언와인드 진행 중 등)",
-"volatility_context": "현재 VIX 수준과 변동성 방향성에 대한 구체적 설명",
-"dominance": "Dealer-Driven 또는 Flow-Driven -- 근거 포함"
+“market_regime”: {
+“phase”: “시장 국면 (예: 감마 압축 구간, 언와인드 진행 중 등)”,
+“volatility_context”: “현재 VIX 수준과 변동성 방향성에 대한 구체적 설명”,
+“dominance”: “Dealer-Driven 또는 Flow-Driven – 근거 포함”
 },
-"deep_dive": {
-"dealer_inventory": {
-"gamma_exposure": "GEX 부호 및 크기, 핵심 위험 스트라이크, 딜러 헷지 방향을 상세히 설명",
-"vanna_flow": "현재 VIX 방향에 따른 Vanna 흐름이 딜러 델타 헷지에 미치는 압력 분석"
+“deep_dive”: {
+“dealer_inventory”: {
+“gamma_exposure”: “GEX 부호 및 크기, 핵심 위험 스트라이크, 딜러 헷지 방향을 상세히 설명”,
+“vanna_flow”: “현재 VIX 방향에 따른 Vanna 흐름이 딜러 델타 헷지에 미치는 압력 분석”
 },
-"breadth_analysis": {
-"vold_signal": "VOLD와 SPY 가격 간 다이버전스 여부, 강도, 지속 가능성 평가",
-"interpretation": "현물 수급 에너지의 질적 해석 -- 진짜 매수/매도 vs 파생 헷지 유발 흐름 구분"
+“breadth_analysis”: {
+“vold_signal”: “VOLD와 SPY 가격 간 다이버전스 여부, 강도, 지속 가능성 평가”,
+“interpretation”: “현물 수급 에너지의 질적 해석 – 진짜 매수/매도 vs 파생 헷지 유발 흐름 구분”
 }
 },
-"scenarios": [
+“scenarios”: [
 {
-"case": "상승 시나리오",
-"trigger": "구체적인 발생 조건",
-"target": "목표 스트라이크 또는 Call Wall 레벨",
-"probability": 60
+“case”: “상승 시나리오”,
+“trigger”: “구체적인 발생 조건”,
+“target”: “목표 스트라이크 또는 Call Wall 레벨”,
+“probability”: 60
 },
 {
-"case": "하락 시나리오",
-"trigger": "구체적인 발생 조건",
-"target": "주요 지지선 또는 Put Wall 레벨",
-"probability": 40
+“case”: “하락 시나리오”,
+“trigger”: “구체적인 발생 조건”,
+“target”: “주요 지지선 또는 Put Wall 레벨”,
+“probability”: 40
 }
 ],
-"expert_insight": "딜러 헷징 메커니즘 관점에서 현 국면의 핵심 리스크와 트레이딩 함의를 3~4문장으로 서술"
+“expert_insight”: “딜러 헷징 메커니즘 관점에서 현 국면의 핵심 리스크와 트레이딩 함의를 3~4문장으로 서술”
 }`.trim();
 
 const url = `${GEMINI_URL}?key=${GEMINI_KEY}`;
 const res = await fetch(url, {
-method:  "POST",
-headers: { "Content-Type": "application/json" },
+method:  “POST”,
+headers: { “Content-Type”: “application/json” },
 body: JSON.stringify({
 contents: [{ parts: [{ text: fullPrompt }] }],
 generationConfig: {
@@ -257,21 +257,21 @@ throw new Error(`Gemini ${res.status}: ${txt.slice(0, 200)}`);
 
 const json = await res.json();
 const text = json?.candidates?.[0]?.content?.parts?.[0]?.text;
-if (!text) throw new Error("Gemini: 응답 텍스트 없음");
+if (!text) throw new Error(“Gemini: 응답 텍스트 없음”);
 
 try {
 const cleaned = text
-.replace(/^`json\s*/i, "") .replace(/^`\s*/i, "")
-.replace(/```\s*$/, "")
+.replace(/^`json\s*/i, "") .replace(/^`\s*/i, “”)
+.replace(/```\s*$/, “”)
 .trim();
 return JSON.parse(cleaned);
 } catch {
 const raw = text.slice(0, 500);
 const chunkSize = 80;
 for (let i = 0; i < raw.length; i += chunkSize) {
-console.log("[Gemini RAW] chunk" + Math.floor(i/chunkSize) + ": " + raw.slice(i, i + chunkSize));
+console.log(”[Gemini RAW] chunk” + Math.floor(i/chunkSize) + “: “ + raw.slice(i, i + chunkSize));
 }
-throw new Error("Gemini: JSON 파싱 실패");
+throw new Error(“Gemini: JSON 파싱 실패”);
 }
 }
 
@@ -279,12 +279,12 @@ throw new Error("Gemini: JSON 파싱 실패");
 // CF Worker D1 write 헬퍼
 // ─────────────────────────────────────────────────────────────────
 async function d1Write(endpoint, body) {
-if (!CF_WORKER_URL) throw new Error("CF_WORKER_URL not set");
+if (!CF_WORKER_URL) throw new Error(“CF_WORKER_URL not set”);
 const res = await fetch(`${CF_WORKER_URL}${endpoint}`, {
-method:  "POST",
+method:  “POST”,
 headers: {
-"Content-Type":  "application/json",
-"x-cron-secret": CRON_SECRET,
+“Content-Type”:  “application/json”,
+“x-cron-secret”: CRON_SECRET,
 },
 body: JSON.stringify(body),
 signal: AbortSignal.timeout(60_000),
@@ -300,7 +300,7 @@ return res.json();
 // 스크리너 수집 엔진
 // ─────────────────────────────────────────────────────────────────
 
-// 동시 수집 제한 -- CBOE rate limit 방지
+// 동시 수집 제한 – CBOE rate limit 방지
 async function batchCollect(symbols, concurrency = 5) {
 const results = [];
 const errors  = [];
@@ -312,19 +312,19 @@ batch.map(s => collectSymbol(s.symbol, s.date))
 );
 
 for (let j = 0; j < settled.length; j++) {
-  const r = settled[j];
-  if (r.status === "fulfilled") {
-    results.push(r.value);
-  } else {
-    const sym = batch[j].symbol;
-    console.error(`[Screener] ${sym} 수집 실패:`, r.reason?.message);
-    errors.push({ symbol: sym, error: r.reason?.message });
-  }
+const r = settled[j];
+if (r.status === “fulfilled”) {
+results.push(r.value);
+} else {
+const sym = batch[j].symbol;
+console.error(`[Screener] ${sym} 수집 실패:`, r.reason?.message);
+errors.push({ symbol: sym, error: r.reason?.message });
+}
 }
 
-// CBOE 요청 간격 -- 배치 사이 200ms 대기
+// CBOE 요청 간격 – 배치 사이 200ms 대기
 if (i + concurrency < symbols.length) {
-  await sleep(200);
+await sleep(200);
 }
 
 }
@@ -332,10 +332,10 @@ if (i + concurrency < symbols.length) {
 return { results, errors };
 }
 
-// saveToD1 -- 레거시, 미사용 (Whale 필터 기준으로 교체)
+// saveToD1 – 레거시, 미사용 (Whale 필터 기준으로 교체)
 
 // ─────────────────────────────────────────────────────────────────
-// 수집 진행 상태 (메모리 내 -- Railway 재시작 시 초기화)
+// 수집 진행 상태 (메모리 내 – Railway 재시작 시 초기화)
 // ─────────────────────────────────────────────────────────────────
 let collectState = {
 running:   false,
@@ -348,10 +348,10 @@ lastRun:   null,   // { date, ok, count, errors, ts }
 // HTTP 서버
 // ─────────────────────────────────────────────────────────────────
 const corsHeaders = {
-"Access-Control-Allow-Origin":  "*",
-"Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-"Access-Control-Allow-Headers": "Content-Type, x-cron-secret",
-"Content-Type": "application/json",
+“Access-Control-Allow-Origin”:  “*”,
+“Access-Control-Allow-Methods”: “GET, POST, OPTIONS”,
+“Access-Control-Allow-Headers”: “Content-Type, x-cron-secret”,
+“Content-Type”: “application/json”,
 };
 
 function sendJSON(res, status, data) {
@@ -361,10 +361,10 @@ res.end(JSON.stringify(data));
 
 async function readBody(req) {
 return new Promise((resolve) => {
-let body = "";
-req.on("data", c => (body += c));
-req.on("end", () => {
-try { resolve(JSON.parse(body || "{}")); }
+let body = “”;
+req.on(“data”, c => (body += c));
+req.on(“end”, () => {
+try { resolve(JSON.parse(body || “{}”)); }
 catch { resolve({}); }
 });
 });
@@ -372,18 +372,18 @@ catch { resolve({}); }
 
 const server = http.createServer(async (req, res) => {
 // Health check
-if (req.method === "GET" && req.url === "/health") {
-return sendJSON(res, 200, { status: "ok", ts: new Date().toISOString() });
+if (req.method === “GET” && req.url === “/health”) {
+return sendJSON(res, 200, { status: “ok”, ts: new Date().toISOString() });
 }
 
 // CORS preflight
-if (req.method === "OPTIONS") {
+if (req.method === “OPTIONS”) {
 res.writeHead(204, corsHeaders);
 return res.end();
 }
 
 // ── GET /screener-status ─────────────────────────────────────────
-if (req.method === "GET" && req.url === "/screener-status") {
+if (req.method === “GET” && req.url === “/screener-status”) {
 const todayET = getTodayET();
 return sendJSON(res, 200, {
 today:    todayET,
@@ -394,41 +394,41 @@ last_run: collectState.lastRun,
 }
 
 // ── POST /analyze ────────────────────────────────────────────────
-if (req.method === "POST" && req.url === "/analyze") {
+if (req.method === “POST” && req.url === “/analyze”) {
 const body = await readBody(req);
 try {
-const ip = req.socket.remoteAddress ?? "unknown";
+const ip = req.socket.remoteAddress ?? “unknown”;
 if (!checkRateLimit(ip)) {
-return sendJSON(res, 429, { ok: false, error: "서버 요청 한도 초과 (IP 기반)" });
+return sendJSON(res, 429, { ok: false, error: “서버 요청 한도 초과 (IP 기반)” });
 }
 
-  const analysis = await callGeminiWithRetry(body);
+const analysis = await callGeminiWithRetry(body);
 
-  // AI 분석 결과 KV 캐싱
-  if (CF_WORKER_URL && CF_KV_SECRET) {
-    try {
-      await fetch(`${CF_WORKER_URL}/kv-write`, {
-        method:  "POST",
-        headers: { "Content-Type": "application/json", "x-kv-secret": CF_KV_SECRET },
-        body: JSON.stringify({
-          key:   "ai:analysis",
-          value: JSON.stringify({ analysis, ts: new Date().toISOString() }),
-        }),
-        signal: AbortSignal.timeout(5000),
-      });
-    } catch (kvErr) {
-      console.warn("[AI] KV 캐시 저장 실패:", kvErr.message);
-    }
-  }
+// AI 분석 결과 KV 캐싱
+if (CF_WORKER_URL && CF_KV_SECRET) {
+try {
+await fetch(`${CF_WORKER_URL}/kv-write`, {
+method:  “POST”,
+headers: { “Content-Type”: “application/json”, “x-kv-secret”: CF_KV_SECRET },
+body: JSON.stringify({
+key:   “ai:analysis”,
+value: JSON.stringify({ analysis, ts: new Date().toISOString() }),
+}),
+signal: AbortSignal.timeout(5000),
+});
+} catch (kvErr) {
+console.warn(”[AI] KV 캐시 저장 실패:”, kvErr.message);
+}
+}
 
-  return sendJSON(res, 200, { ok: true, analysis });
+return sendJSON(res, 200, { ok: true, analysis });
 } catch (err) {
-  console.error("[Gemini] 분석 실패:", err.message);
-  const is429 = err.message?.includes("429");
-  return sendJSON(res, is429 ? 429 : 500, {
-    ok: false,
-    error: is429 ? "Gemini API 할당량이 일시적으로 소진되었습니다." : err.message,
-  });
+console.error(”[Gemini] 분석 실패:”, err.message);
+const is429 = err.message?.includes(“429”);
+return sendJSON(res, is429 ? 429 : 500, {
+ok: false,
+error: is429 ? “Gemini API 할당량이 일시적으로 소진되었습니다.” : err.message,
+});
 }
 
 }
@@ -436,238 +436,238 @@ return sendJSON(res, 429, { ok: false, error: "서버 요청 한도 초과 (IP �
 // ── POST /webhook/tradingview ────────────────────────────────────
 // TradingView Alert → SPY / QQQ / IWM / VIX / VOLD 수신 → _cache 갱신 → KV 저장
 // payload 구조: { spy:{price, prev}, qqq:{price, prev}, iwm:{price, prev}, vix:{price, prev}, vold, time }
-if (req.method === "POST" && req.url === "/webhook/tradingview") {
-  const body = await readBody(req);
+if (req.method === “POST” && req.url === “/webhook/tradingview”) {
+const body = await readBody(req);
 
-  // 필수 필드 검증
-  const { spy, qqq, iwm, vix, vold, time } = body;
-  if (spy == null && vix == null) {
-    return sendJSON(res, 400, { ok: false, error: "spy 또는 vix 값이 필요합니다." });
-  }
+// 필수 필드 검증
+const { spy, qqq, iwm, vix, vold, time } = body;
+if (spy == null && vix == null) {
+return sendJSON(res, 400, { ok: false, error: “spy 또는 vix 값이 필요합니다.” });
+}
 
-  // 심볼별 가격 갱신 헬퍼
-  // raw: { price, prev } 객체 또는 숫자 (하위 호환)
-  function updatePrice(cacheKey, raw) {
-    if (raw == null) return;
-    const price     = parseFloat(raw?.price ?? raw);
-    const prevClose = parseFloat(raw?.prev)  || _cache[cacheKey]?.prevClose || null;
-    if (isNaN(price) || price <= 0) return;
-    const change    = prevClose != null ? Math.round((price - prevClose) * 100) / 100 : null;
-    const changePct = prevClose != null ? Math.round((price - prevClose) / prevClose * 10000) / 100 : null;
-    _cache[cacheKey] = { ..._cache[cacheKey], price, prevClose, change, changePct };
-    console.log(`[webhook] ${cacheKey.toUpperCase()}: $${price} prev=$${prevClose} (${changePct ?? '?'}%)`);
-  }
+// 심볼별 가격 갱신 헬퍼
+// raw: { price, prev } 객체 또는 숫자 (하위 호환)
+function updatePrice(cacheKey, raw) {
+if (raw == null) return;
+const price     = parseFloat(raw?.price ?? raw);
+const prevClose = parseFloat(raw?.prev)  || _cache[cacheKey]?.prevClose || null;
+if (isNaN(price) || price <= 0) return;
+const change    = prevClose != null ? Math.round((price - prevClose) * 100) / 100 : null;
+const changePct = prevClose != null ? Math.round((price - prevClose) / prevClose * 10000) / 100 : null;
+_cache[cacheKey] = { …_cache[cacheKey], price, prevClose, change, changePct };
+console.log(`[webhook] ${cacheKey.toUpperCase()}: $${price} prev=$${prevClose} (${changePct ?? '?'}%)`);
+}
 
-  updatePrice('spy', spy);
-  updatePrice('qqq', qqq);
-  updatePrice('iwm', iwm);
-  updatePrice('vix', vix);
+updatePrice(‘spy’, spy);
+updatePrice(‘qqq’, qqq);
+updatePrice(‘iwm’, iwm);
+updatePrice(‘vix’, vix);
 
-  // VOLD 갱신 (USI:VOLD — 정규장 09:30~16:00 ET에만 저장, 이후엔 기존값 유지)
-  if (vold != null) {
-    const v = parseFloat(vold);
-    if (!isNaN(v) && v !== 0 && isRegularSession()) {
-      _cache.vold = v;
-      console.log(`[webhook] VOLD: ${v}`);
-    }
-  }
+// VOLD 갱신 (USI:VOLD — 정규장 09:30~16:00 ET에만 저장, 이후엔 기존값 유지)
+if (vold != null) {
+const v = parseFloat(vold);
+if (!isNaN(v) && v !== 0 && isRegularSession()) {
+_cache.vold = v;
+console.log(`[webhook] VOLD: ${v}`);
+}
+}
 
-  _cache._lastWebhookTs = time ?? new Date().toISOString();
+_cache._lastWebhookTs = time ?? new Date().toISOString();
 
-  // KV 즉시 저장 (비동기, 응답 블로킹 안 함)
-  saveSnapshot().catch(e => console.error('[webhook] saveSnapshot 실패:', e.message));
+// KV 즉시 저장 (비동기, 응답 블로킹 안 함)
+saveSnapshot().catch(e => console.error(’[webhook] saveSnapshot 실패:’, e.message));
 
-  return sendJSON(res, 200, {
-    ok:        true,
-    spy:       { price: _cache.spy.price, changePct: _cache.spy.changePct },
-    qqq:       { price: _cache.qqq?.price, changePct: _cache.qqq?.changePct },
-    iwm:       { price: _cache.iwm?.price, changePct: _cache.iwm?.changePct },
-    vix:       { price: _cache.vix.price, changePct: _cache.vix.changePct },
-    vold:      _cache.vold,
-    ts:        _cache._lastWebhookTs,
-  });
+return sendJSON(res, 200, {
+ok:        true,
+spy:       { price: _cache.spy.price, changePct: _cache.spy.changePct },
+qqq:       { price: _cache.qqq?.price, changePct: _cache.qqq?.changePct },
+iwm:       { price: _cache.iwm?.price, changePct: _cache.iwm?.changePct },
+vix:       { price: _cache.vix.price, changePct: _cache.vix.changePct },
+vold:      _cache.vold,
+ts:        _cache._lastWebhookTs,
+});
 }
 
 // ── POST /calculate ──────────────────────────────────────────────
-if (req.method === "POST" && req.url === "/calculate") {
-const auth = req.headers["x-cron-secret"];
+if (req.method === “POST” && req.url === “/calculate”) {
+const auth = req.headers[“x-cron-secret”];
 if (CRON_SECRET && auth !== CRON_SECRET) {
 res.writeHead(401);
-return res.end("Unauthorized");
+return res.end(“Unauthorized”);
 }
 try {
 console.log(`[${new Date().toISOString()}] /calculate 시작`);
 const result = await calculateAndStore();
 return sendJSON(res, 200, { ok: true, date: result.date, updated_at: result.updated_at });
 } catch (err) {
-console.error("calculateAndStore error:", err);
+console.error(“calculateAndStore error:”, err);
 return sendJSON(res, 500, { ok: false, error: err.message });
 }
 }
 
 // ── GET /etf-holdings/:ticker ─────────────────────────────────────
 // CF Worker IP는 Yahoo에서 차단 → Railway에서 직접 호출
-const etfMatch = req.url.match(/^\/etf-holdings\/([A-Z0-9.-]+)$/i);
-if (req.method === "GET" && etfMatch) {
-const auth = req.headers["x-cron-secret"];
+const etfMatch = req.url.match(/^/etf-holdings/([A-Z0-9.-]+)$/i);
+if (req.method === “GET” && etfMatch) {
+const auth = req.headers[“x-cron-secret”];
 if (CRON_SECRET && auth !== CRON_SECRET) {
 res.writeHead(401);
-return res.end("Unauthorized");
+return res.end(“Unauthorized”);
 }
 
 const ticker = etfMatch[1].toUpperCase();
 try {
-  const holdings = await fetchETFHoldings(ticker);
-  return sendJSON(res, 200, { etf: ticker, holdings });
+const holdings = await fetchETFHoldings(ticker);
+return sendJSON(res, 200, { etf: ticker, holdings });
 } catch (err) {
-  console.error(`[ETF] ${ticker} 조회 실패:`, err.message);
-  return sendJSON(res, 502, { error: err.message });
+console.error(`[ETF] ${ticker} 조회 실패:`, err.message);
+return sendJSON(res, 502, { error: err.message });
 }
 
 }
 
 // ── POST /rescore ────────────────────────────────────────────────
 // 기존 options_dex + price_indicators 데이터로 점수만 재계산
-if (req.method === "POST" && req.url === "/rescore") {
-const auth = req.headers["x-cron-secret"];
+if (req.method === “POST” && req.url === “/rescore”) {
+const auth = req.headers[“x-cron-secret”];
 if (CRON_SECRET && auth !== CRON_SECRET) {
 res.writeHead(401);
-return res.end("Unauthorized");
+return res.end(“Unauthorized”);
 }
 
 try {
-  const dataRes = await fetch(`${CF_WORKER_URL}/api/rescore-data`, {
-    headers: { "x-cron-secret": CRON_SECRET },
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!dataRes.ok) throw new Error(`rescore-data fetch failed: ${dataRes.status}`);
-  const { dex_date, dex, pi, meta } = await dataRes.json();
+const dataRes = await fetch(`${CF_WORKER_URL}/api/rescore-data`, {
+headers: { “x-cron-secret”: CRON_SECRET },
+signal: AbortSignal.timeout(15000),
+});
+if (!dataRes.ok) throw new Error(`rescore-data fetch failed: ${dataRes.status}`);
+const { dex_date, dex, pi, meta } = await dataRes.json();
 
-  if (!dex?.length) {
-    return sendJSON(res, 200, { ok: false, error: "options_dex 데이터 없음" });
-  }
+if (!dex?.length) {
+return sendJSON(res, 200, { ok: false, error: “options_dex 데이터 없음” });
+}
 
-  // price_indicators → symbol별 Map
-  const piMap = new Map();
-  for (const r of pi) {
-    piMap.set(r.symbol, {
-      bb_position: r.bb_position ?? null,
-      vol_squeeze: r.vol_ratio   ?? null,
-      close:       r.close       ?? null,
-    });
-  }
+// price_indicators → symbol별 Map
+const piMap = new Map();
+for (const r of pi) {
+piMap.set(r.symbol, {
+bb_position: r.bb_position ?? null,
+vol_squeeze: r.vol_ratio   ?? null,
+close:       r.close       ?? null,
+});
+}
 
-  // symbols meta → symbol별 Map
-  const metaMap = new Map();
-  for (const r of meta) metaMap.set(r.symbol, r);
+// symbols meta → symbol별 Map
+const metaMap = new Map();
+for (const r of meta) metaMap.set(r.symbol, r);
 
-  // options_dex → symbol별 그룹핑
-  const symbolMap = new Map();
-  for (const row of dex) {
-    if (!symbolMap.has(row.symbol)) symbolMap.set(row.symbol, []);
-    symbolMap.get(row.symbol).push(row);
-  }
+// options_dex → symbol별 그룹핑
+const symbolMap = new Map();
+for (const row of dex) {
+if (!symbolMap.has(row.symbol)) symbolMap.set(row.symbol, []);
+symbolMap.get(row.symbol).push(row);
+}
 
-  // 심볼별 점수 재계산 (새 Whale 필터 기준)
-  let scoreCount = 0;
-  for (const [symbol, rows] of symbolMap) {
-    const priceData = piMap.get(symbol) ?? {};
-    try {
-      const result = await calcAndSaveScore(
-        CF_WORKER_URL, CRON_SECRET,
-        symbol, dex_date, rows,
-        {
-          close:      priceData.close       ?? null,
-          avgVolume:  priceData.avg_volume  ?? null,
-          bbPosition: priceData.bb_position ?? null,
-        }
-      );
-      if (result) scoreCount++;
-    } catch (e) {
-      console.warn(`[${symbol}] rescore 실패:`, e.message);
-    }
-  }
+// 심볼별 점수 재계산 (새 Whale 필터 기준)
+let scoreCount = 0;
+for (const [symbol, rows] of symbolMap) {
+const priceData = piMap.get(symbol) ?? {};
+try {
+const result = await calcAndSaveScore(
+CF_WORKER_URL, CRON_SECRET,
+symbol, dex_date, rows,
+{
+close:      priceData.close       ?? null,
+avgVolume:  priceData.avg_volume  ?? null,
+bbPosition: priceData.bb_position ?? null,
+}
+);
+if (result) scoreCount++;
+} catch (e) {
+console.warn(`[${symbol}] rescore 실패:`, e.message);
+}
+}
 
-  console.log(`[Rescore] 완료 -- ${scoreCount}개 종목 (기준일: ${dex_date})`);
-  return sendJSON(res, 200, {
-    ok:      true,
-    date:    dex_date,
-    count:   scoreCount,
-    message: `${scoreCount}개 종목 점수 재계산 완료`,
-  });
+console.log(`[Rescore] 완료 -- ${scoreCount}개 종목 (기준일: ${dex_date})`);
+return sendJSON(res, 200, {
+ok:      true,
+date:    dex_date,
+count:   scoreCount,
+message: `${scoreCount}개 종목 점수 재계산 완료`,
+});
 
 } catch (err) {
-  console.error("[Rescore] 실패:", err.message);
-  return sendJSON(res, 500, { ok: false, error: err.message });
+console.error(”[Rescore] 실패:”, err.message);
+return sendJSON(res, 500, { ok: false, error: err.message });
 }
 
 }
 
 // ── POST /collect-screener ───────────────────────────────────────
 // body: { symbols: [{symbol, name, type, sector, sector_etf}], force?: boolean }
-if (req.method === "POST" && req.url === "/collect-screener") {
-const auth = req.headers["x-cron-secret"];
+if (req.method === “POST” && req.url === “/collect-screener”) {
+const auth = req.headers[“x-cron-secret”];
 if (CRON_SECRET && auth !== CRON_SECRET) {
 res.writeHead(401);
-return res.end("Unauthorized");
+return res.end(“Unauthorized”);
 }
 
 if (collectState.running) {
-  return sendJSON(res, 409, {
-    ok: false,
-    error: "수집이 이미 진행 중입니다.",
-    progress: collectState.progress,
-  });
+return sendJSON(res, 409, {
+ok: false,
+error: “수집이 이미 진행 중입니다.”,
+progress: collectState.progress,
+});
 }
 
 const body = await readBody(req);
 const { symbols, force = false } = body;
 
 if (!Array.isArray(symbols) || !symbols.length) {
-  return sendJSON(res, 400, { ok: false, error: "symbols 배열이 필요합니다." });
+return sendJSON(res, 400, { ok: false, error: “symbols 배열이 필요합니다.” });
 }
 
 const date = getTodayET();
 
 // force=false: 이미 수집된 날짜면 스킵 안내 후 수집 실행
-// (이미 오늘 수집됐는지는 CF Worker의 D1 쿼리로 확인 -- 여기선 lastRun 메모리로 판단)
+// (이미 오늘 수집됐는지는 CF Worker의 D1 쿼리로 확인 – 여기선 lastRun 메모리로 판단)
 if (!force && collectState.lastRun?.date === date && collectState.lastRun?.ok) {
-  return sendJSON(res, 200, {
-    ok:       false,
-    skipped:  true,
-    date,
-    message:  `오늘(${date}) 이미 수집 완료됐습니다. force=true로 강제 수집 가능합니다.`,
-    last_run: collectState.lastRun,
-  });
+return sendJSON(res, 200, {
+ok:       false,
+skipped:  true,
+date,
+message:  `오늘(${date}) 이미 수집 완료됐습니다. force=true로 강제 수집 가능합니다.`,
+last_run: collectState.lastRun,
+});
 }
 
 // 비동기 수집 시작 (응답 즉시 반환, 백그라운드 실행)
 collectState = {
-  running:   true,
-  startedAt: new Date().toISOString(),
-  progress:  { done: 0, total: symbols.length, errors: 0 },
-  lastRun:   collectState.lastRun,
+running:   true,
+startedAt: new Date().toISOString(),
+progress:  { done: 0, total: symbols.length, errors: 0 },
+lastRun:   collectState.lastRun,
 };
 
 // 응답 먼저 반환
 sendJSON(res, 202, {
-  ok:         true,
-  accepted:   true,
-  date,
-  total:      symbols.length,
-  message:    `${symbols.length}개 종목 수집 시작. /screener-status 로 진행상황 확인.`,
-  started_at: collectState.startedAt,
+ok:         true,
+accepted:   true,
+date,
+total:      symbols.length,
+message:    `${symbols.length}개 종목 수집 시작. /screener-status 로 진행상황 확인.`,
+started_at: collectState.startedAt,
 });
 
 // 백그라운드 수집 실행
-runCollect(symbols, date).catch(e => console.error('[collect-screener] error:', e.message));
+runCollect(symbols, date).catch(e => console.error(’[collect-screener] error:’, e.message));
 
 return;
 
 }
 
 res.writeHead(404);
-res.end("Not found");
+res.end(“Not found”);
 });
 
 // ─────────────────────────────────────────────────────────────────
@@ -678,7 +678,7 @@ console.log(`DexBoard Railway service listening on port ${PORT}`);
 }); */
 // ============================================
 // ETF 구성종목 조회 (Yahoo Finance)
-// Railway 서버에서 직접 호출 -- CF Worker IP 우회
+// Railway 서버에서 직접 호출 – CF Worker IP 우회
 // ============================================
 async function fetchETFHoldings(ticker) {
 // ── 시도 1: Yahoo Finance v1 quoteSummary
@@ -686,24 +686,24 @@ try {
 const url = `https://query1.finance.yahoo.com/v1/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=topHoldings`;
 const res = await fetch(url, {
 headers: {
-'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-'Accept': 'application/json',
-'Accept-Language': 'en-US,en;q=0.9',
+‘User-Agent’: ‘Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36’,
+‘Accept’: ‘application/json’,
+‘Accept-Language’: ‘en-US,en;q=0.9’,
 },
 signal: AbortSignal.timeout(10000),
 });
 
 if (res.ok) {
-  const data     = await res.json();
-  const holdings = data?.quoteSummary?.result?.[0]?.topHoldings?.holdings ?? [];
-  if (holdings.length > 0) {
-    console.log(`[ETF] ${ticker}: Yahoo v1 성공 (${holdings.length}개)`);
-    return holdings.map(h => ({
-      symbol: h.symbol,
-      name:   h.holdingName,
-      pct:    h.holdingPercent ? +(h.holdingPercent * 100).toFixed(2) : null,
-    }));
-  }
+const data     = await res.json();
+const holdings = data?.quoteSummary?.result?.[0]?.topHoldings?.holdings ?? [];
+if (holdings.length > 0) {
+console.log(`[ETF] ${ticker}: Yahoo v1 성공 (${holdings.length}개)`);
+return holdings.map(h => ({
+symbol: h.symbol,
+name:   h.holdingName,
+pct:    h.holdingPercent ? +(h.holdingPercent * 100).toFixed(2) : null,
+}));
+}
 }
 console.warn(`[ETF] ${ticker}: Yahoo v1 실패 (${res.status}), v10 시도`);
 
@@ -716,23 +716,23 @@ try {
 const url = `https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=topHoldings`;
 const res = await fetch(url, {
 headers: {
-'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-'Accept': 'application/json',
+‘User-Agent’: ‘Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36’,
+‘Accept’: ‘application/json’,
 },
 signal: AbortSignal.timeout(10000),
 });
 
 if (res.ok) {
-  const data     = await res.json();
-  const holdings = data?.quoteSummary?.result?.[0]?.topHoldings?.holdings ?? [];
-  if (holdings.length > 0) {
-    console.log(`[ETF] ${ticker}: Yahoo v10 성공 (${holdings.length}개)`);
-    return holdings.map(h => ({
-      symbol: h.symbol,
-      name:   h.holdingName,
-      pct:    h.holdingPercent ? +(h.holdingPercent * 100).toFixed(2) : null,
-    }));
-  }
+const data     = await res.json();
+const holdings = data?.quoteSummary?.result?.[0]?.topHoldings?.holdings ?? [];
+if (holdings.length > 0) {
+console.log(`[ETF] ${ticker}: Yahoo v10 성공 (${holdings.length}개)`);
+return holdings.map(h => ({
+symbol: h.symbol,
+name:   h.holdingName,
+pct:    h.holdingPercent ? +(h.holdingPercent * 100).toFixed(2) : null,
+}));
+}
 }
 console.warn(`[ETF] ${ticker}: Yahoo v10 실패 (${res.status})`);
 
@@ -743,7 +743,7 @@ console.warn(`[ETF] ${ticker}: Yahoo v10 오류 (${e.message})`);
 throw new Error(`${ticker} ETF 구성종목을 가져올 수 없습니다 (Yahoo Finance 차단 또는 데이터 없음)`);
 }
 
-server.listen(PORT, '0.0.0.0', () => {
+server.listen(PORT, ‘0.0.0.0’, () => {
 console.log(`DexBoard Railway service listening on port ${PORT}`);
 startScheduler();
 });
@@ -752,13 +752,13 @@ startScheduler();
 // 시장 시간 유틸 (ET 기준)
 // ─────────────────────────────────────────────────────────────────
 function getETHour() {
-const etStr = new Date().toLocaleString("en-US", { timeZone: "America/New_York" });
+const etStr = new Date().toLocaleString(“en-US”, { timeZone: “America/New_York” });
 return new Date(etStr).getHours();
 }
 
 function getETDay() {
-const etStr = new Date().toLocaleString("en-US", { timeZone: "America/New_York" });
-return new Date(etStr).getDay(); // 0=일, 1=월 ... 5=금, 6=토
+const etStr = new Date().toLocaleString(“en-US”, { timeZone: “America/New_York” });
+return new Date(etStr).getDay(); // 0=일, 1=월 … 5=금, 6=토
 }
 
 function isWeekday() {
@@ -767,28 +767,28 @@ return day >= 1 && day <= 5;
 }
 
 function isRegularSession() {
-return getMarketSession() === 'REGULAR';
+return getMarketSession() === ‘REGULAR’;
 }
 
 function getMarketSession() {
-if (!isWeekday()) return 'CLOSED';
+if (!isWeekday()) return ‘CLOSED’;
 const h = getETHour();
-if (h >= 4  && h < 9)  return 'PRE';      // 04:00~08:59
-if (h === 9)           return 'PRE';      // 09:00~09:29 (분 체크 생략)
-if (h >= 9  && h < 16) return 'REGULAR';  // 09:30~15:59
-if (h >= 16 && h < 20) return 'AFTER';    // 16:00~19:59
-if (h >= 20 && h < 24) return 'AFTER';    // 20:00~23:59
-return 'CLOSED';
+if (h >= 4  && h < 9)  return ‘PRE’;      // 04:00~08:59
+if (h === 9)           return ‘PRE’;      // 09:00~09:29 (분 체크 생략)
+if (h >= 9  && h < 16) return ‘REGULAR’;  // 09:30~15:59
+if (h >= 16 && h < 20) return ‘AFTER’;    // 16:00~19:59
+if (h >= 20 && h < 24) return ‘AFTER’;    // 20:00~23:59
+return ‘CLOSED’;
 }
 
 // ─────────────────────────────────────────────────────────────────
 // Yahoo Finance → CF KV 스냅샷 저장
 // ─────────────────────────────────────────────────────────────────
-const YAHOO_BASE = process.env.YAHOO_BASE || 'https://query1.finance.yahoo.com/v8/finance/chart';
+const YAHOO_BASE = process.env.YAHOO_BASE || ‘https://query1.finance.yahoo.com/v8/finance/chart’;
 
 async function fetchYahoo(symbol) {
 const url = `${YAHOO_BASE}/${symbol}?interval=1m&range=1d`;
-const res = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+const res = await fetch(url, { headers: { ‘User-Agent’: ‘Mozilla/5.0’ } });
 if (!res.ok) throw new Error(`Yahoo ${symbol}: ${res.status}`);
 const data = await res.json();
 const result = data?.chart?.result?.[0];
@@ -798,10 +798,10 @@ const quotes     = result.indicators?.quote?.[0]?.close ?? [];
 const price      = quotes.filter(Boolean).pop();
 if (!price) throw new Error(`Yahoo ${symbol}: no close data`);
 
-// 전날 종가(prevClose) -- interval=1d&range=2d로 별도 조회
+// 전날 종가(prevClose) – interval=1d&range=2d로 별도 조회
 // meta.chartPreviousClose가 2일 전 값을 반환하는 오류가 있어 조회 방식 변경
 let prevClose = null;
-const dayRes = await fetch(`${YAHOO_BASE}/${symbol}?interval=1d&range=2d`, { headers: { 'User-Agent': 'Mozilla/5.0' } });
+const dayRes = await fetch(`${YAHOO_BASE}/${symbol}?interval=1d&range=2d`, { headers: { ‘User-Agent’: ‘Mozilla/5.0’ } });
 if (dayRes.ok) {
 const dayData  = await dayRes.json();
 const dayClose = dayData?.chart?.result?.[0]?.indicators?.quote?.[0]?.close ?? [];
@@ -819,7 +819,7 @@ return { price: Math.round(price * 100) / 100, change, changePct, prevClose, ser
 
 // ─────────────────────────────────────────────────────────────────
 // 스냅샷 메모리 캐시 (정규장 30초 루프용)
-// SPY: Twelve Data 30초, VIX: Yahoo 1분 -- 각자 독립 갱신, KV는 30초마다 합산 저장
+// SPY: Twelve Data 30초, VIX: Yahoo 1분 – 각자 독립 갱신, KV는 30초마다 합산 저장
 // ─────────────────────────────────────────────────────────────────
 const _cache = {
 spy:  { price: null, change: null, changePct: null, prevClose: null },
@@ -830,13 +830,13 @@ vold: null,           // TradingView 웹훅 수신값 (USI:VOLD)
 _lastWebhookTs: null, // 마지막 웹훅 수신 시각 (ISO)
 };
 
-// SPY 현재가 -- Twelve Data /quote (정규장 30초)
+// SPY 현재가 – Twelve Data /quote (정규장 30초)
 async function fetchSpyTwelve() {
 try {
 if (!TWELVE_KEY_SPY) return;
 const url = `https://api.twelvedata.com/quote?symbol=SPY&apikey=${TWELVE_KEY_SPY}`;
 const res = await fetch(url, {
-headers: { 'User-Agent': 'Mozilla/5.0' },
+headers: { ‘User-Agent’: ‘Mozilla/5.0’ },
 signal: AbortSignal.timeout(6000),
 });
 if (!res.ok) return;
@@ -846,17 +846,17 @@ if (isNaN(price) || price <= 0) return;
 const prevClose = parseFloat(td.previous_close);
 const change    = !isNaN(prevClose) ? Math.round((price - prevClose) * 100) / 100 : null;
 const changePct = !isNaN(prevClose) ? Math.round((price - prevClose) / prevClose * 10000) / 100 : null;
-_cache.spy = { ..._cache.spy, price, change, changePct, prevClose };
+_cache.spy = { …_cache.spy, price, change, changePct, prevClose };
 console.log(`[spy] Twelve Data: $${price} (${changePct}%)`);
 } catch (e) {
-console.warn('[spy] Twelve Data 실패 (직전값 유지):', e.message);
+console.warn(’[spy] Twelve Data 실패 (직전값 유지):’, e.message);
 }
 }
 
-// VIX 현재가 -- Yahoo Finance (1분)
+// VIX 현재가 – Yahoo Finance (1분)
 async function fetchVixYahoo() {
 try {
-const data = await fetchYahoo('%5EVIX');
+const data = await fetchYahoo(’%5EVIX’);
 _cache.vix = {
 price:     data.price,
 change:    data.change,
@@ -866,11 +866,11 @@ series:    data.series ?? [],
 };
 console.log(`[vix] Yahoo: ${data.price} (${data.changePct}%)`);
 } catch (e) {
-console.warn('[vix] Yahoo 실패 (직전값 유지):', e.message);
+console.warn(’[vix] Yahoo 실패 (직전값 유지):’, e.message);
 }
 }
 
-// KV 저장 -- _cache 합산 → snapshot:1min (현재값) + ts:market (링버퍼)
+// KV 저장 – _cache 합산 → snapshot:1min (현재값) + ts:market (링버퍼)
 async function saveSnapshot() {
 if (!_cache.spy.price && !_cache.vix.price) return;
 try {
@@ -886,60 +886,60 @@ ts,
 
 // 1. 현재값 덮어쓰기 (기존)
 await fetch(`${CF_WORKER_URL}/kv-write`, {
-method:  'POST',
-headers: { 'Content-Type': 'application/json', 'x-kv-secret': CF_KV_SECRET },
-body:    JSON.stringify({ key: 'snapshot:1min', value: JSON.stringify(snapshot) }),
+method:  ‘POST’,
+headers: { ‘Content-Type’: ‘application/json’, ‘x-kv-secret’: CF_KV_SECRET },
+body:    JSON.stringify({ key: ‘snapshot:1min’, value: JSON.stringify(snapshot) }),
 signal:  AbortSignal.timeout(5000),
 });
 
 // 2. 링버퍼 누적 (당일 시계열 최대 780개)
 try {
-  const bufRes = await fetch(`${CF_WORKER_URL}/kv-read?key=ts%3Amarket`, {
-    headers: { 'x-kv-secret': CF_KV_SECRET },
-    signal: AbortSignal.timeout(4000),
-  });
-  let buf = [];
-  if (bufRes.ok) {
-    const bufData = await bufRes.json();
-    if (bufData.value) buf = JSON.parse(bufData.value);
-  }
-  buf.push({
-    ts,
-    spy:  _cache.spy.price,
-    qqq:  _cache.qqq?.price ?? null,
-    iwm:  _cache.iwm?.price ?? null,
-    vix:  _cache.vix.price,
-    vold: _cache.vold ?? null,
-  });
-  if (buf.length > 780) buf = buf.slice(buf.length - 780);
-  await fetch(`${CF_WORKER_URL}/kv-write`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json', 'x-kv-secret': CF_KV_SECRET },
-    body:    JSON.stringify({ key: 'ts:market', value: JSON.stringify(buf) }),
-    signal:  AbortSignal.timeout(5000),
-  });
+const bufRes = await fetch(`${CF_WORKER_URL}/kv-read?key=ts%3Amarket`, {
+headers: { ‘x-kv-secret’: CF_KV_SECRET },
+signal: AbortSignal.timeout(4000),
+});
+let buf = [];
+if (bufRes.ok) {
+const bufData = await bufRes.json();
+if (bufData.value) buf = JSON.parse(bufData.value);
+}
+buf.push({
+ts,
+spy:  _cache.spy.price,
+qqq:  _cache.qqq?.price ?? null,
+iwm:  _cache.iwm?.price ?? null,
+vix:  _cache.vix.price,
+vold: _cache.vold ?? null,
+});
+if (buf.length > 780) buf = buf.slice(buf.length - 780);
+await fetch(`${CF_WORKER_URL}/kv-write`, {
+method:  ‘POST’,
+headers: { ‘Content-Type’: ‘application/json’, ‘x-kv-secret’: CF_KV_SECRET },
+body:    JSON.stringify({ key: ‘ts:market’, value: JSON.stringify(buf) }),
+signal:  AbortSignal.timeout(5000),
+});
 } catch (bufErr) {
-  console.warn('[snapshot] 링버퍼 저장 실패 (현재값은 저장됨):', bufErr.message);
+console.warn(’[snapshot] 링버퍼 저장 실패 (현재값은 저장됨):’, bufErr.message);
 }
 
 console.log(`[snapshot] saved SPY=${_cache.spy.price} VIX=${_cache.vix.price} VOLD=${_cache.vold}`);
 } catch (e) {
-console.error('[snapshot] KV 저장 실패:', e.message);
+console.error(’[snapshot] KV 저장 실패:’, e.message);
 }
 }
 
-// PRE/AFTER -- Yahoo SPY+VIX 묶음 (기존 방식 유지)
+// PRE/AFTER – Yahoo SPY+VIX 묶음 (기존 방식 유지)
 async function fetchSnapshot() {
 try {
 const [spy, vix] = await Promise.all([
-fetchYahoo('SPY'),
-fetchYahoo('%5EVIX'),
+fetchYahoo(‘SPY’),
+fetchYahoo(’%5EVIX’),
 ]);
 _cache.spy = { price: spy.price, change: spy.change, changePct: spy.changePct, prevClose: spy.prevClose };
 _cache.vix = { price: vix.price, change: vix.change, changePct: vix.changePct, prevClose: vix.prevClose, series: vix.series ?? [] };
 await saveSnapshot();
 } catch (e) {
-console.error('[snapshot] error:', e.message);
+console.error(’[snapshot] error:’, e.message);
 }
 }
 
@@ -951,14 +951,14 @@ if (!res.ok) return;
 const snap = await res.json();
 if (!snap?.spy) return;
 await fetch(`${CF_WORKER_URL}/kv-write`, {
-method: 'POST',
-headers: { 'Content-Type': 'application/json', 'x-kv-secret': CF_KV_SECRET },
-body: JSON.stringify({ key: 'options:spy:open', value: JSON.stringify({ ...snap, saved_at: new Date().toISOString() }) }),
+method: ‘POST’,
+headers: { ‘Content-Type’: ‘application/json’, ‘x-kv-secret’: CF_KV_SECRET },
+body: JSON.stringify({ key: ‘options:spy:open’, value: JSON.stringify({ …snap, saved_at: new Date().toISOString() }) }),
 signal: AbortSignal.timeout(5000),
 });
-console.log('[snapshotOpen] saved opening snapshot');
+console.log(’[snapshotOpen] saved opening snapshot’);
 } catch (e) {
-console.error('[snapshotOpen] error:', e.message);
+console.error(’[snapshotOpen] error:’, e.message);
 }
 }
 
@@ -971,7 +971,7 @@ try {
 let bbCount = 0;
 try {
 const bbRes = await fetch(`${CF_WORKER_URL}/api/bb-map-symbols`, {
-headers: { 'x-cron-secret': CRON_SECRET },
+headers: { ‘x-cron-secret’: CRON_SECRET },
 signal: AbortSignal.timeout(10000),
 });
 if (bbRes.ok) {
@@ -979,137 +979,140 @@ const bbData = await bbRes.json();
 const optionSymSet = new Set(symbols.map(s => s.symbol));
 const bbOnly = (bbData.symbols ?? []).filter(s => !optionSymSet.has(s.symbol));
 
-    console.log(`[Screener] BB 맵 전용 종목 ${bbOnly.length}개 가격 수집`);
-    collectState.progress = { stage: 'bb_map', done: 0, total: bbOnly.length, errors: 0 };
-    for (const { symbol: sym } of bbOnly) {
-      await collectPriceIndicators(sym, CF_WORKER_URL, CRON_SECRET);
-      bbCount++;
-      collectState.progress = { stage: 'bb_map', done: bbCount, total: bbOnly.length, errors: 0 };
-      await sleep(200);
-    }
-  }
+```
+console.log(`[Screener] BB 맵 전용 종목 ${bbOnly.length}개 가격 수집`);
+collectState.progress = { stage: 'bb_map', done: 0, total: bbOnly.length, errors: 0 };
+for (const { symbol: sym } of bbOnly) {
+  await collectPriceIndicators(sym, CF_WORKER_URL, CRON_SECRET);
+  bbCount++;
+  collectState.progress = { stage: 'bb_map', done: bbCount, total: bbOnly.length, errors: 0 };
+  await sleep(200);
+}
+```
+
+}
 } catch (bbErr) {
-  console.warn('[Screener] BB 맵 수집 실패 (계속 진행):', bbErr.message);
+console.warn(’[Screener] BB 맵 수집 실패 (계속 진행):’, bbErr.message);
 }
 
 // ── 2. 옵션 수집 종목 처리
-const symbolsWithDate = symbols.map(s => ({ ...s, date }));
+const symbolsWithDate = symbols.map(s => ({ …s, date }));
 const BATCH = 5;
 const allResults = [];
 const allErrors  = [];
 
 for (let i = 0; i < symbolsWithDate.length; i += BATCH) {
-  const batch = symbolsWithDate.slice(i, i + BATCH);
-  const settled = await Promise.allSettled(
-    batch.map(s => collectSymbol(s.symbol, date))
-  );
+const batch = symbolsWithDate.slice(i, i + BATCH);
+const settled = await Promise.allSettled(
+batch.map(s => collectSymbol(s.symbol, date))
+);
 
-  for (let j = 0; j < settled.length; j++) {
-    const r = settled[j];
-    if (r.status === "fulfilled") {
-      allResults.push({ ...r.value, meta: batch[j] });
-    } else {
-      allErrors.push({ symbol: batch[j].symbol, error: r.reason?.message });
-    }
-  }
+for (let j = 0; j < settled.length; j++) {
+const r = settled[j];
+if (r.status === “fulfilled”) {
+allResults.push({ …r.value, meta: batch[j] });
+} else {
+allErrors.push({ symbol: batch[j].symbol, error: r.reason?.message });
+}
+}
 
-  collectState.progress = {
-    done:   Math.min(i + BATCH, symbolsWithDate.length),
-    total:  symbolsWithDate.length,
-    errors: allErrors.length,
-  };
+collectState.progress = {
+done:   Math.min(i + BATCH, symbolsWithDate.length),
+total:  symbolsWithDate.length,
+errors: allErrors.length,
+};
 
-  if (i + BATCH < symbolsWithDate.length) await sleep(300);
+if (i + BATCH < symbolsWithDate.length) await sleep(300);
 }
 
 // ── 3. 옵션 수집 종목 price_indicators 수집 (Twelve Data avg_volume 포함)
 console.log(`[Screener] 옵션 종목 ${symbols.length}개 가격 수집`);
 const priceMap = new Map();
 for (const { symbol: sym } of symbols) {
-  const pi = await collectPriceIndicatorsNew(sym, CF_WORKER_URL, CRON_SECRET, TWELVE_KEY);
-  if (pi) {
-    priceMap.set(sym, {
-      close:       pi.close       ?? null,
-      bbPosition:  pi.bbPosition  ?? null,
-      avgVolume:   pi.avgVolume   ?? null,
-    });
-  }
-  await sleep(200);
+const pi = await collectPriceIndicatorsNew(sym, CF_WORKER_URL, CRON_SECRET, TWELVE_KEY);
+if (pi) {
+priceMap.set(sym, {
+close:       pi.close       ?? null,
+bbPosition:  pi.bbPosition  ?? null,
+avgVolume:   pi.avgVolume   ?? null,
+});
+}
+await sleep(200);
 }
 
 // ── 4. D1 저장 (새 Whale 필터 기준)
 if (allResults.length) {
-  console.log(`[Screener] ${allResults.length}개 종목 수집 완료 → D1 저장 시작`);
+console.log(`[Screener] ${allResults.length}개 종목 수집 완료 → D1 저장 시작`);
 
-  const dexRows    = [];
-  const strikeRows = [];
+const dexRows    = [];
+const strikeRows = [];
 
-  for (const { symbol, rows, strikeRows: sRows, meta } of allResults) {
-    for (const r of rows) {
-      dexRows.push({ date, symbol, ...r });
-    }
-    if (sRows?.length) {
-      for (const s of sRows) {
-        strikeRows.push(s);
-      }
-    }
-  }
+for (const { symbol, rows, strikeRows: sRows, meta } of allResults) {
+for (const r of rows) {
+dexRows.push({ date, symbol, …r });
+}
+if (sRows?.length) {
+for (const s of sRows) {
+strikeRows.push(s);
+}
+}
+}
 
-  // options_dex 저장
-  await d1Write("/d1/options-dex", { rows: dexRows });
+// options_dex 저장
+await d1Write(”/d1/options-dex”, { rows: dexRows });
 
-  // options_strikes 저장 (Smile 곡선용) — D1 batch 방식으로 전체 한 번에
-  if (strikeRows.length) {
-    try {
-      await d1Write("/d1/options-strikes", { rows: strikeRows });
-      console.log(`[Screener] options_strikes 저장: ${strikeRows.length}행`);
-    } catch (e) {
-      console.warn('[Screener] options_strikes 저장 실패 (계속 진행):', e.message);
-    }
-  }
+// options_strikes 저장 (Smile 곡선용) — D1 batch 방식으로 전체 한 번에
+if (strikeRows.length) {
+try {
+await d1Write(”/d1/options-strikes”, { rows: strikeRows });
+console.log(`[Screener] options_strikes 저장: ${strikeRows.length}행`);
+} catch (e) {
+console.warn(’[Screener] options_strikes 저장 실패 (계속 진행):’, e.message);
+}
+}
 
-  // 새 기준으로 점수 계산 + screener_scores 저장
-  let scoreCount = 0;
-  for (const { symbol, rows: expiryRows, meta } of allResults) {
-    const priceData = priceMap.get(symbol) ?? {};
-    try {
-      const result = await calcAndSaveScore(
-        CF_WORKER_URL, CRON_SECRET,
-        symbol, date, expiryRows,
-        {
-          close:       priceData.close      ?? null,
-          avgVolume:   priceData.avgVolume  ?? null,
-          bbPosition:  priceData.bbPosition ?? null,
-        }
-      );
-      if (result) scoreCount++;
-    } catch (e) {
-      console.warn(`[${symbol}] 점수 계산 실패:`, e.message);
-    }
-  }
+// 새 기준으로 점수 계산 + screener_scores 저장
+let scoreCount = 0;
+for (const { symbol, rows: expiryRows, meta } of allResults) {
+const priceData = priceMap.get(symbol) ?? {};
+try {
+const result = await calcAndSaveScore(
+CF_WORKER_URL, CRON_SECRET,
+symbol, date, expiryRows,
+{
+close:       priceData.close      ?? null,
+avgVolume:   priceData.avgVolume  ?? null,
+bbPosition:  priceData.bbPosition ?? null,
+}
+);
+if (result) scoreCount++;
+} catch (e) {
+console.warn(`[${symbol}] 점수 계산 실패:`, e.message);
+}
+}
 
-  console.log(`[Screener] D1 저장 완료 -- DEX: ${dexRows.length}행, Strikes: ${strikeRows.length}행, Scores: ${scoreCount}행`);
+console.log(`[Screener] D1 저장 완료 -- DEX: ${dexRows.length}행, Strikes: ${strikeRows.length}행, Scores: ${scoreCount}행`);
 }
 
 collectState = {
-  running:   false,
-  startedAt: null,
-  progress:  null,
-  lastRun: {
-    date,
-    ok:         true,
-    count:      allResults.length,
-    bb_count:   bbCount,
-    errors:     allErrors.length,
-    error_list: allErrors.slice(0, 10),
-    ts:         new Date().toISOString(),
-  },
+running:   false,
+startedAt: null,
+progress:  null,
+lastRun: {
+date,
+ok:         true,
+count:      allResults.length,
+bb_count:   bbCount,
+errors:     allErrors.length,
+error_list: allErrors.slice(0, 10),
+ts:         new Date().toISOString(),
+},
 };
 
 console.log(`[Screener] 완료 -- 성공: ${allResults.length}, 실패: ${allErrors.length}`);
 
 } catch (err) {
-console.error("[Screener] 수집 중 치명적 오류:", err.message);
+console.error(”[Screener] 수집 중 치명적 오류:”, err.message);
 collectState = {
 running:   false,
 startedAt: null,
@@ -1146,36 +1149,48 @@ if (snapshotTimer) clearInterval(snapshotTimer);
 
 const session = getMarketSession();
 
-if (session === 'CLOSED') {
-  console.log('[scheduler] CLOSED -- snapshot 중지');
-  snapshotTimer = null;
-  return;
+if (session === ‘CLOSED’) {
+console.log(’[scheduler] CLOSED – snapshot 중지’);
+snapshotTimer = null;
+return;
 }
 
-if (session === 'REGULAR') {
-  // ── REGULAR: TradingView 웹훅 수신 대기 (1분봉 Alert)
-  // SPY / VIX / VOLD 는 /webhook/tradingview 로 수신됨
-  // 웹훅이 끊겼을 때를 대비해 5분 무수신 시 Yahoo fallback 실행
-  console.log('[scheduler] REGULAR -- TradingView 웹훅 대기 중 (fallback: Yahoo 5분)');
+if (session === ‘REGULAR’) {
+// ── REGULAR: TradingView 웹훅 수신 대기 (1분봉 Alert)
+// SPY / VIX / VOLD 는 /webhook/tradingview 로 수신됨
+// 웹훅이 끊겼을 때를 대비해 5분 무수신 시 Yahoo fallback 실행
+console.log(’[scheduler] REGULAR – TradingView 웹훅 대기 중 (fallback: Yahoo 5분)’);
 
-  // 즉시 1회 Yahoo fallback (서버 재시작 직후 _cache가 비어 있을 수 있음)
-  fetchSnapshot();
+// 즉시 1회 Yahoo fallback (서버 재시작 직후 _cache가 비어 있을 수 있음)
+fetchSnapshot();
 
-  // 5분마다 웹훅 수신 여부 확인 → 미수신 시 Yahoo fallback
-  snapshotTimer = setInterval(async () => {
-    const lastTs  = _cache._lastWebhookTs ? new Date(_cache._lastWebhookTs).getTime() : 0;
-    const staleSec = (Date.now() - lastTs) / 1000;
-    if (staleSec > 5 * 60) {
-      console.warn(`[scheduler] 웹훅 ${Math.round(staleSec / 60)}분 미수신 → Yahoo fallback`);
-      await fetchSnapshot();
-    }
-  }, 5 * 60_000);
+// 5분마다 웹훅 수신 여부 확인 → 미수신 시 Yahoo fallback
+snapshotTimer = setInterval(async () => {
+const lastTs  = _cache._lastWebhookTs ? new Date(_cache._lastWebhookTs).getTime() : 0;
+const staleSec = (Date.now() - lastTs) / 1000;
+if (staleSec > 5 * 60) {
+console.warn(`[scheduler] 웹훅 ${Math.round(staleSec / 60)}분 미수신 → Yahoo fallback`);
+await fetchSnapshot();
+}
+}, 5 * 60_000);
 
 } else {
-  // ── PRE / AFTER: Yahoo SPY+VIX 묶음 3분
-  console.log(`[scheduler] ${session} -- snapshot 3분 주기`);
-  fetchSnapshot(); // 즉시 1회
-  snapshotTimer = setInterval(fetchSnapshot, 3 * 60_000);
+// ── PRE / AFTER: TradingView 웹훅 수신 대기 (REGULAR와 동일)
+// 웹훅이 끊겼을 때를 대비해 5분 무수신 시 Yahoo fallback
+console.log(`[scheduler] ${session} -- TradingView 웹훅 대기 중 (fallback: Yahoo 5분)`);
+
+// 즉시 1회 Yahoo fallback (서버 재시작 직후 _cache가 비어 있을 수 있음)
+fetchSnapshot();
+
+// 5분마다 웹훅 수신 여부 확인 → 미수신 시 Yahoo fallback
+snapshotTimer = setInterval(async () => {
+const lastTs   = _cache._lastWebhookTs ? new Date(_cache._lastWebhookTs).getTime() : 0;
+const staleSec = (Date.now() - lastTs) / 1000;
+if (staleSec > 5 * 60) {
+console.warn(`[scheduler] 웹훅 ${Math.round(staleSec / 60)}분 미수신 → Yahoo fallback`);
+await fetchSnapshot();
+}
+}, 5 * 60_000);
 }
 
 }
@@ -1186,66 +1201,69 @@ const session = getMarketSession();
 const h = getETHour();
 
 if (session !== lastSession) {
-  console.log(`[scheduler] 세션 변경: ${lastSession} → ${session}`);
-  lastSession = session;
-  scheduleSnapshot();
+console.log(`[scheduler] 세션 변경: ${lastSession} → ${session}`);
+lastSession = session;
+scheduleSnapshot();
 
-  // 장 시작(REGULAR 첫 진입) → snapshotOpen
-  if (session === 'REGULAR' && !openDone) {
-    openDone = true;
-    saveSnapshotOpen();
+// 장 시작(REGULAR 첫 진입) → snapshotOpen
+if (session === ‘REGULAR’ && !openDone) {
+openDone = true;
+saveSnapshotOpen();
+}
+
+// 장 마감(AFTER 첫 진입) → 스크리너 수집
+if (session === ‘AFTER’ && !screenerDone) {
+screenerDone = true;
+console.log(’[scheduler] 장 마감 → 스크리너 수집 트리거’);
+
+```
+// D1에서 수집 대상 심볼 조회 후 수집 트리거
+(async () => {
+  try {
+    const symRes = await fetch(`${CF_WORKER_URL}/api/collect-targets`, {
+      headers: { 'x-cron-secret': CRON_SECRET },
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!symRes.ok) throw new Error(`collect-targets: ${symRes.status}`);
+    const symData = await symRes.json();
+    const symbols = symData.symbols ?? [];
+
+    if (!symbols.length) {
+      console.warn('[scheduler] 수집 대상 심볼 없음 -- 스크리너 수집 생략');
+      return;
+    }
+
+    console.log(`[scheduler] ${symbols.length}개 심볼 수집 시작`);
+    // 직접 백그라운드 수집 실행 (localhost HTTP 우회)
+    if (collectState.running) {
+      console.warn('[scheduler] 수집 이미 진행 중 -- 스킵');
+      return;
+    }
+    const date = getTodayET();
+    collectState = {
+      running:   true,
+      startedAt: new Date().toISOString(),
+      progress:  { done: 0, total: symbols.length, errors: 0 },
+      lastRun:   collectState.lastRun,
+    };
+    runCollect(symbols, date).catch(e => console.error('[scheduler] collect error:', e.message));
+  } catch (e) {
+    console.error('[scheduler] screener trigger error:', e.message);
   }
+})();
+```
 
-  // 장 마감(AFTER 첫 진입) → 스크리너 수집
-  if (session === 'AFTER' && !screenerDone) {
-    screenerDone = true;
-    console.log('[scheduler] 장 마감 → 스크리너 수집 트리거');
-
-    // D1에서 수집 대상 심볼 조회 후 수집 트리거
-    (async () => {
-      try {
-        const symRes = await fetch(`${CF_WORKER_URL}/api/collect-targets`, {
-          headers: { 'x-cron-secret': CRON_SECRET },
-          signal: AbortSignal.timeout(10000),
-        });
-        if (!symRes.ok) throw new Error(`collect-targets: ${symRes.status}`);
-        const symData = await symRes.json();
-        const symbols = symData.symbols ?? [];
-
-        if (!symbols.length) {
-          console.warn('[scheduler] 수집 대상 심볼 없음 -- 스크리너 수집 생략');
-          return;
-        }
-
-        console.log(`[scheduler] ${symbols.length}개 심볼 수집 시작`);
-        // 직접 백그라운드 수집 실행 (localhost HTTP 우회)
-        if (collectState.running) {
-          console.warn('[scheduler] 수집 이미 진행 중 -- 스킵');
-          return;
-        }
-        const date = getTodayET();
-        collectState = {
-          running:   true,
-          startedAt: new Date().toISOString(),
-          progress:  { done: 0, total: symbols.length, errors: 0 },
-          lastRun:   collectState.lastRun,
-        };
-        runCollect(symbols, date).catch(e => console.error('[scheduler] collect error:', e.message));
-      } catch (e) {
-        console.error('[scheduler] screener trigger error:', e.message);
-      }
-    })();
-  }
+}
 }
 
 // 평일 ET 09:00~16:59, 15분마다 DEX 계산
 if (isWeekday()) {
-  const now = new Date();
-  const min = now.getMinutes();
-  if (h >= 9 && h < 17 && min % 15 === 1) {
-    console.log('[scheduler] 15분 DEX 계산 트리거');
-    calculateAndStore().catch(e => console.error('[scheduler] calculateAndStore error:', e.message));
-  }
+const now = new Date();
+const min = now.getMinutes();
+if (h >= 9 && h < 17 && min % 15 === 1) {
+console.log(’[scheduler] 15분 DEX 계산 트리거’);
+calculateAndStore().catch(e => console.error(’[scheduler] calculateAndStore error:’, e.message));
+}
 }
 
 }, 60_000);
@@ -1255,8 +1273,8 @@ lastSession = getMarketSession();
 scheduleSnapshot();
 
 // 서버 시작 시 즉시 1회 DEX 계산
-console.log('[scheduler] 서버 시작 -- DEX 즉시 1회 실행');
-calculateAndStore().catch(e => console.error('[scheduler] calculateAndStore error (init):', e.message));
+console.log(’[scheduler] 서버 시작 – DEX 즉시 1회 실행’);
+calculateAndStore().catch(e => console.error(’[scheduler] calculateAndStore error (init):’, e.message));
 }
 
 // ─────────────────────────────────────────────────────────────────
