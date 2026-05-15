@@ -774,6 +774,77 @@ export default {
       return json({ etf: ticker, holdings: rows.results }, 200, corsHeaders);
     }
 
+    // ── POST /d1/spy-snapshot ───────────────────────────────────
+    // Railway → D1: SPY 0DTE 스트라이크별 15분 스냅샷 저장
+    if (request.method === "POST" && path === "/d1/spy-snapshot") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const { ts, date, spot, total_gex, total_vanna, total_charm, total_dex, pcr, flip_zone, strikes } = await request.json();
+        if (!ts || !date || !Array.isArray(strikes) || !strikes.length) {
+          return json({ ok: false, error: "ts, date, strikes 필요" }, 400, corsHeaders);
+        }
+
+        const CHUNK = 50;
+        let inserted = 0;
+        for (let i = 0; i < strikes.length; i += CHUNK) {
+          const chunk = strikes.slice(i, i + CHUNK);
+          const stmts = chunk.map(s =>
+            env.DB.prepare(`
+              INSERT OR REPLACE INTO spy_strikes_snapshot
+                (ts, date, spot,
+                 total_gex, total_vanna, total_charm, total_dex, pcr, flip_zone,
+                 strike, call_oi, put_oi, call_oi_15m, put_oi_15m,
+                 dex, gex, vanna, charm)
+              VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            `).bind(
+              ts, date, spot ?? null,
+              total_gex ?? null, total_vanna ?? null, total_charm ?? null,
+              total_dex ?? null, pcr ?? null, flip_zone ?? null,
+              s.strike, s.call_oi ?? null, s.put_oi ?? null,
+              s.call_oi_15m ?? null, s.put_oi_15m ?? null,
+              s.dex ?? null, s.gex ?? null, s.vanna ?? null, s.charm ?? null,
+            )
+          );
+          await env.DB.batch(stmts);
+          inserted += chunk.length;
+        }
+        return json({ ok: true, inserted }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
+    // ── GET /api/spy-snapshot ───────────────────────────────────
+    // 특정 날짜의 ts 목록 조회 (타임슬라이더용)
+    if (request.method === "GET" && path === "/api/spy-snapshot") {
+      const date = url.searchParams.get("date");
+      const ts   = url.searchParams.get("ts");
+      if (!date) return json({ error: "date 필요" }, 400, corsHeaders);
+
+      // ts 없으면 해당 날짜의 ts 목록만 반환
+      if (!ts) {
+        const rows = await env.DB.prepare(`
+          SELECT DISTINCT ts, spot, total_gex, total_vanna, total_charm, total_dex, pcr, flip_zone
+          FROM spy_strikes_snapshot
+          WHERE date = ?
+          ORDER BY ts ASC
+        `).bind(date).all();
+        return json({ date, snapshots: rows.results ?? [] }, 200, corsHeaders);
+      }
+
+      // ts 있으면 해당 시점의 전체 스트라이크 반환
+      const rows = await env.DB.prepare(`
+        SELECT *
+        FROM spy_strikes_snapshot
+        WHERE date = ? AND ts = ?
+        ORDER BY strike ASC
+      `).bind(date, ts).all();
+      return json({ date, ts, strikes: rows.results ?? [] }, 200, corsHeaders);
+    }
+
     // ── Health check ────────────────────────────────────────────
     if (path === "/health") {
       return json({ status: "ok", ts: new Date().toISOString() }, 200, corsHeaders);
