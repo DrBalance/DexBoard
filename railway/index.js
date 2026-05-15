@@ -870,24 +870,58 @@ console.warn('[vix] Yahoo 실패 (직전값 유지):', e.message);
 }
 }
 
-// KV 저장 -- _cache.spy + _cache.vix + _cache.vold 합산 → snapshot:1min
+// KV 저장 -- _cache 합산 → snapshot:1min (현재값) + ts:market (링버퍼)
 async function saveSnapshot() {
-if (!_cache.spy.price && !_cache.vix.price) return; // 둘 다 없으면 스킵
+if (!_cache.spy.price && !_cache.vix.price) return;
 try {
+const ts = new Date().toISOString();
 const snapshot = {
 spy:  _cache.spy,
 qqq:  _cache.qqq,
 iwm:  _cache.iwm,
 vix:  _cache.vix,
 vold: _cache.vold,
-ts:   new Date().toISOString(),
+ts,
 };
+
+// 1. 현재값 덮어쓰기 (기존)
 await fetch(`${CF_WORKER_URL}/kv-write`, {
 method:  'POST',
 headers: { 'Content-Type': 'application/json', 'x-kv-secret': CF_KV_SECRET },
 body:    JSON.stringify({ key: 'snapshot:1min', value: JSON.stringify(snapshot) }),
 signal:  AbortSignal.timeout(5000),
 });
+
+// 2. 링버퍼 누적 (당일 시계열 최대 780개)
+try {
+  const bufRes = await fetch(`${CF_WORKER_URL}/kv-read?key=ts%3Amarket`, {
+    headers: { 'x-kv-secret': CF_KV_SECRET },
+    signal: AbortSignal.timeout(4000),
+  });
+  let buf = [];
+  if (bufRes.ok) {
+    const bufData = await bufRes.json();
+    if (bufData.value) buf = JSON.parse(bufData.value);
+  }
+  buf.push({
+    ts,
+    spy:  _cache.spy.price,
+    qqq:  _cache.qqq?.price ?? null,
+    iwm:  _cache.iwm?.price ?? null,
+    vix:  _cache.vix.price,
+    vold: _cache.vold ?? null,
+  });
+  if (buf.length > 780) buf = buf.slice(buf.length - 780);
+  await fetch(`${CF_WORKER_URL}/kv-write`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json', 'x-kv-secret': CF_KV_SECRET },
+    body:    JSON.stringify({ key: 'ts:market', value: JSON.stringify(buf) }),
+    signal:  AbortSignal.timeout(5000),
+  });
+} catch (bufErr) {
+  console.warn('[snapshot] 링버퍼 저장 실패 (현재값은 저장됨):', bufErr.message);
+}
+
 console.log(`[snapshot] saved SPY=${_cache.spy.price} VIX=${_cache.vix.price} VOLD=${_cache.vold}`);
 } catch (e) {
 console.error('[snapshot] KV 저장 실패:', e.message);
