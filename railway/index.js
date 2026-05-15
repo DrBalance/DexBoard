@@ -433,6 +433,13 @@ return sendJSON(res, 429, { ok: false, error: "서버 요청 한도 초과 (IP �
 
 }
 
+// ── POST /trigger-prevclose ──────────────────────────────────────
+// live.js 초기 로드 시 prevClose KV가 비어있으면 호출
+if (req.method === "POST" && req.url === "/trigger-prevclose") {
+  fetchAndSavePrevClose().catch(e => console.error('[prevClose] 트리거 실패:', e.message));
+  return sendJSON(res, 200, { ok: true, message: 'prevClose 조회 시작' });
+}
+
 // ── POST /webhook/tradingview ────────────────────────────────────
 // TradingView Alert → SPY / QQQ / IWM / VIX / VOLD 수신 → _cache 갱신 → KV 저장
 // payload 구조: { spy:{price, prev}, qqq:{price, prev}, iwm:{price, prev}, vix:{price, prev}, vold, time }
@@ -869,6 +876,91 @@ console.warn('[vix] Yahoo 실패 (직전값 유지):', e.message);
 }
 }
 
+// ─────────────────────────────────────────────────────────────────
+// prevClose 관리
+// ─────────────────────────────────────────────────────────────────
+
+// KV에서 prevClose 읽기
+async function loadPrevClose() {
+try {
+  const res = await fetch(`${CF_WORKER_URL}/kv-read?key=snapshot%3Aprevclose`, {
+    headers: { 'x-kv-secret': CF_KV_SECRET },
+    signal: AbortSignal.timeout(5000),
+  });
+  if (!res.ok) return null;
+  const data = await res.json();
+  if (!data.value) return null;
+  return JSON.parse(data.value);
+} catch (e) {
+  console.warn('[prevClose] KV 읽기 실패:', e.message);
+  return null;
+}
+}
+
+// KV에 prevClose 저장
+async function savePrevClose(data) {
+try {
+  await fetch(`${CF_WORKER_URL}/kv-write`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json', 'x-kv-secret': CF_KV_SECRET },
+    body:    JSON.stringify({ key: 'snapshot:prevclose', value: JSON.stringify(data) }),
+    signal:  AbortSignal.timeout(5000),
+  });
+  console.log(`[prevClose] KV 저장 완료: SPY=${data.spy} QQQ=${data.qqq} IWM=${data.iwm} VIX=${data.vix} date=${data.date}`);
+} catch (e) {
+  console.warn('[prevClose] KV 저장 실패:', e.message);
+}
+}
+
+// Yahoo에서 prevClose 조회 후 _cache에 적용 + KV 저장
+async function fetchAndSavePrevClose() {
+try {
+  const [spy, qqq, iwm, vix] = await Promise.all([
+    fetchYahoo('SPY'),
+    fetchYahoo('QQQ'),
+    fetchYahoo('IWM'),
+    fetchYahoo('%5EVIX'),
+  ]);
+  const data = {
+    spy: spy.prevClose,
+    qqq: qqq.prevClose,
+    iwm: iwm.prevClose,
+    vix: vix.prevClose,
+    date: getTodayET(),
+    ts:   new Date().toISOString(),
+  };
+  // _cache에 즉시 적용
+  _cache.spy.prevClose = data.spy;
+  _cache.qqq.prevClose = data.qqq;
+  _cache.iwm.prevClose = data.iwm;
+  _cache.vix.prevClose = data.vix;
+  console.log(`[prevClose] Yahoo 조회: SPY=${data.spy} QQQ=${data.qqq} IWM=${data.iwm} VIX=${data.vix}`);
+  // KV 저장
+  await savePrevClose(data);
+  return data;
+} catch (e) {
+  console.warn('[prevClose] Yahoo 조회 실패 (기존값 유지):', e.message);
+  return null;
+}
+}
+
+// 초기화: KV 읽기 → 없으면 Yahoo 조회
+async function initPrevClose() {
+const kv = await loadPrevClose();
+if (kv) {
+  _cache.spy.prevClose = kv.spy;
+  _cache.qqq.prevClose = kv.qqq;
+  _cache.iwm.prevClose = kv.iwm;
+  _cache.vix.prevClose = kv.vix;
+  console.log(`[prevClose] KV 로드: SPY=${kv.spy} date=${kv.date}`);
+  // 백그라운드에서 Yahoo 검증 (블로킹 안 함)
+  fetchAndSavePrevClose().catch(() => {});
+} else {
+  console.log('[prevClose] KV 없음 → Yahoo 즉시 조회');
+  await fetchAndSavePrevClose();
+}
+}
+
 // KV 저장 -- _cache 합산 → snapshot:1min (현재값) + ts:market (링버퍼)
 async function saveSnapshot() {
 if (!_cache.spy.price && !_cache.vix.price) return;
@@ -1207,9 +1299,18 @@ if (session !== lastSession) {
     saveSnapshotOpen();
   }
 
-  // 장 마감(AFTER 첫 진입) → 스크리너 수집
+  // 장 마감(AFTER 첫 진입) → prevClose 저장 + 스크리너 수집
   if (session === 'AFTER' && !screenerDone) {
     screenerDone = true;
+    // 당일 종가를 prevClose로 KV에 저장
+    savePrevClose({
+      spy:  _cache.spy.price,
+      qqq:  _cache.qqq?.price ?? null,
+      iwm:  _cache.iwm?.price ?? null,
+      vix:  _cache.vix.price,
+      date: getTodayET(),
+      ts:   new Date().toISOString(),
+    }).catch(e => console.error('[prevClose] 장 마감 저장 실패:', e.message));
     console.log('[scheduler] 장 마감 → 스크리너 수집 트리거');
 
     // D1에서 수집 대상 심볼 조회 후 수집 트리거
@@ -1249,6 +1350,12 @@ if (session !== lastSession) {
   }
 }
 
+// 평일 ET 02:00 — prevClose 검증 (프리마켓 2시간 전)
+if (isWeekday() && h === 2 && new Date().getMinutes() === 0) {
+  console.log('[scheduler] ET 02:00 prevClose 검증 크론');
+  fetchAndSavePrevClose().catch(e => console.error('[prevClose] 크론 실패:', e.message));
+}
+
 // 평일 ET 09:00~16:59, 15분마다 DEX 계산
 if (isWeekday()) {
   const now = new Date();
@@ -1264,6 +1371,9 @@ if (isWeekday()) {
 // 최초 실행
 lastSession = getMarketSession();
 scheduleSnapshot();
+
+// 서버 시작 시 prevClose 초기화 (KV → Yahoo 폴백)
+initPrevClose().catch(e => console.error('[prevClose] 초기화 실패:', e.message));
 
 // 서버 시작 시 즉시 1회 DEX 계산
 console.log('[scheduler] 서버 시작 -- DEX 즉시 1회 실행');
