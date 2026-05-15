@@ -87,8 +87,6 @@ console.warn(’[Live] Railway calculate 트리거 실패:’, e.message);
 //   fullUpdate=true  → snapshot + dex:spy:0dte (15분 주기)
 //   fullUpdate=false → snapshot만 (1분/30초 주기)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-let _lastKvTs = 0;
-
 async function fetchKV({ fullUpdate = true } = {}) {
 try {
 const requests = [
@@ -105,28 +103,23 @@ const [snapRes, tsRes, dex0dteRes] = await Promise.all(requests);
 if (snapRes.ok) {
   const snap = await snapRes.json();
   if (!snap.error) {
-    const snapTs = snap.ts ? new Date(snap.ts).getTime() : 0;
-    if (snapTs > _lastKvTs) {
-      _lastKvTs = snapTs;
+    if (snap.vix?.price) {
+      _state.vix = snap.vix;
+      renderVIX();
+    }
 
-      if (snap.vix?.price) {
-        _state.vix = snap.vix;
-        renderVIX();
-      }
+    if (snap.spy?.price) {
+      _updateSpy({ ...snap.spy, source: 'kv', ts: snap.ts });
+    }
 
-      if (snap.spy?.price) {
-        _updateSpy({ ...snap.spy, source: 'kv', ts: snap.ts });
-      }
+    // QQQ / IWM — 값만 저장 (표시는 추후)
+    if (snap.qqq?.price) _state.qqq = snap.qqq;
+    if (snap.iwm?.price) _state.iwm = snap.iwm;
 
-      // QQQ / IWM — 값만 저장 (표시는 추후)
-      if (snap.qqq?.price) _state.qqq = snap.qqq;
-      if (snap.iwm?.price) _state.iwm = snap.iwm;
-
-      // VOLD — 웹훅으로 수신한 실제값 반영
-      if (snap.vold != null && !isNaN(snap.vold)) {
-        _state.vold = snap.vold;
-        renderVOLD();
-      }
+    // VOLD — 웹훅으로 수신한 실제값 반영
+    if (snap.vold != null && !isNaN(snap.vold)) {
+      _state.vold = snap.vold;
+      renderVOLD();
     }
   }
 }
