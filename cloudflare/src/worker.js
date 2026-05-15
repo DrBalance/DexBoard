@@ -536,6 +536,53 @@ export default {
       return json({ ok: true, inserted }, 200, corsHeaders);
     }
 
+    // ── POST /d1/spy-snapshot ────────────────────────────────────
+    if (request.method === "POST" && path === "/d1/spy-snapshot") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      const payload = await request.json();
+      const {
+        ts, date, spot,
+        total_gex, total_vanna, total_charm, total_dex,
+        total_call_volume, total_put_volume,
+        pcr, flip_zone,
+        strikes,
+      } = payload;
+
+      if (!ts || !date || !Array.isArray(strikes) || strikes.length === 0) {
+        return json({ error: "ts, date, strikes 필수" }, 400, corsHeaders);
+      }
+
+      const stmts = strikes.map(s =>
+        env.DB.prepare(`
+          INSERT OR REPLACE INTO spy_strikes_snapshot
+            (ts, date, spot,
+             total_gex, total_vanna, total_charm, total_dex,
+             total_call_volume, total_put_volume,
+             pcr, flip_zone,
+             strike, call_oi, put_oi, call_oi_15m, put_oi_15m,
+             call_volume, put_volume,
+             dex, gex, vanna, charm)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        `).bind(
+          ts, date, spot ?? null,
+          total_gex ?? null, total_vanna ?? null, total_charm ?? null, total_dex ?? null,
+          total_call_volume ?? null, total_put_volume ?? null,
+          pcr ?? null, flip_zone ?? null,
+          s.strike,
+          s.call_oi ?? null, s.put_oi ?? null,
+          s.call_oi_15m ?? null, s.put_oi_15m ?? null,
+          s.call_volume ?? null, s.put_volume ?? null,
+          s.dex ?? null, s.gex ?? null, s.vanna ?? null, s.charm ?? null,
+        )
+      );
+
+      await env.DB.batch(stmts);
+      return json({ ok: true, inserted: stmts.length }, 200, corsHeaders);
+    }
+
     // ── POST /d1/screener-scores ────────────────────────────────
     if (request.method === "POST" && path === "/d1/screener-scores") {
       const secret = request.headers.get("x-cron-secret");
