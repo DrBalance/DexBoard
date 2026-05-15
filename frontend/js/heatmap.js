@@ -67,7 +67,7 @@ function _calcVixSlope(minutes) {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 function _calcDGreeks(aggregated) {
   const slope5m  = _calcVixSlope(5);
-  const vixSign  = slope5m >= 0 ? 1 : -1;
+  const hasVix   = _vixSeries.length >= 2;
 
   const totalDex   = aggregated.reduce((s, r) => s + r.dex,   0);
   const totalVanna = aggregated.reduce((s, r) => s + r.vanna, 0);
@@ -76,14 +76,21 @@ function _calcDGreeks(aggregated) {
   return aggregated.map(r => {
     let dVanna, dCharm;
     if (isDexDom) {
+      // DEX 도미넌스: DEX 부호 기준
       const sign = r.dex >= 0 ? 1 : -1;
       dVanna = sign * Math.abs(r.vanna);
       dCharm = sign * Math.abs(r.charm);
-    } else {
+    } else if (hasVix) {
+      // Vanna 도미넌스 + VIX 있음: VIX 방향 적용
+      const vixSign = slope5m >= 0 ? 1 : -1;
       dVanna = r.vanna * (-vixSign);
       dCharm = r.charm * (-vixSign);
+    } else {
+      // VIX 없음 (장 마감 등): 원시값 그대로 (구조 파악용)
+      dVanna = r.vanna;
+      dCharm = r.charm;
     }
-    return { ...r, dVanna, dCharm, isDexDom };
+    return { ...r, dVanna, dCharm, isDexDom, hasVix };
   });
 }
 
@@ -328,7 +335,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     );
   }).join('');
 
-  // ── D·Van 행 (Vanna Dom 전용) ─────────────────────────
+  // ── D·Van 행 (Vanna Dom 전용, 항상 표시) ──────────────
   const dVannaRow = !isDexDom ? rows.map((s, i) => mkCell(i, 'dvanna', ROW_H_DG,
     `font-size:13px;
      color:rgba(167,139,250,1);
@@ -337,7 +344,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     _fmtM(s.dVanna)
   )).join('') : null;
 
-  // ── D·Chr 행 (Vanna Dom 전용) ─────────────────────────
+  // ── D·Chr 행 (Vanna Dom 전용, 항상 표시) ──────────────
   const dCharmRow = !isDexDom ? rows.map((s, i) => mkCell(i, 'dcharm', ROW_H_DG,
     `font-size:13px;
      color:${s.dCharm >= 0 ? 'rgba(45,212,191,1)' : 'rgba(239,68,68,0.85)'};
@@ -356,6 +363,9 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
       _fmtM(s.dex)
     );
   }).join('') : null;
+
+  // VIX 없을 때 라벨에 표시할 접미사
+  const vixLabel = hasVix ? '' : '*';
 
   // ── DEX 행 (GEX와 동일 스타일, 배경 없음) ─────────────
   const dexRow = rows.map((s, i) => {
@@ -418,7 +428,12 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
         VIX 5m<span style="color:${sc(slope5m)}">${slope5m >= 0 ? '+' : ''}${slope5m.toFixed(2)}</span>
         15m<span style="color:${sc(slope15m)}">${slope15m >= 0 ? '+' : ''}${slope15m.toFixed(2)}</span>
       </span>`
-    : `<span style="font-size:10px;color:var(--text3)">VIX 시계열 대기 중</span>`;
+    : `<span style="display:inline-flex;align-items:center;gap:5px;
+         padding:2px 7px;border-radius:3px;font-size:10px;
+         background:rgba(255,255,255,.05);color:var(--text3);">
+        <span style="color:#a78bfa">Vanna Dom</span>
+        <span>* 구조값 (VIX 미적용)</span>
+      </span>`;
 
   // ── 조립 ──────────────────────────────────────────────
   el.innerHTML = `
@@ -433,8 +448,8 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
           <tr>${stickyCell('',       ROW_H_MK, 'border-right:2px solid var(--border2,rgba(255,255,255,.12))')}${markerRow}</tr>
           ${isDexDom
             ? `<tr>${stickyCell('D·DEX', ROW_H_DG, 'color:rgba(34,197,94,.9)')}${dDexRow}</tr>`
-            : `<tr>${stickyCell('D·Van', ROW_H_DG, 'color:rgba(167,139,250,.8)')}${dVannaRow}</tr>
-               <tr>${stickyCell('D·Chr', ROW_H_DG, 'color:rgba(45,212,191,.8)')}${dCharmRow}</tr>`
+            : `<tr>${stickyCell('D·Van' + vixLabel, ROW_H_DG, 'color:rgba(167,139,250,.8)')}${dVannaRow}</tr>
+               <tr>${stickyCell('D·Chr' + vixLabel, ROW_H_DG, 'color:rgba(45,212,191,.8)')}${dCharmRow}</tr>`
           }
           <tr>${stickyCell('DEX',    ROW_H_SM)}${dexRow}</tr>
           <tr>${stickyCell('GEX',    ROW_H_SM)}${gexRow}</tr>
