@@ -193,11 +193,15 @@ function _aggregateStrikes(strikes) {
   return Object.values(map).sort((a, b) => a.strike - b.strike);
 }
 
-// ── 현재가에 가장 가까운 열 인덱스 ──────────────────────
+// ── 현재가 floor 스트라이크 인덱스 ──────────────────────
+// 747.6 → 747 (딜러 헤징 기준은 현재가 이하 스트라이크)
 function _findSpotIdx(rows, spotPrice) {
-  return rows.reduce((best, s, i) =>
-    Math.abs(s.strike - spotPrice) < Math.abs(rows[best].strike - spotPrice) ? i : best
-  , 0);
+  let idx = 0;
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].strike <= spotPrice) idx = i;
+    else break;
+  }
+  return idx;
 }
 
 // ── 드래그 스크롤 ─────────────────────────────────────────
@@ -324,23 +328,34 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     );
   }).join('');
 
-  // ── D·Van 행 (Vanna 색, 투명도 없음, 배경 없음) ───────
-  const dVannaRow = rows.map((s, i) => mkCell(i, 'dvanna', ROW_H_DG,
+  // ── D·Van 행 (Vanna Dom 전용) ─────────────────────────
+  const dVannaRow = !isDexDom ? rows.map((s, i) => mkCell(i, 'dvanna', ROW_H_DG,
     `font-size:13px;
      color:rgba(167,139,250,1);
      background:${i === spotIdx ? 'rgba(255,255,255,.06)' : 'transparent'};
      border-right:1px solid var(--border);`,
     _fmtM(s.dVanna)
-  )).join('');
+  )).join('') : null;
 
-  // ── D·Chr 행 (Charm 색, 투명도 없음, 배경 없음) ────────
-  const dCharmRow = rows.map((s, i) => mkCell(i, 'dcharm', ROW_H_DG,
+  // ── D·Chr 행 (Vanna Dom 전용) ─────────────────────────
+  const dCharmRow = !isDexDom ? rows.map((s, i) => mkCell(i, 'dcharm', ROW_H_DG,
     `font-size:13px;
      color:${s.dCharm >= 0 ? 'rgba(45,212,191,1)' : 'rgba(239,68,68,0.85)'};
      background:${i === spotIdx ? 'rgba(255,255,255,.06)' : 'transparent'};
      border-right:1px solid var(--border);`,
     _fmtM(s.dCharm)
-  )).join('');
+  )).join('') : null;
+
+  // ── D·DEX 행 (DEX Dom 전용, DEX 값을 진하게) ──────────
+  const dDexRow = isDexDom ? rows.map((s, i) => {
+    const c = s.dex > 0 ? 'rgba(34,197,94,1)' : s.dex < 0 ? 'rgba(239,68,68,1)' : 'var(--text2)';
+    return mkCell(i, 'ddex', ROW_H_DG,
+      `font-size:13px;font-weight:700;color:${c};
+       background:${i === spotIdx ? 'rgba(255,255,255,.06)' : 'transparent'};
+       border-right:1px solid var(--border);`,
+      _fmtM(s.dex)
+    );
+  }).join('') : null;
 
   // ── DEX 행 (GEX와 동일 스타일, 배경 없음) ─────────────
   const dexRow = rows.map((s, i) => {
@@ -416,8 +431,11 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
         <tbody>
           <tr>${stickyCell('Strike', ROW_H_SM)}${strikeRow}</tr>
           <tr>${stickyCell('',       ROW_H_MK, 'border-right:2px solid var(--border2,rgba(255,255,255,.12))')}${markerRow}</tr>
-          <tr>${stickyCell('D·Van',  ROW_H_DG, 'color:rgba(167,139,250,.8)')}${dVannaRow}</tr>
-          <tr>${stickyCell('D·Chr',  ROW_H_DG, 'color:rgba(45,212,191,.8)')}${dCharmRow}</tr>
+          ${isDexDom
+            ? `<tr>${stickyCell('D·DEX', ROW_H_DG, 'color:rgba(34,197,94,.9)')}${dDexRow}</tr>`
+            : `<tr>${stickyCell('D·Van', ROW_H_DG, 'color:rgba(167,139,250,.8)')}${dVannaRow}</tr>
+               <tr>${stickyCell('D·Chr', ROW_H_DG, 'color:rgba(45,212,191,.8)')}${dCharmRow}</tr>`
+          }
           <tr>${stickyCell('DEX',    ROW_H_SM)}${dexRow}</tr>
           <tr>${stickyCell('GEX',    ROW_H_SM)}${gexRow}</tr>
           <tr>${stickyCell('Vanna',  ROW_H_SM)}${vannaRow}</tr>
