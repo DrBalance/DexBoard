@@ -14,7 +14,7 @@
 import { bindToggle } from '../tabs.js';
 import { CF_API } from '../config.js';
 import { renderHeatmap } from '../heatmap.js';
-import { calculateTermStructure, renderTermStructure } from './options-charts.js';
+import { calculateTermStructure, renderTermStructure } from '../options-charts.js';
 
 const WORKER_URL = CF_API;
 
