@@ -192,8 +192,8 @@ export function evaluateStatus({ termStructure, skewRows, spot, flipStrike, vann
   return { status, label, color, score, reasons };
 }
 
-export function renderTermStructure(termData) {
-  const el = document.getElementById('struct-term');
+export function renderTermStructure(termData, targetEl) {
+  const el = targetEl ?? document.getElementById('struct-term');
   if (!el) return;
 
   const { status, label, color, slope, slopeChange, slopeTrend, priceComment, eventExpiries, rows } = termData;
@@ -203,7 +203,8 @@ export function renderTermStructure(termData) {
     return;
   }
 
-  const W = 520, H = 180, PL = 48, PR = 16, PT = 16, PB = 36;
+  const W = Math.max(el.clientWidth || 900, 600);
+  const H = 220, PL = 52, PR = 20, PT = 16, PB = 36;
   const cW = W - PL - PR, cH = H - PT - PB;
 
   const ivs  = rows.map(r => r.atm_iv);
@@ -303,8 +304,8 @@ export function renderTermStructure(termData) {
     ${eventList}
 
     <!-- SVG 차트 -->
-    <div style="overflow-x:auto;margin-top:10px">
-      <svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block">
+    <div style="margin-top:10px">
+      <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">
         ${yTicks}
         <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="2" opacity="0.9"/>
         <polyline points="${PL},${PT+cH} ${pts} ${xScale(maxDTE).toFixed(1)},${PT+cH}"
