@@ -14,6 +14,7 @@
 import { bindToggle } from '../tabs.js';
 import { CF_API } from '../config.js';
 import { renderHeatmap } from '../heatmap.js';
+import { calculateTermStructure, renderTermStructure } from './options-charts.js';
 
 const WORKER_URL = CF_API;
 
@@ -185,6 +186,7 @@ function _apply() {
   _renderHeatmap(_rawData.expirations, weighted);
   _renderChart(weighted);
   _renderExpiryBars(_rawData.expirations);
+  _renderSPYTermStructure(_rawData.expirations);
   _renderKeyLevelTable(weighted, _rawData.expirations);
 }
 
@@ -640,6 +642,36 @@ function _resizeChart(zoom) {
   const chartW = Math.max(visible.length * barW * 2 + 80, 600);
   const wrap   = _el('mk-chart-wrap');
   if (wrap) wrap.style.width = `${chartW}px`;
+}
+
+// ── SPY Term Structure ────────────────────────────────────
+function _renderSPYTermStructure(expirations) {
+  const el = document.getElementById('mk-term-structure');
+  if (!el) return;
+
+  // expirations 객체 → expiryRows 배열 변환 (DTE ≤ 60, atm_iv 있는 것만)
+  const expiryRows = Object.entries(expirations)
+    .map(([expiry_date, data]) => {
+      const d = Array.isArray(data) ? {} : data;
+      return {
+        expiry_date,
+        dte:         d.dte         ?? null,
+        atm_iv:      d.atm_iv      ?? null,
+        otm_call_iv: d.otm_call_iv ?? null,
+        otm_put_iv:  d.otm_put_iv  ?? null,
+        iv_skew:     d.iv_skew     ?? null,
+      };
+    })
+    .filter(r => r.atm_iv != null && r.dte != null && r.dte <= 60)
+    .sort((a, b) => a.dte - b.dte);
+
+  if (!expiryRows.length) {
+    el.innerHTML = '<div style="padding:12px;color:var(--text3);font-size:12px">Term Structure 데이터 없음</div>';
+    return;
+  }
+
+  const termData = calculateTermStructure(expiryRows);
+  renderTermStructure(termData, el);
 }
 
 // ── 만기별 DEX 분포 바 ────────────────────────────────────
