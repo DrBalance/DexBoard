@@ -714,9 +714,21 @@ if (strikes.length > 0) {
 }
 
 // 5. 만기별 플립존 계산 후 expirations에 포함
+// results 배열을 expiry_date 기준 맵으로 변환 (atm_iv, dte 등 집계값 조회용)
+const resultsByExpiry = Object.fromEntries(results.map(r => [r.expiry_date, r]));
+
 for (const [expiry, strikes] of Object.entries(expirations)) {
   const flipStrike = calcFlipStrike(strikes);
-  expirations[expiry] = { strikes, flip_strike: flipStrike };
+  const r = resultsByExpiry[expiry] ?? {};
+  expirations[expiry] = {
+    strikes,
+    flip_strike:  flipStrike,
+    dte:          r.dte          ?? null,
+    atm_iv:       r.atm_iv       ?? null,
+    otm_call_iv:  r.otm_call_iv  ?? null,
+    otm_put_iv:   r.otm_put_iv   ?? null,
+    iv_skew:      r.iv_skew      ?? null,
+  };
 }
 
 // 기존 dex:spy KV 저장 (전체 만기 -- 날짜조회 탭용)
