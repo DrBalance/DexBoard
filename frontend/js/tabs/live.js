@@ -12,6 +12,7 @@ import { renderHeatmap, updateHeatmapSpot, setHeatmapVix } from '../heatmap.js';
 import { buildNarrative, buildAnalysisPayload }       from '../narrative.js';
 import { renderOIChart, updateOIChart, renderStrikeTable, renderTop5Panel } from '../oi-chart.js';
 import { initVCChart, setVixSeries, setVoldSeries } from '../vc-chart.js';
+import { renderVannaDistChart } from '../options-charts.js';
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 내부 상태
@@ -38,7 +39,9 @@ const _state = {
 };
 
 // OI 차트 인스턴스 (탭 재방문 시 재생성 방지)
-let _chartInst = null;
+let _chartInst      = null;
+let _vannaDistInst  = null;
+let _vixDir         = 'neutral'; // 'up' | 'down' | 'neutral'
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -231,6 +234,7 @@ function _onSpotUpdated() {
     } else {
       updateOIChart(_chartInst, _state.strikes, spotPrice);
     }
+    _renderVannaDist();
   }
 
   if (_state.strikes.length > 0) {
@@ -655,6 +659,32 @@ function initNarrativePanel() {
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Vanna Distribution Chart
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function _renderVannaDist() {
+  const el = document.getElementById('lv-vanna-dist');
+  if (!el) return;
+
+  const strikes  = _state.strikes;
+  const spot     = _state.spyLive ?? _state.spy?.price;
+  if (!strikes?.length || !spot) return;
+
+  // 타임스탬프 표시
+  const tsEl = document.getElementById('vd-ts');
+  if (tsEl) tsEl.textContent = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+
+  // 기존 인스턴스 해제
+  _vannaDistInst?.detach();
+
+  _vannaDistInst = renderVannaDistChart(el, strikes, spot, {
+    mode:   'single',
+    vixDir: _vixDir,
+    dte:    1,
+    label:  '0DTE 확률 분포 · Vanna Flip',
+  });
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // initLive / refreshLive
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export async function initLive() {
@@ -699,6 +729,17 @@ export async function initLive() {
   });
 
   registerTickCallback(onLiveTick);
+
+  // VIX 방향 버튼
+  ['up', 'neutral', 'down'].forEach(dir => {
+    document.getElementById(`vd-vix-${dir}`)?.addEventListener('click', () => {
+      _vixDir = dir;
+      ['up', 'neutral', 'down'].forEach(d => {
+        document.getElementById(`vd-vix-${d}`)?.classList.toggle('active', d === dir);
+      });
+      _renderVannaDist();
+    });
+  });
 }
 
 export function refreshLive() {
