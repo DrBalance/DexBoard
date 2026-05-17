@@ -700,6 +700,7 @@ for (const s of Object.values(strikeMap)) {
     putOI,
     callVolume,
     putVolume,
+    avg_iv: +iv.toFixed(4),
     dex:   (greeks.delta * callOI * 100 - greeks.delta * putOI * 100) / 1e6,
     gex:   netOI * greeks.gamma * 100 * spot / 1e6,
     vanna: greeks.vanna * netOI * 100 * spot / 1e6,
