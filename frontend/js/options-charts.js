@@ -1,4 +1,5 @@
 import { CF_API } from './config.js';
+import { createZoomState, attachZoomScroll } from './chart-zoom.js';
 
 export function linearRegressionSlope(rows) {
   const n  = rows.length;
@@ -1024,3 +1025,328 @@ Put IV: ${(r.put_iv*100).toFixed(1)}% / Call IV: ${(r.call_iv*100).toFixed(1)}%
   `;
 }
 
+
+// ─────────────────────────────────────────────────────────────────────────────
+// renderVannaDistChart
+//
+// 확률 분포 + Vanna Flip Zone + 비대칭 EM 차트
+//
+// @param {HTMLElement} el         — 렌더링할 컨테이너 엘리먼트
+// @param {Array}       strikes    — 스트라이크 배열
+//   각 항목: { strike, callOI, putOI, gex, vanna, avg_iv? }
+// @param {number}      spot       — 현재 스팟 가격
+// @param {object}      opts
+//   opts.mode     'single' | 'combined'  (표시용, 기본 'single')
+//   opts.vixDir   'up' | 'down' | 'neutral' (Vanna Flip 방향, 기본 'neutral')
+//   opts.dte      기대움직임 계산용 DTE (기본 1)
+//   opts.label    차트 상단 레이블 (기본 '확률 분포 · Vanna Flip')
+// @returns {{ detach: Function }}  이벤트 해제 함수
+// ─────────────────────────────────────────────────────────────────────────────
+export function renderVannaDistChart(el, strikes, spot, opts = {}) {
+  if (!el || !strikes?.length || !spot) return null;
+
+  const {
+    mode   = 'single',
+    vixDir = 'neutral',
+    dte    = 1,
+    label  = '확률 분포 · Vanna Flip',
+  } = opts;
+
+  // ── 1. 데이터 정렬 ──────────────────────────────────────
+  const sorted = [...strikes]
+    .filter(s => s.strike != null)
+    .sort((a, b) => a.strike - b.strike);
+
+  if (!sorted.length) {
+    el.innerHTML = '<div style="padding:12px;color:var(--text3);font-size:12px">데이터 없음</div>';
+    return null;
+  }
+
+  const minS = sorted[0].strike;
+  const maxS = sorted[sorted.length - 1].strike;
+
+  // ── 2. Vanna 누적합 → Vanna Flip Zone 계산 ─────────────
+  // VIX 상승(up): Vanna 음수 쪽이 딜러 매도 압력 → 하방 Flip
+  // VIX 하락(down): Vanna 양수 쪽이 딜러 매수 압력 → 상방 Flip
+  function calcVannaFlip(dir) {
+    let cumVanna = 0;
+    let prevSign = null;
+    for (const s of sorted) {
+      const v = s.vanna ?? 0;
+      // VIX 상승이면 음수 Vanna가 딜러 매도 압력
+      const contribution = dir === 'up' ? -v : v;
+      cumVanna += contribution;
+      const sign = cumVanna >= 0 ? 1 : -1;
+      if (prevSign !== null && sign !== prevSign) return s.strike;
+      prevSign = sign;
+    }
+    return null;
+  }
+
+  const vannaFlipDown = calcVannaFlip('up');   // VIX 상승 → 하방 Flip
+  const vannaFlipUp   = calcVannaFlip('down'); // VIX 하락 → 상방 Flip
+
+  // ── 3. GEX Flip Zone (기존 누적합 방식) ─────────────────
+  let cumGex = 0, gexFlip = null, prevGexSign = null;
+  for (const s of sorted) {
+    cumGex += s.gex ?? 0;
+    const sign = cumGex >= 0 ? 1 : -1;
+    if (prevGexSign !== null && sign !== prevGexSign) { gexFlip = s.strike; break; }
+    prevGexSign = sign;
+  }
+
+  // ── 4. 비대칭 EM 계산 ───────────────────────────────────
+  // ATM IV: spot에 가장 가까운 스트라이크의 avg_iv 사용
+  const atmStrike = sorted.reduce((best, s) =>
+    Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best
+  );
+  const atmIV = atmStrike.avg_iv ?? 0.20;
+  const symEM = spot * atmIV * Math.sqrt(dte / 365);
+
+  // Vanna Flip이 있으면 비대칭 EM, 없으면 대칭 EM
+  const emUpper = vannaFlipUp   ?? spot + symEM;
+  const emLower = vannaFlipDown ?? spot - symEM;
+
+  // ── 5. IV Smile 기반 확률 밀도 계산 ────────────────────
+  const sigma = spot * atmIV * Math.sqrt(dte / 365) || 1;
+  const probRaw = sorted.map(s => {
+    const iv  = s.avg_iv ?? atmIV;
+    const sig = spot * iv * Math.sqrt(dte / 365) || sigma;
+    const d   = s.strike - spot;
+    return Math.exp(-0.5 * (d / sig) ** 2) / (sig * Math.sqrt(2 * Math.PI));
+  });
+  const maxProb  = Math.max(...probRaw, 1e-10);
+  const normProb = probRaw.map(p => p / maxProb);
+
+  // ── 6. Vanna 누적합 곡선 데이터 (오버레이용) ───────────
+  let cumV = 0;
+  const vannaCum = sorted.map(s => { cumV += s.vanna ?? 0; return cumV; });
+  const maxAbsV  = Math.max(...vannaCum.map(Math.abs), 1e-10);
+  const normVanna = vannaCum.map(v => v / maxAbsV);
+
+  // ── 7. Canvas 생성 ──────────────────────────────────────
+  el.innerHTML = '';
+
+  // 상단 정보 바
+  const infoBar = document.createElement('div');
+  infoBar.style.cssText = 'display:flex;justify-content:space-between;align-items:center;padding:6px 8px;font-size:11px;color:var(--text3);flex-wrap:wrap;gap:4px';
+  const modeLabel = mode === 'combined' ? '합산 만기' : '0DTE';
+  const vixLabel  = vixDir === 'up' ? '🔴 VIX↑' : vixDir === 'down' ? '🟢 VIX↓' : '⚪ VIX중립';
+  infoBar.innerHTML = `
+    <span style="color:var(--text);font-weight:600">${label}</span>
+    <span style="display:flex;gap:12px;align-items:center">
+      <span>${modeLabel}</span>
+      <span>${vixLabel}</span>
+      <span style="color:#a78bfa">▲Vanna Flip Up: ${vannaFlipUp != null ? '$' + vannaFlipUp : '--'}</span>
+      <span style="color:#f472b6">▼Vanna Flip Dn: ${vannaFlipDown != null ? '$' + vannaFlipDown : '--'}</span>
+      <span style="color:#fbbf24">GEX Flip: ${gexFlip != null ? '$' + gexFlip : '--'}</span>
+      <span style="color:var(--text3);font-size:10px">더블클릭: 리셋 | 휠: 줌 | 드래그: 팬</span>
+    </span>
+  `;
+  el.appendChild(infoBar);
+
+  // Canvas
+  const canvas = document.createElement('canvas');
+  canvas.style.cssText = 'display:block;width:100%;height:280px;';
+  el.appendChild(canvas);
+
+  // ── 8. 줌 상태 초기화 ───────────────────────────────────
+  const zoom = createZoomState({ minX: minS, maxX: maxS });
+
+  // ── 9. 그리기 함수 ──────────────────────────────────────
+  const PL = 52, PR = 16, PT = 24, PB = 32;
+
+  function draw() {
+    const dpr = window.devicePixelRatio || 1;
+    const W   = canvas.clientWidth  || 800;
+    const H   = canvas.clientHeight || 280;
+    canvas.width  = W * dpr;
+    canvas.height = H * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+
+    const cW = W - PL - PR;
+    const cH = H - PT - PB;
+
+    // 배경
+    ctx.clearRect(0, 0, W, H);
+
+    // 현재 뷰 범위 안의 스트라이크만 필터
+    const visible = sorted.filter(s => s.strike >= zoom.viewMin && s.strike <= zoom.viewMax);
+    if (!visible.length) return;
+
+    const xOf = s => zoom.toPixelX(s, W, PL, PR);
+
+    // ── 그리드 ────────────────────────────────────────────
+    ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+    ctx.lineWidth   = 1;
+    for (let i = 0; i <= 4; i++) {
+      const y = PT + (cH / 4) * i;
+      ctx.beginPath(); ctx.moveTo(PL, y); ctx.lineTo(W - PR, y); ctx.stroke();
+    }
+
+    // ── EM 범위 배경 ──────────────────────────────────────
+    const emLX = xOf(Math.max(emLower, zoom.viewMin));
+    const emUX = xOf(Math.min(emUpper, zoom.viewMax));
+    if (emUX > emLX) {
+      ctx.fillStyle = 'rgba(251,191,36,0.06)';
+      ctx.fillRect(emLX, PT, emUX - emLX, cH);
+    }
+
+    // ── Vanna 누적합 곡선 (배경 레이어) ───────────────────
+    const vannaVis = sorted
+      .map((s, i) => ({ strike: s.strike, nv: normVanna[i] }))
+      .filter(d => d.strike >= zoom.viewMin && d.strike <= zoom.viewMax);
+
+    if (vannaVis.length > 1) {
+      const midY = PT + cH / 2;
+      ctx.beginPath();
+      vannaVis.forEach((d, i) => {
+        const x = xOf(d.strike);
+        const y = midY - d.nv * (cH / 2) * 0.7;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = 'rgba(167,139,250,0.35)';
+      ctx.lineWidth   = 1.5;
+      ctx.stroke();
+
+      // 0선
+      ctx.beginPath();
+      ctx.moveTo(PL, midY); ctx.lineTo(W - PR, midY);
+      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+      ctx.lineWidth   = 1;
+      ctx.stroke();
+    }
+
+    // ── 확률 밀도 곡선 (채우기) ───────────────────────────
+    const probVis = sorted
+      .map((s, i) => ({ strike: s.strike, p: normProb[i] }))
+      .filter(d => d.strike >= zoom.viewMin && d.strike <= zoom.viewMax);
+
+    if (probVis.length > 1) {
+      const baseY = PT + cH;
+      ctx.beginPath();
+      probVis.forEach((d, i) => {
+        const x = xOf(d.strike);
+        const y = baseY - d.p * cH * 0.85;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = '#3b82f6';
+      ctx.lineWidth   = 2;
+      ctx.stroke();
+
+      // 채우기
+      ctx.lineTo(xOf(probVis[probVis.length - 1].strike), baseY);
+      ctx.lineTo(xOf(probVis[0].strike), baseY);
+      ctx.closePath();
+      ctx.fillStyle = 'rgba(59,130,246,0.12)';
+      ctx.fill();
+    }
+
+    // ── 수직선 그리기 헬퍼 ───────────────────────────────
+    function vline(x, color, dash, label, labelY) {
+      if (x < PL || x > W - PR) return;
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth   = 1.5;
+      ctx.setLineDash(dash);
+      ctx.beginPath(); ctx.moveTo(x, PT); ctx.lineTo(x, PT + cH); ctx.stroke();
+      ctx.setLineDash([]);
+      if (label) {
+        ctx.fillStyle = color;
+        ctx.font      = 'bold 10px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(label, x, labelY ?? PT + 12);
+      }
+      ctx.restore();
+    }
+
+    // Spot
+    if (spot >= zoom.viewMin && spot <= zoom.viewMax)
+      vline(xOf(spot), '#ffffff', [], `$${spot}`, PT + 14);
+
+    // Vanna Flip Up
+    if (vannaFlipUp != null && vannaFlipUp >= zoom.viewMin && vannaFlipUp <= zoom.viewMax)
+      vline(xOf(vannaFlipUp), '#a78bfa', [4, 3], `VF↑$${vannaFlipUp}`, PT + 14);
+
+    // Vanna Flip Down
+    if (vannaFlipDown != null && vannaFlipDown >= zoom.viewMin && vannaFlipDown <= zoom.viewMax)
+      vline(xOf(vannaFlipDown), '#f472b6', [4, 3], `VF↓$${vannaFlipDown}`, PT + 26);
+
+    // GEX Flip (비교용)
+    if (gexFlip != null && gexFlip >= zoom.viewMin && gexFlip <= zoom.viewMax)
+      vline(xOf(gexFlip), '#fbbf24', [2, 4], `GF$${gexFlip}`, PT + 38);
+
+    // EM 경계
+    if (emLower >= zoom.viewMin && emLower <= zoom.viewMax)
+      vline(xOf(emLower), 'rgba(251,191,36,0.6)', [6, 3]);
+    if (emUpper >= zoom.viewMin && emUpper <= zoom.viewMax)
+      vline(xOf(emUpper), 'rgba(251,191,36,0.6)', [6, 3]);
+
+    // ── X축 눈금 ──────────────────────────────────────────
+    const step = _niceStep(zoom.viewMax - zoom.viewMin, 8);
+    const firstTick = Math.ceil(zoom.viewMin / step) * step;
+    ctx.fillStyle   = 'rgba(156,163,175,0.8)';
+    ctx.font        = '10px sans-serif';
+    ctx.textAlign   = 'center';
+    for (let v = firstTick; v <= zoom.viewMax; v += step) {
+      const x = xOf(v);
+      if (x < PL || x > W - PR) continue;
+      ctx.fillText(`$${v}`, x, PT + cH + 16);
+      ctx.beginPath();
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = 1;
+      ctx.moveTo(x, PT + cH); ctx.lineTo(x, PT + cH + 4); ctx.stroke();
+    }
+
+    // ── 축 라인 ───────────────────────────────────────────
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth   = 1;
+    ctx.beginPath(); ctx.moveTo(PL, PT); ctx.lineTo(PL, PT + cH + 4); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(PL, PT + cH); ctx.lineTo(W - PR, PT + cH); ctx.stroke();
+
+    // ── 범례 ──────────────────────────────────────────────
+    const legends = [
+      { color: '#3b82f6', label: 'IV 확률 분포' },
+      { color: '#a78bfa', label: 'Vanna 누적' },
+      { color: '#fbbf24', label: 'EM 범위' },
+    ];
+    let lx = PL;
+    ctx.font = '10px sans-serif';
+    legends.forEach(lg => {
+      ctx.fillStyle = lg.color;
+      ctx.fillRect(lx, PT - 16, 10, 8);
+      ctx.fillStyle = 'rgba(156,163,175,0.9)';
+      ctx.textAlign = 'left';
+      ctx.fillText(lg.label, lx + 13, PT - 8);
+      lx += ctx.measureText(lg.label).width + 30;
+    });
+  }
+
+  // 초기 그리기
+  requestAnimationFrame(draw);
+  const ro = new ResizeObserver(() => requestAnimationFrame(draw));
+  ro.observe(el);
+
+  // ── 10. 줌/스크롤 이벤트 연결 ──────────────────────────
+  const detachZoom = attachZoomScroll(canvas, zoom, draw, { padL: PL, padR: PR });
+
+  return {
+    detach() {
+      detachZoom();
+      ro.disconnect();
+    },
+    update(newStrikes, newSpot, newOpts = {}) {
+      renderVannaDistChart(el, newStrikes, newSpot, { ...opts, ...newOpts });
+    },
+  };
+}
+
+// X축 눈금 간격 계산 헬퍼
+function _niceStep(range, targetCount) {
+  const rough = range / targetCount;
+  const mag   = Math.pow(10, Math.floor(Math.log10(rough)));
+  const norm  = rough / mag;
+  const nice  = norm < 1.5 ? 1 : norm < 3.5 ? 2 : norm < 7.5 ? 5 : 10;
+  return nice * mag;
+}
