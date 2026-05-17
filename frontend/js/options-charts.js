@@ -1065,47 +1065,44 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   const minS = sorted[0].strike;
   const maxS = sorted[sorted.length - 1].strike;
 
-  // ── 2. Vanna 경계값 계산 (spot 기준 방향성 누적) ────────
+  // ── 2. Vanna EM 경계 계산 (기울기 소진점 방식) ──────────
   //
-  // 핵심 원칙:
-  //   VIX 상승 → 딜러는 델타 축소 → 주식 매도
-  //             → 음수 vanna 스트라이크가 압력 발생원
-  //             → spot 아래 방향으로 음수 vanna 누적
-  //             → 누적 절대값이 최대인 스트라이크 = 하방 경계
-  //
-  //   VIX 하락 → 딜러는 델타 확대 → 주식 매수
-  //             → 양수 vanna 스트라이크가 압력 발생원
-  //             → spot 위 방향으로 양수 vanna 누적
-  //             → 누적 절대값이 최대인 스트라이크 = 상방 경계
+  // 원칙:
+  //   VIX 하락 → 상방 EM: spot 위 양수 vanna 기울기가
+  //              최대값의 SLOPE_THRESHOLD 이하로 떨어지는 지점
+  //   VIX 상승 → 하방 EM: spot 아래 음수 vanna 기울기가
+  //              최대값의 SLOPE_THRESHOLD 이하로 떨어지는 지점
+  //   중립     → 양방향 모두 계산 → 비대칭 EM
 
-  // 하방 경계: spot 아래, 낮은 → 높은 순으로 음수 vanna 누적
-  // 누적 압력이 최대가 되는 지점 (그 너머엔 헷징 물량 소진)
+  const SLOPE_THRESHOLD = 0.15; // 최대 기울기의 15% 이하 = 압력 소진
+
   const belowSpot = sorted.filter(s => s.strike < spot);
   const aboveSpot = sorted.filter(s => s.strike >= spot);
 
-  function findPressurePeak(strikes, vannaSign) {
-    // vannaSign: -1 = VIX상승(매도압력), +1 = VIX하락(매수압력)
-    let cumPressure = 0;
-    let maxPressure = 0;
-    let peakStrike  = null;
-    for (const s of strikes) {
-      const contribution = (s.vanna ?? 0) * vannaSign;
-      if (contribution < 0) continue; // 반대 방향 기여는 무시
-      cumPressure += contribution;
-      if (cumPressure > maxPressure) {
-        maxPressure = cumPressure;
-        peakStrike  = s.strike;
-      }
+  function findSlopeExhaustPoint(strikes, vannaSign) {
+    // strikes: spot에서 가까운 것부터 먼 순서로 정렬된 배열
+    // 각 스트라이크의 방향성 vanna 기여(기울기)를 계산하고
+    // 최대 기울기 대비 SLOPE_THRESHOLD 이하로 떨어지는 첫 지점 반환
+    const slopes = strikes.map(s => {
+      const v = (s.vanna ?? 0) * vannaSign;
+      return v > 0 ? v : 0; // 방향과 반대인 기여는 0으로
+    });
+
+    const maxSlope = Math.max(...slopes, 1e-10);
+    const threshold = maxSlope * SLOPE_THRESHOLD;
+
+    for (let i = 0; i < slopes.length; i++) {
+      if (slopes[i] < threshold) return strikes[i].strike;
     }
-    return peakStrike;
+    return null;
   }
 
-  // VIX 상승: 하방 압력 (spot 아래, 낮→높 순, 음수 vanna → vannaSign=-1)
-  const downStrikes = [...belowSpot].reverse(); // spot 가까운 것부터
-  const vannaFlipDown = findPressurePeak(downStrikes, -1);
+  // VIX 하락 → 상방 EM (spot 위, 낮→높 순, 양수 vanna)
+  const vannaFlipUp   = findSlopeExhaustPoint(aboveSpot, 1);
 
-  // VIX 하락: 상방 압력 (spot 위, 낮→높 순, 양수 vanna → vannaSign=+1)
-  const vannaFlipUp = findPressurePeak(aboveSpot, 1);
+  // VIX 상승 → 하방 EM (spot 아래, spot에서 가까운 것부터, 음수 vanna)
+  const downStrikes   = [...belowSpot].reverse();
+  const vannaFlipDown = findSlopeExhaustPoint(downStrikes, -1);
 
   // ── 3. GEX Flip Zone (기존 누적합 방식) ─────────────────
   let cumGex = 0, gexFlip = null, prevGexSign = null;
