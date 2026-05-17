@@ -1065,26 +1065,47 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   const minS = sorted[0].strike;
   const maxS = sorted[sorted.length - 1].strike;
 
-  // ── 2. Vanna 누적합 → Vanna Flip Zone 계산 ─────────────
-  // VIX 상승(up): Vanna 음수 쪽이 딜러 매도 압력 → 하방 Flip
-  // VIX 하락(down): Vanna 양수 쪽이 딜러 매수 압력 → 상방 Flip
-  function calcVannaFlip(dir) {
-    let cumVanna = 0;
-    let prevSign = null;
-    for (const s of sorted) {
-      const v = s.vanna ?? 0;
-      // VIX 상승이면 음수 Vanna가 딜러 매도 압력
-      const contribution = dir === 'up' ? -v : v;
-      cumVanna += contribution;
-      const sign = cumVanna >= 0 ? 1 : -1;
-      if (prevSign !== null && sign !== prevSign) return s.strike;
-      prevSign = sign;
+  // ── 2. Vanna 경계값 계산 (spot 기준 방향성 누적) ────────
+  //
+  // 핵심 원칙:
+  //   VIX 상승 → 딜러는 델타 축소 → 주식 매도
+  //             → 음수 vanna 스트라이크가 압력 발생원
+  //             → spot 아래 방향으로 음수 vanna 누적
+  //             → 누적 절대값이 최대인 스트라이크 = 하방 경계
+  //
+  //   VIX 하락 → 딜러는 델타 확대 → 주식 매수
+  //             → 양수 vanna 스트라이크가 압력 발생원
+  //             → spot 위 방향으로 양수 vanna 누적
+  //             → 누적 절대값이 최대인 스트라이크 = 상방 경계
+
+  // 하방 경계: spot 아래, 낮은 → 높은 순으로 음수 vanna 누적
+  // 누적 압력이 최대가 되는 지점 (그 너머엔 헷징 물량 소진)
+  const belowSpot = sorted.filter(s => s.strike < spot);
+  const aboveSpot = sorted.filter(s => s.strike >= spot);
+
+  function findPressurePeak(strikes, vannaSign) {
+    // vannaSign: -1 = VIX상승(매도압력), +1 = VIX하락(매수압력)
+    let cumPressure = 0;
+    let maxPressure = 0;
+    let peakStrike  = null;
+    for (const s of strikes) {
+      const contribution = (s.vanna ?? 0) * vannaSign;
+      if (contribution < 0) continue; // 반대 방향 기여는 무시
+      cumPressure += contribution;
+      if (cumPressure > maxPressure) {
+        maxPressure = cumPressure;
+        peakStrike  = s.strike;
+      }
     }
-    return null;
+    return peakStrike;
   }
 
-  const vannaFlipDown = calcVannaFlip('up');   // VIX 상승 → 하방 Flip
-  const vannaFlipUp   = calcVannaFlip('down'); // VIX 하락 → 상방 Flip
+  // VIX 상승: 하방 압력 (spot 아래, 낮→높 순, 음수 vanna → vannaSign=-1)
+  const downStrikes = [...belowSpot].reverse(); // spot 가까운 것부터
+  const vannaFlipDown = findPressurePeak(downStrikes, -1);
+
+  // VIX 하락: 상방 압력 (spot 위, 낮→높 순, 양수 vanna → vannaSign=+1)
+  const vannaFlipUp = findPressurePeak(aboveSpot, 1);
 
   // ── 3. GEX Flip Zone (기존 누적합 방식) ─────────────────
   let cumGex = 0, gexFlip = null, prevGexSign = null;
@@ -1096,16 +1117,18 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   }
 
   // ── 4. 비대칭 EM 계산 ───────────────────────────────────
-  // ATM IV: spot에 가장 가까운 스트라이크의 avg_iv 사용
   const atmStrike = sorted.reduce((best, s) =>
     Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best
   );
   const atmIV = atmStrike.avg_iv ?? 0.20;
   const symEM = spot * atmIV * Math.sqrt(dte / 365);
 
-  // Vanna Flip이 있으면 비대칭 EM, 없으면 대칭 EM
-  const emUpper = vannaFlipUp   ?? spot + symEM;
-  const emLower = vannaFlipDown ?? spot - symEM;
+  // vixDir에 따라 의미 있는 경계만 사용
+  // up:   하방 경계 = vannaFlipDown, 상방은 대칭 EM
+  // down: 상방 경계 = vannaFlipUp,   하방은 대칭 EM
+  // neutral: 대칭 EM
+  const emUpper = (vixDir === 'down' ? vannaFlipUp   : null) ?? spot + symEM;
+  const emLower = (vixDir === 'up'   ? vannaFlipDown : null) ?? spot - symEM;
 
   // ── 5. IV Smile 기반 확률 밀도 계산 ────────────────────
   const sigma = spot * atmIV * Math.sqrt(dte / 365) || 1;
@@ -1118,10 +1141,40 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   const maxProb  = Math.max(...probRaw, 1e-10);
   const normProb = probRaw.map(p => p / maxProb);
 
-  // ── 6. Vanna 누적합 곡선 데이터 (오버레이용) ───────────
-  let cumV = 0;
-  const vannaCum = sorted.map(s => { cumV += s.vanna ?? 0; return cumV; });
-  const maxAbsV  = Math.max(...vannaCum.map(Math.abs), 1e-10);
+  // ── 6. Vanna 누적 곡선 (vixDir 반영, spot 기준 방향성) ──
+  // VIX 상승: spot 아래 방향으로 음수 vanna 압력 시각화
+  // VIX 하락: spot 위 방향으로 양수 vanna 압력 시각화
+  // 중립: raw vanna 단순 누적
+  const vannaCum = (() => {
+    if (vixDir === 'up') {
+      // spot 아래: spot에서 멀어질수록 누적, spot 위는 0
+      let cum = 0;
+      const result = new Array(sorted.length).fill(0);
+      for (let i = sorted.length - 1; i >= 0; i--) {
+        if (sorted[i].strike >= spot) { result[i] = 0; continue; }
+        const contribution = -(sorted[i].vanna ?? 0); // 음수 vanna = 매도 압력
+        if (contribution > 0) cum += contribution;
+        result[i] = -cum; // 하방 압력이므로 음수로 표시
+      }
+      return result;
+    } else if (vixDir === 'down') {
+      // spot 위: spot에서 멀어질수록 누적, spot 아래는 0
+      let cum = 0;
+      const result = new Array(sorted.length).fill(0);
+      for (let i = 0; i < sorted.length; i++) {
+        if (sorted[i].strike < spot) { result[i] = 0; continue; }
+        const contribution = sorted[i].vanna ?? 0; // 양수 vanna = 매수 압력
+        if (contribution > 0) cum += contribution;
+        result[i] = cum;
+      }
+      return result;
+    } else {
+      // 중립: 전체 raw 누적
+      let cum = 0;
+      return sorted.map(s => { cum += s.vanna ?? 0; return cum; });
+    }
+  })();
+  const maxAbsV   = Math.max(...vannaCum.map(Math.abs), 1e-10);
   const normVanna = vannaCum.map(v => v / maxAbsV);
 
   // ── 7. Canvas 생성 ──────────────────────────────────────
