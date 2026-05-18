@@ -1079,13 +1079,14 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   const belowSpot = sorted.filter(s => s.strike < spot);
   const aboveSpot = sorted.filter(s => s.strike >= spot);
 
-  function findSlopeExhaustPoint(strikes, vannaSign) {
-    // strikes: spot에서 가까운 것부터 먼 순서로 정렬된 배열
-    // 각 스트라이크의 방향성 vanna 기여(기울기)를 계산하고
-    // 최대 기울기 대비 SLOPE_THRESHOLD 이하로 떨어지는 첫 지점 반환
+  function findSlopeExhaustPoint(strikes) {
+    // VIX 방향 무관하게 항상 음수 vanna의 절대값을 압력 기울기로 사용
+    // VIX↑: 음수vanna × 양수ΔIV = 음수델타 → 매도압력
+    // VIX↓: 음수vanna × 음수ΔIV = 양수델타 → 매수압력
+    // 양쪽 모두 음수 vanna가 압력 발생원
     const slopes = strikes.map(s => {
-      const v = (s.vanna ?? 0) * vannaSign;
-      return v > 0 ? v : 0; // 방향과 반대인 기여는 0으로
+      const v = s.vanna ?? 0;
+      return v < 0 ? Math.abs(v) : 0; // 음수 vanna 절대값만 사용
     });
 
     const maxSlope = Math.max(...slopes, 1e-10);
@@ -1097,15 +1098,13 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
     return null;
   }
 
-  // VIX 하락 → 상방 EM (spot 위, spot에서 가까운 것부터 = 낮→높 역순)
-  // 0DTE ATM 위 콜의 vanna는 양수 → vannaSign=+1
-  const upStrikes     = [...aboveSpot].sort((a, b) => a.strike - b.strike); // 낮→높 = spot에서 가까운 순
-  const vannaFlipUp   = findSlopeExhaustPoint(upStrikes, 1);
+  // VIX 하락 → 상방 EM: spot 위, spot에서 가까운 순(낮→높)
+  const upStrikes     = [...aboveSpot].sort((a, b) => a.strike - b.strike);
+  const vannaFlipUp   = findSlopeExhaustPoint(upStrikes);
 
-  // VIX 상승 → 하방 EM (spot 아래, spot에서 가까운 것부터 = 높→낮)
-  // 0DTE ATM 아래 풋의 vanna는 음수 → vannaSign=-1
-  const downStrikes   = [...belowSpot].sort((a, b) => b.strike - a.strike); // 높→낮 = spot에서 가까운 순
-  const vannaFlipDown = findSlopeExhaustPoint(downStrikes, -1);
+  // VIX 상승 → 하방 EM: spot 아래, spot에서 가까운 순(높→낮)
+  const downStrikes   = [...belowSpot].sort((a, b) => b.strike - a.strike);
+  const vannaFlipDown = findSlopeExhaustPoint(downStrikes);
 
   // ── 3. GEX Flip Zone (기존 누적합 방식) ─────────────────
   let cumGex = 0, gexFlip = null, prevGexSign = null;
@@ -1331,10 +1330,26 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
       vline(xOf(gexFlip), '#fbbf24', [2, 4], `GF$${gexFlip}`, PT + 38);
 
     // EM 경계
-    if (emLower >= zoom.viewMin && emLower <= zoom.viewMax)
-      vline(xOf(emLower), 'rgba(251,191,36,0.8)', [6, 3], `$${emLower.toFixed(0)}`, PT + cH - 8);
-    if (emUpper >= zoom.viewMin && emUpper <= zoom.viewMax)
-      vline(xOf(emUpper), 'rgba(251,191,36,0.8)', [6, 3], `$${emUpper.toFixed(0)}`, PT + cH - 8);
+    if (emLower >= zoom.viewMin && emLower <= zoom.viewMax) {
+      const x = xOf(emLower);
+      vline(x, 'rgba(251,191,36,0.8)', [6, 3]);
+      ctx.save();
+      ctx.fillStyle = 'rgba(251,191,36,0.9)';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(`$${emLower.toFixed(0)}`, x + 3, PT + cH * 0.55);
+      ctx.restore();
+    }
+    if (emUpper >= zoom.viewMin && emUpper <= zoom.viewMax) {
+      const x = xOf(emUpper);
+      vline(x, 'rgba(251,191,36,0.8)', [6, 3]);
+      ctx.save();
+      ctx.fillStyle = 'rgba(251,191,36,0.9)';
+      ctx.font = 'bold 10px sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(`$${emUpper.toFixed(0)}`, x - 3, PT + cH * 0.55);
+      ctx.restore();
+    }
 
     // ── X축 눈금 ──────────────────────────────────────────
     const step = _niceStep(zoom.viewMax - zoom.viewMin, 8);
