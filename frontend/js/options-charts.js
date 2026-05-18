@@ -193,6 +193,450 @@ export function evaluateStatus({ termStructure, skewRows, spot, flipStrike, vann
   return { status, label, color, score, reasons };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// classifyExpiry: 만기 타입 분류 (공통 유틸)
+// ─────────────────────────────────────────────────────────────────────────────
+export function classifyExpiry(expiry_date, dte) {
+  if (dte === 0) return '0dte';
+  const d    = new Date(expiry_date);
+  const day  = d.getDay();   // 5 = 금요일
+  const date = d.getDate();
+  if (day === 5 && date >= 15 && date <= 21) return 'monthly';
+  return 'weekly';
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// renderDexTermStructure — DEX 버블 차트 (지수/개별종목 공용)
+//
+// expiryRows: [{
+//   expiry_date, dte, dex,          ← 필수
+//   atm_iv, call_oi, put_oi,        ← 옵션 (있으면 하단 카드에 표시)
+//   type: '0dte'|'weekly'|'monthly' ← 없으면 자동 분류
+// }]
+//
+// options: {
+//   mode:   'index' | 'stock',      ← 지수: 0dte 포함 / 개별종목: 없음
+//   maxDTE: 90,                     ← 표시 한계 (기본 90)
+//   el:     HTMLElement,            ← 렌더링 대상
+//   onFilterChange: (selectedDates) => void  ← 만기 선택 변경 콜백
+// }
+// ─────────────────────────────────────────────────────────────────────────────
+export function renderDexTermStructure(expiryRows, options = {}) {
+  const {
+    mode           = 'stock',
+    maxDTE         = 90,
+    el,
+    onFilterChange = null,
+  } = options;
+
+  if (!el) return;
+
+  // 1. 정규화 + 타입 분류 + DTE 필터
+  const rows = expiryRows
+    .filter(r => r.dex != null && r.dte != null && r.dte <= maxDTE)
+    .map(r => ({
+      ...r,
+      type: r.type ?? classifyExpiry(r.expiry_date, r.dte),
+    }))
+    .sort((a, b) => a.dte - b.dte);
+
+  if (!rows.length) {
+    el.innerHTML = '<div style="padding:16px;color:var(--text3);font-size:12px">데이터 없음</div>';
+    return;
+  }
+
+  // 2. 만기 선택 상태 (기본: 전체 선택)
+  const selectionState = {};
+  rows.forEach(r => { selectionState[r.expiry_date] = true; });
+
+  // 3. 통계 계산
+  function calcStats(selectedRows) {
+    const monthly = selectedRows.filter(r => r.type === 'monthly');
+    const weekly  = selectedRows.filter(r => r.type === 'weekly');
+
+    const dexCenter = selectedRows.length
+      ? selectedRows.reduce((s, r) => s + Math.abs(r.dex) * r.dte, 0)
+        / selectedRows.reduce((s, r) => s + Math.abs(r.dex), 0)
+      : null;
+
+    const mSlope = monthly.length >= 2
+      ? monthly[monthly.length - 1].dex - monthly[0].dex : null;
+    const wSlope = weekly.length >= 2
+      ? weekly[weekly.length - 1].dex - weekly[0].dex : null;
+
+    const maxRow = [...selectedRows].sort((a, b) => Math.abs(b.dex) - Math.abs(a.dex))[0];
+
+    return { dexCenter, mSlope, wSlope, maxRow, monthly, weekly };
+  }
+
+  // 4. Chart.js 버블 차트 데이터 생성
+  function buildChartData(selectedRows) {
+    const maxAbsDex = Math.max(...selectedRows.map(r => Math.abs(r.dex)), 0.001);
+    function bR(dex) { return Math.max(7, Math.sqrt(Math.abs(dex) / maxAbsDex) * 34); }
+
+    const CALL_FILL   = 'rgba(55,138,221,0.58)';
+    const CALL_STROKE = '#378ADD';
+    const PUT_FILL    = 'rgba(226,75,74,0.58)';
+    const PUT_STROKE  = '#E24B4A';
+    const ZERO_FILL   = 'rgba(99,153,34,0.6)';
+    const ZERO_STROKE = '#639922';
+
+    const byType = { '0dte': [], weekly: [], monthly: [] };
+    selectedRows.forEach(r => { (byType[r.type] ?? byType.weekly).push(r); });
+
+    const datasets = [];
+
+    // 연결선 (위클리)
+    if (byType.weekly.length >= 2) {
+      datasets.push({
+        label: '_wline',
+        data: byType.weekly.map(r => ({ x: r.dte, y: r.dex })),
+        type: 'line',
+        borderColor: 'rgba(55,138,221,0.22)',
+        borderWidth: 1,
+        borderDash: [4, 4],
+        pointRadius: 0,
+        fill: false,
+        tension: 0.3,
+        order: 10,
+      });
+    }
+
+    // 연결선 (먼슬리)
+    if (byType.monthly.length >= 2) {
+      datasets.push({
+        label: '_mline',
+        data: byType.monthly.map(r => ({ x: r.dte, y: r.dex })),
+        type: 'line',
+        borderColor: 'rgba(212,83,126,0.28)',
+        borderWidth: 1.5,
+        borderDash: [5, 3],
+        pointRadius: 0,
+        fill: false,
+        tension: 0.3,
+        order: 10,
+      });
+    }
+
+    // 0DTE 버블
+    if (byType['0dte'].length) {
+      datasets.push({
+        label: '0DTE',
+        data: byType['0dte'].map(r => ({
+          x: r.dte, y: r.dex, r: bR(r.dex), label: r.expiry_date,
+        })),
+        backgroundColor: ZERO_FILL,
+        borderColor: ZERO_STROKE,
+        borderWidth: 1.5,
+        pointStyle: 'rect',
+        order: 3,
+      });
+    }
+
+    // 위클리 버블
+    if (byType.weekly.length) {
+      datasets.push({
+        label: '위클리',
+        data: byType.weekly.map(r => ({
+          x: r.dte, y: r.dex, r: bR(r.dex), label: r.expiry_date,
+        })),
+        backgroundColor: byType.weekly.map(r => r.dex >= 0 ? CALL_FILL : PUT_FILL),
+        borderColor:     byType.weekly.map(r => r.dex >= 0 ? CALL_STROKE : PUT_STROKE),
+        borderWidth: 1.5,
+        pointStyle: 'circle',
+        order: 2,
+      });
+    }
+
+    // 먼슬리 버블
+    if (byType.monthly.length) {
+      datasets.push({
+        label: '먼슬리',
+        data: byType.monthly.map(r => ({
+          x: r.dte, y: r.dex, r: bR(r.dex), label: r.expiry_date,
+        })),
+        backgroundColor: byType.monthly.map(r => r.dex >= 0 ? CALL_FILL : PUT_FILL),
+        borderColor:     byType.monthly.map(r => r.dex >= 0 ? CALL_STROKE : PUT_STROKE),
+        borderWidth: 2,
+        pointStyle: 'triangle',
+        order: 1,
+      });
+    }
+
+    return datasets;
+  }
+
+  // 5. 카드 HTML
+  function renderCards(stats) {
+    const { dexCenter, mSlope, wSlope, maxRow } = stats;
+
+    const centerLabel = dexCenter == null ? '—'
+      : dexCenter < 21  ? `D-${dexCenter.toFixed(0)} · 단기집중`
+      : dexCenter < 45  ? `D-${dexCenter.toFixed(0)} · 중기베팅`
+      :                   `D-${dexCenter.toFixed(0)} · 장기베팅`;
+
+    const mSlopeLabel = mSlope == null ? '데이터 부족'
+      : mSlope > 0  ? '콜 확대 ↑'
+      : mSlope < 0  ? '풋 확대 ↓'
+      : '중립 →';
+    const mSlopeColor = mSlope == null ? 'var(--text3)'
+      : mSlope > 0 ? '#378ADD' : mSlope < 0 ? '#E24B4A' : 'var(--text3)';
+
+    const wSlopeLabel = wSlope == null ? '데이터 부족'
+      : wSlope > 0  ? '콜 확대 ↑'
+      : wSlope < 0  ? '풋 확대 ↓'
+      : '중립 →';
+    const wSlopeColor = wSlope == null ? 'var(--text3)'
+      : wSlope > 0 ? '#378ADD' : wSlope < 0 ? '#E24B4A' : 'var(--text3)';
+
+    return `
+      <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
+        <div style="flex:1;min-width:100px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px 12px">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:2px">DEX 무게중심</div>
+          <div style="font-size:15px;font-weight:700;color:var(--text)">${centerLabel}</div>
+        </div>
+        <div style="flex:1;min-width:100px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px 12px">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:2px">먼슬리 방향</div>
+          <div style="font-size:15px;font-weight:700;color:${mSlopeColor}">${mSlopeLabel}</div>
+        </div>
+        <div style="flex:1;min-width:100px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px 12px">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:2px">위클리 방향</div>
+          <div style="font-size:15px;font-weight:700;color:${wSlopeColor}">${wSlopeLabel}</div>
+        </div>
+        <div style="flex:1;min-width:100px;background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px 12px">
+          <div style="font-size:10px;color:var(--text3);margin-bottom:2px">최대 DEX 만기</div>
+          <div style="font-size:15px;font-weight:700;color:var(--text)">${maxRow ? maxRow.expiry_date.slice(5) : '—'}</div>
+          <div style="font-size:10px;color:var(--text3)">${maxRow ? (maxRow.type === 'monthly' ? '먼슬리' : maxRow.type === 'weekly' ? '위클리' : '0DTE') : ''}</div>
+        </div>
+      </div>
+    `;
+  }
+
+  // 6. 만기 선택 컨트롤 HTML
+  function renderControls() {
+    const typeOrder = mode === 'index'
+      ? ['0dte', 'weekly', 'monthly']
+      : ['weekly', 'monthly'];
+
+    const typeLabel = { '0dte': '0DTE', weekly: '위클리', monthly: '먼슬리' };
+    const typeColor = { '0dte': '#639922', weekly: '#378ADD', monthly: '#D4537E' };
+
+    const grouped = {};
+    typeOrder.forEach(t => { grouped[t] = []; });
+    rows.forEach(r => {
+      const t = r.type;
+      if (grouped[t]) grouped[t].push(r);
+      else if (grouped.weekly) grouped.weekly.push(r);
+    });
+
+    const sections = typeOrder.map(type => {
+      const items = grouped[type] ?? [];
+      if (!items.length) return '';
+      return `
+        <div style="display:flex;flex-wrap:wrap;align-items:center;gap:4px;margin-bottom:4px">
+          <span style="font-size:10px;color:${typeColor[type]};font-weight:700;width:44px">${typeLabel[type]}</span>
+          ${items.map(r => `
+            <label style="display:inline-flex;align-items:center;gap:3px;cursor:pointer;
+              background:${selectionState[r.expiry_date] ? typeColor[type] + '22' : 'var(--bg3)'};
+              border:1px solid ${selectionState[r.expiry_date] ? typeColor[type] + '66' : 'var(--border)'};
+              border-radius:4px;padding:2px 6px;font-size:10px;color:var(--text);
+              transition:background 0.15s">
+              <input type="checkbox" data-expiry="${r.expiry_date}"
+                ${selectionState[r.expiry_date] ? 'checked' : ''}
+                style="width:10px;height:10px;cursor:pointer;accent-color:${typeColor[type]}">
+              ${r.expiry_date.slice(5)}
+              <span style="color:var(--text3);font-size:9px">&nbsp;D-${r.dte}</span>
+            </label>
+          `).join('')}
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+          <span style="font-size:11px;color:var(--text3)">만기 선택</span>
+          <div style="display:flex;gap:6px">
+            <button id="dts-all" style="font-size:10px;padding:2px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer">전체선택</button>
+            <button id="dts-none" style="font-size:10px;padding:2px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer">전체해제</button>
+            <button id="dts-monthly" style="font-size:10px;padding:2px 8px;background:#D4537E22;border:1px solid #D4537E44;border-radius:4px;color:#D4537E;cursor:pointer">먼슬리만</button>
+          </div>
+        </div>
+        ${sections}
+      </div>
+    `;
+  }
+
+  // 7. 전체 HTML 렌더링
+  const canvasId = 'dex-term-canvas-' + Math.random().toString(36).slice(2, 7);
+  const statsId  = 'dex-term-stats-' + Math.random().toString(36).slice(2, 7);
+
+  el.innerHTML = `
+    <div style="font-size:11px;color:var(--text3);margin-bottom:6px;display:flex;gap:12px;flex-wrap:wrap">
+      <span style="display:inline-flex;align-items:center;gap:4px">
+        <svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="rgba(55,138,221,0.6)" stroke="#378ADD" stroke-width="1.2"/></svg>위클리 콜우세
+      </span>
+      <span style="display:inline-flex;align-items:center;gap:4px">
+        <svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="rgba(226,75,74,0.6)" stroke="#E24B4A" stroke-width="1.2"/></svg>위클리 풋우세
+      </span>
+      <span style="display:inline-flex;align-items:center;gap:4px">
+        <svg width="14" height="12"><polygon points="7,1 13,11 1,11" fill="rgba(55,138,221,0.6)" stroke="#378ADD" stroke-width="1.2"/></svg>먼슬리 콜우세
+      </span>
+      <span style="display:inline-flex;align-items:center;gap:4px">
+        <svg width="14" height="12"><polygon points="7,1 13,11 1,11" fill="rgba(226,75,74,0.6)" stroke="#E24B4A" stroke-width="1.2"/></svg>먼슬리 풋우세
+      </span>
+      ${mode === 'index' ? `
+      <span style="display:inline-flex;align-items:center;gap:4px">
+        <svg width="12" height="12"><rect x="1" y="1" width="10" height="10" rx="2" fill="rgba(99,153,34,0.6)" stroke="#639922" stroke-width="1.2"/></svg>0DTE
+      </span>` : ''}
+      <span style="margin-left:auto;color:var(--text3);font-size:10px">버블 크기 = DEX 절대값</span>
+    </div>
+
+    ${renderControls()}
+
+    <div style="position:relative;width:100%;height:300px">
+      <canvas id="${canvasId}" role="img" aria-label="만기별 DEX 버블 차트"></canvas>
+    </div>
+
+    <div id="${statsId}">${renderCards(calcStats(rows))}</div>
+  `;
+
+  // 8. Chart.js 렌더링
+  const isDark    = matchMedia('(prefers-color-scheme: dark)').matches;
+  const gridColor = isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.07)';
+  const zeroColor = isDark ? 'rgba(255,255,255,0.22)' : 'rgba(0,0,0,0.18)';
+  const textColor = isDark ? '#9ca3af' : '#6b7280';
+
+  let chartInst = null;
+
+  function getSelectedRows() {
+    return rows.filter(r => selectionState[r.expiry_date]);
+  }
+
+  function drawChart(selectedRows) {
+    const canvas = el.querySelector(`#${canvasId}`);
+    if (!canvas) return;
+
+    const dexVals  = selectedRows.map(r => r.dex);
+    const maxAbsDex = Math.max(...dexVals.map(Math.abs), 0.001);
+    const yPad     = maxAbsDex * 0.18;
+    const yMin     = Math.min(...dexVals) - yPad;
+    const yMax     = Math.max(...dexVals) + yPad;
+    const xMax     = Math.max(...selectedRows.map(r => r.dte), 10) + 5;
+
+    if (chartInst) chartInst.destroy();
+
+    chartInst = new Chart(canvas, {
+      type: 'bubble',
+      data: { datasets: buildChartData(selectedRows) },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        layout: { padding: { top: 12, right: 20, bottom: 4, left: 4 } },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label(ctx) {
+                const d = ctx.raw;
+                if (!d?.label) return '';
+                const dir = d.y >= 0 ? '콜우세' : '풋우세';
+                return `${d.label}  DEX: ${d.y >= 0 ? '+' : ''}${d.y.toFixed(2)}B  ${dir}  (D-${d.x})`;
+              },
+            },
+            filter(item) { return !!item.raw?.label; },
+          },
+        },
+        scales: {
+          x: {
+            type: 'linear',
+            min: -3,
+            max: xMax,
+            title: { display: true, text: 'DTE', color: textColor, font: { size: 11 } },
+            ticks: { color: textColor, font: { size: 10 }, callback: v => `D-${v}`, stepSize: 7 },
+            grid: { color: gridColor },
+          },
+          y: {
+            min: yMin,
+            max: yMax,
+            title: { display: true, text: 'DEX  ↑콜우세 / ↓풋우세', color: textColor, font: { size: 11 } },
+            ticks: {
+              color: textColor,
+              font: { size: 10 },
+              callback: v => (v > 0 ? '+' : '') + v.toFixed(1) + 'B',
+            },
+            grid: {
+              color: ctx => ctx.tick.value === 0 ? zeroColor : gridColor,
+              lineWidth: ctx => ctx.tick.value === 0 ? 1.5 : 1,
+            },
+          },
+        },
+      },
+    });
+  }
+
+  // 9. 컨트롤 이벤트 바인딩
+  function updateAll() {
+    const sel = getSelectedRows();
+    drawChart(sel);
+    const statsEl = el.querySelector(`#${statsId}`);
+    if (statsEl) statsEl.innerHTML = renderCards(calcStats(sel));
+    if (onFilterChange) onFilterChange(sel.map(r => r.expiry_date));
+
+    // 체크박스 라벨 스타일 갱신
+    el.querySelectorAll('input[data-expiry]').forEach(chk => {
+      const expiry    = chk.dataset.expiry;
+      const row       = rows.find(r => r.expiry_date === expiry);
+      const typeColor = row?.type === 'monthly' ? '#D4537E'
+                      : row?.type === '0dte'    ? '#639922'
+                      :                           '#378ADD';
+      const label = chk.closest('label');
+      if (!label) return;
+      const on = selectionState[expiry];
+      label.style.background = on ? typeColor + '22' : 'var(--bg3)';
+      label.style.borderColor = on ? typeColor + '66' : 'var(--border)';
+    });
+  }
+
+  el.querySelectorAll('input[data-expiry]').forEach(chk => {
+    chk.addEventListener('change', e => {
+      selectionState[e.target.dataset.expiry] = e.target.checked;
+      updateAll();
+    });
+  });
+
+  el.querySelector('#dts-all')?.addEventListener('click', () => {
+    rows.forEach(r => { selectionState[r.expiry_date] = true; });
+    el.querySelectorAll('input[data-expiry]').forEach(c => { c.checked = true; });
+    updateAll();
+  });
+
+  el.querySelector('#dts-none')?.addEventListener('click', () => {
+    rows.forEach(r => { selectionState[r.expiry_date] = false; });
+    el.querySelectorAll('input[data-expiry]').forEach(c => { c.checked = false; });
+    updateAll();
+  });
+
+  el.querySelector('#dts-monthly')?.addEventListener('click', () => {
+    rows.forEach(r => { selectionState[r.expiry_date] = r.type === 'monthly'; });
+    el.querySelectorAll('input[data-expiry]').forEach(c => {
+      const row = rows.find(r => r.expiry_date === c.dataset.expiry);
+      c.checked = row?.type === 'monthly';
+    });
+    updateAll();
+  });
+
+  // 10. 초기 렌더링 (Chart.js 로드 확인)
+  function tryDraw() {
+    if (typeof Chart !== 'undefined') {
+      drawChart(getSelectedRows());
+    } else {
+      setTimeout(tryDraw, 100);
+    }
+  }
+  tryDraw();
+}
+
 export function renderTermStructure(termData, targetEl) {
   const el = targetEl ?? document.getElementById('struct-term');
   if (!el) return;
