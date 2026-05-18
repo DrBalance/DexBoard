@@ -133,7 +133,7 @@ const dd = dateStr.slice(4, 6);
 const expiry = `20${yy}-${mm}-${dd}`;
 const strike = parseInt(strikeStr, 10) / 1000;
 const expiryDate = new Date(`${expiry}T16:00:00-05:00`);
-const dte = Math.max(0, Math.round((expiryDate - new Date()) / 86_400_000));
+const dte = Math.round((expiryDate - new Date()) / 86_400_000);  // 음수 허용 (만기 지난 항목 필터용)
 return { symbol, expiry, type, strike, dte };
 }
 
@@ -714,34 +714,42 @@ if (strikes.length > 0) {
 
 }
 
-// 5. 만기별 플립존 계산 후 expirations에 포함
-// results 배열을 expiry_date 기준 맵으로 변환 (atm_iv, dte 등 집계값 조회용)
-const resultsByExpiry = Object.fromEntries(results.map(r => [r.expiry_date, r]));
-
+// 5. 만기별 플립존 계산 + atm_iv/dte 직접 계산 후 expirations에 포함
 for (const [expiry, strikes] of Object.entries(expirations)) {
   const flipStrike = calcFlipStrike(strikes);
-  const r = resultsByExpiry[expiry] ?? {};
 
-  // dte: results에 없으면 만기일로 직접 계산
-  const calcDte = (() => {
-    const exp = new Date(`${expiry}T16:00:00-05:00`);
-    return Math.max(0, Math.round((exp - new Date()) / 86_400_000));
-  })();
+  // DTE: strikes 배열 첫 항목에서 추출
+  const dte = strikes[0]?.dte ?? null;
+
+  // ATM strike: 현재가 기준 가장 가까운 strike
+  const atmStrike = strikes.reduce((best, s) =>
+    Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best
+  , strikes[0]);
+  const atmIV = atmStrike?.avg_iv ?? null;
+
+  // OTM Call/Put IV (ATM ± 5% 범위)
+  const otmRange   = spot * 0.05;
+  const otmCallIVs = strikes.filter(s => s.strike > spot && s.strike <= spot + otmRange).map(s => s.avg_iv).filter(Boolean);
+  const otmPutIVs  = strikes.filter(s => s.strike < spot && s.strike >= spot - otmRange).map(s => s.avg_iv).filter(Boolean);
+  const otmCallIV  = otmCallIVs.length ? otmCallIVs.reduce((a,b) => a+b,0) / otmCallIVs.length : null;
+  const otmPutIV   = otmPutIVs.length  ? otmPutIVs.reduce((a,b)  => a+b,0) / otmPutIVs.length  : null;
+  const ivSkew     = (atmIV && otmCallIV && otmPutIV) ? (otmCallIV - otmPutIV) / atmIV : null;
 
   expirations[expiry] = {
     strikes,
-    flip_strike:  flipStrike,
-    dte:          r.dte ?? calcDte,
-    atm_iv:       r.atm_iv       ?? null,
-    otm_call_iv:  r.otm_call_iv  ?? null,
-    otm_put_iv:   r.otm_put_iv   ?? null,
-    iv_skew:      r.iv_skew      ?? null,
+    flip_strike: flipStrike,
+    dte,
+    atm_iv:      atmIV,
+    otm_call_iv: otmCallIV != null ? +otmCallIV.toFixed(4) : null,
+    otm_put_iv:  otmPutIV  != null ? +otmPutIV.toFixed(4)  : null,
+    iv_skew:     ivSkew    != null ? +ivSkew.toFixed(4)     : null,
   };
 }
 
-// 만기 지난 항목 제거 (dte < 0)
+// 만기 지난 항목 제거 (dte < 0 또는 null)
 for (const expiry of Object.keys(expirations)) {
-  if ((expirations[expiry].dte ?? 0) < 0) {
+  const dte = expirations[expiry].dte;
+  if (dte == null || dte < 0) {
     delete expirations[expiry];
     console.log(`[KV] 만기 지난 항목 제거: ${expiry}`);
   }
