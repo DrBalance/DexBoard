@@ -14,7 +14,7 @@
 import { bindToggle } from '../tabs.js';
 import { CF_API } from '../config.js';
 import { renderHeatmap } from '../heatmap.js';
-import { calculateTermStructure, renderTermStructure } from '../options-charts.js';
+import { calculateTermStructure, renderTermStructure, renderDexTermStructure, classifyExpiry } from '../options-charts.js';
 
 const WORKER_URL = CF_API;
 
@@ -644,34 +644,43 @@ function _resizeChart(zoom) {
   if (wrap) wrap.style.width = `${chartW}px`;
 }
 
-// ── SPY Term Structure ────────────────────────────────────
+// ── SPY Term Structure (DEX 버블 차트) ───────────────────
 function _renderSPYTermStructure(expirations) {
   const el = document.getElementById('mk-term-structure');
   if (!el) return;
 
-  // expirations 객체 → expiryRows 배열 변환 (DTE ≤ 60, atm_iv 있는 것만)
+  // expirations 객체 → expiryRows 정규화
+  // expirations[expiry] = { strikes: [...], dte, atm_iv, ... }
   const expiryRows = Object.entries(expirations)
     .map(([expiry_date, data]) => {
-      const d = Array.isArray(data) ? {} : data;
+      const d       = Array.isArray(data) ? {} : data;
+      const strikes = Array.isArray(data) ? data : (data?.strikes ?? []);
+      const dte     = d.dte ?? null;
+      if (dte == null || dte > 90) return null;
+
+      // 만기별 총 DEX = strike별 dex 합산
+      const totalDex = strikes.reduce((acc, s) => acc + (s.dex ?? 0), 0);
+
       return {
         expiry_date,
-        dte:         d.dte         ?? null,
+        dte,
+        dex:         totalDex,
         atm_iv:      d.atm_iv      ?? null,
         otm_call_iv: d.otm_call_iv ?? null,
         otm_put_iv:  d.otm_put_iv  ?? null,
-        iv_skew:     d.iv_skew     ?? null,
+        call_oi:     strikes.reduce((a, s) => a + (s.callOI ?? s.call_oi ?? 0), 0),
+        put_oi:      strikes.reduce((a, s) => a + (s.putOI  ?? s.put_oi  ?? 0), 0),
+        type:        classifyExpiry(expiry_date, dte),
       };
     })
-    .filter(r => r.atm_iv != null && r.dte != null && r.dte <= 60)
+    .filter(Boolean)
     .sort((a, b) => a.dte - b.dte);
 
-  if (!expiryRows.length) {
-    el.innerHTML = '<div style="padding:12px;color:var(--text3);font-size:12px">Term Structure 데이터 없음</div>';
-    return;
-  }
-
-  const termData = calculateTermStructure(expiryRows);
-  renderTermStructure(termData, el);
+  renderDexTermStructure(expiryRows, {
+    mode:   'index',
+    maxDTE: 90,
+    el,
+  });
 }
 
 // ── 만기별 DEX 분포 바 ────────────────────────────────────

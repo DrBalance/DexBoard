@@ -8,11 +8,13 @@ import { CF_API } from '../config.js';
 import { fmt } from '../fmt.js';
 import {
   isMonthlyExpiry,
+  classifyExpiry,
   calculateTermStructure,
   calculateSkew,
   calculateExpectedMove,
   evaluateStatus,
   renderTermStructure,
+  renderDexTermStructure,
   renderSkewChart,
   renderSkewChartImproved,
   renderSmileSelector,
@@ -405,7 +407,14 @@ async function loadAndRenderCharts(symbol, scoreRow) {
     // 각 섹션 렌더링
     renderVerdict({ termData, skewData, emData: [], spot, flipStrike, vannaSum, rows });  // 작업3: 종합판단 개선
     renderOIDistribution(symbol, rows, spot, flipStrike, []);                        // 작업2: OI 확률 분포
-    renderTermStructure(termData);
+    renderDexTermStructure(
+      rows.map(r => ({ ...r, type: classifyExpiry(r.expiry_date, r.dte) })),
+      {
+        mode:   'stock',
+        maxDTE: 90,
+        el:     document.getElementById('struct-term'),
+      }
+    );
     renderSkewChartImproved(skewData, rows);                                          // 작업6: Skew 판정 수정
     renderSmileSelector(symbol, rows, scoreRow);
     renderExpiryCardsMonthlyFocus(rows, scoreRow);                                    // Vanna/Charm Monthly 강조
