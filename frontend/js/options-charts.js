@@ -194,14 +194,18 @@ export function evaluateStatus({ termStructure, skewRows, spot, flipStrike, vann
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// classifyExpiry: 만기 타입 분류 (공통 유틸)
+// ─────────────────────────────────────────────────────────────────────────────
+// classifyExpiry: 만기 타입 분류
+// 백엔드에서 저장한 expiry_type 필드를 우선 사용
+// 없으면 폴백으로 날짜 기반 추정
 // ─────────────────────────────────────────────────────────────────────────────
 export function classifyExpiry(expiry_date, dte) {
-  if (dte === 0) return '0dte';
+  // 폴백: 금요일이면 위클리/먼슬리, 아니면 0dte
   const d    = new Date(expiry_date);
-  const day  = d.getDay();   // 5 = 금요일
+  const day  = d.getDay();
+  if (day !== 5) return '0dte';
   const date = d.getDate();
-  if (day === 5 && date >= 15 && date <= 21) return 'monthly';
+  if (date >= 15 && date <= 21) return 'monthly';
   return 'weekly';
 }
 
@@ -236,7 +240,7 @@ export function renderDexTermStructure(expiryRows, options = {}) {
     .filter(r => r.dex != null && r.dte != null && r.dte <= maxDTE)
     .map(r => ({
       ...r,
-      type: r.type ?? classifyExpiry(r.expiry_date, r.dte),
+      type: r.expiry_type ?? r.type ?? classifyExpiry(r.expiry_date, r.dte),
     }))
     .sort((a, b) => a.dte - b.dte);
 
