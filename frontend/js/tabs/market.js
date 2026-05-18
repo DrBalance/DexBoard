@@ -651,12 +651,17 @@ function _renderSPYTermStructure(expirations) {
 
   // expirations 객체 → expiryRows 정규화
   // expirations[expiry] = { strikes: [...], dte, atm_iv, ... }
+  const now = new Date();
   const expiryRows = Object.entries(expirations)
     .map(([expiry_date, data]) => {
       const d       = Array.isArray(data) ? {} : data;
       const strikes = Array.isArray(data) ? data : (data?.strikes ?? []);
-      const dte     = d.dte ?? null;
-      if (dte == null || dte > 90) return null;
+
+      // dte: KV 저장값 우선, null이면 현재 시각 기준 직접 계산
+      const dte = d.dte != null ? d.dte : _calcDTE(expiry_date, now);
+
+      // 만기 지난 항목 제외 (dte < 0) + 90일 초과 제외
+      if (dte < 0 || dte > 90) return null;
 
       // 만기별 총 DEX = strike별 dex 합산
       const totalDex = strikes.reduce((acc, s) => acc + (s.dex ?? 0), 0);
