@@ -1065,48 +1065,46 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   const minS = sorted[0].strike;
   const maxS = sorted[sorted.length - 1].strike;
 
-  // ── 2. Vanna EM 경계 계산 (기울기 소진점 방식) ──────────
+  // ── 2. vixDir에 따른 vanna 기여값 결정 ─────────────────
   //
-  // 원칙:
-  //   VIX 하락 → 상방 EM: spot 위 양수 vanna 기울기가
-  //              최대값의 SLOPE_THRESHOLD 이하로 떨어지는 지점
-  //   VIX 상승 → 하방 EM: spot 아래 음수 vanna 기울기가
-  //              최대값의 SLOPE_THRESHOLD 이하로 떨어지는 지점
-  //   중립     → 양방향 모두 계산 → 비대칭 EM
+  // VIX↑: 음수 vanna 절대값 (딜러 매도 압력 발생원)
+  // VIX↓: 양수 vanna 값     (딜러 매수 압력 발생원)
+  // 중립:  전체 vanna 절대값
+  //
+  // 왼→오른 누적으로 S자 곡선 형성
+  // 양끝 플랫에서 안쪽으로 좁혀오며 EM 경계 탐색
 
-  const SLOPE_THRESHOLD = 0.15; // 최대 기울기의 15% 이하 = 압력 소진
-
-  const belowSpot = sorted.filter(s => s.strike < spot);
-  const aboveSpot = sorted.filter(s => s.strike >= spot);
-
-  function findSlopeExhaustPoint(strikes) {
-    // VIX 방향 무관하게 항상 음수 vanna의 절대값을 압력 기울기로 사용
-    // VIX↑: 음수vanna × 양수ΔIV = 음수델타 → 매도압력
-    // VIX↓: 음수vanna × 음수ΔIV = 양수델타 → 매수압력
-    // 양쪽 모두 음수 vanna가 압력 발생원
-    const slopes = strikes.map(s => {
-      const v = s.vanna ?? 0;
-      return v < 0 ? Math.abs(v) : 0; // 음수 vanna 절대값만 사용
-    });
-
-    const maxSlope = Math.max(...slopes, 1e-10);
-    const threshold = maxSlope * SLOPE_THRESHOLD;
-
-    for (let i = 0; i < slopes.length; i++) {
-      if (slopes[i] < threshold) return strikes[i].strike;
-    }
-    return null;
+  function vannaContrib(v) {
+    if (vixDir === 'up')   return v < 0 ? Math.abs(v) : 0;
+    if (vixDir === 'down') return v > 0 ? v : 0;
+    return Math.abs(v);
   }
 
-  // VIX 하락 → 상방 EM: spot 위, spot에서 가까운 순(낮→높)
-  const upStrikes     = [...aboveSpot].sort((a, b) => a.strike - b.strike);
-  const vannaFlipUp   = findSlopeExhaustPoint(upStrikes);
+  // ── 3. Vanna 누적 곡선 (왼→오른, S자) ──────────────────
+  const vannaVals = sorted.map(s => vannaContrib(s.vanna ?? 0));
+  let _cumV = 0;
+  const vannaCum  = vannaVals.map(v => { _cumV += v; return _cumV; });
+  const maxAbsV   = Math.max(...vannaCum, 1e-10);
+  const normVanna = vannaCum.map(v => v / maxAbsV);
 
-  // VIX 상승 → 하방 EM: spot 아래, spot에서 가까운 순(높→낮)
-  const downStrikes   = [...belowSpot].sort((a, b) => b.strike - a.strike);
-  const vannaFlipDown = findSlopeExhaustPoint(downStrikes);
+  // ── 4. EM 경계: 양끝에서 안쪽으로 좁혀오기 ─────────────
+  const SLOPE_THRESHOLD = 0.15;
+  const maxSlope  = Math.max(...vannaVals, 1e-10);
+  const threshold = maxSlope * SLOPE_THRESHOLD;
 
-  // ── 3. GEX Flip Zone (기존 누적합 방식) ─────────────────
+  // 하방 EM: 왼쪽 끝부터 → 안쪽으로
+  let vannaFlipDown = sorted[0].strike;
+  for (let i = 0; i < sorted.length; i++) {
+    if (vannaVals[i] >= threshold) { vannaFlipDown = sorted[i].strike; break; }
+  }
+
+  // 상방 EM: 오른쪽 끝부터 → 안쪽으로
+  let vannaFlipUp = sorted[sorted.length - 1].strike;
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    if (vannaVals[i] >= threshold) { vannaFlipUp = sorted[i].strike; break; }
+  }
+
+  // ── 5. GEX Flip Zone ────────────────────────────────────
   let cumGex = 0, gexFlip = null, prevGexSign = null;
   for (const s of sorted) {
     cumGex += s.gex ?? 0;
@@ -1115,21 +1113,17 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
     prevGexSign = sign;
   }
 
-  // ── 4. 비대칭 EM 계산 ───────────────────────────────────
+  // ── 6. ATM IV 기반 대칭 EM (폴백용) ────────────────────
   const atmStrike = sorted.reduce((best, s) =>
     Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best
   );
   const atmIV = atmStrike.avg_iv ?? 0.20;
   const symEM = spot * atmIV * Math.sqrt(dte / 365);
 
-  // vixDir에 따라 의미 있는 경계만 사용
-  // up:   하방 경계 = vannaFlipDown, 상방은 대칭 EM
-  // down: 상방 경계 = vannaFlipUp,   하방은 대칭 EM
-  // neutral: 대칭 EM
-  const emUpper = (vixDir === 'down' ? vannaFlipUp   : null) ?? spot + symEM;
-  const emLower = (vixDir === 'up'   ? vannaFlipDown : null) ?? spot - symEM;
+  const emUpper = vannaFlipUp   ?? (spot + symEM);
+  const emLower = vannaFlipDown ?? (spot - symEM);
 
-  // ── 5. IV Smile 기반 확률 밀도 계산 ────────────────────
+  // ── 7. IV Smile 기반 확률 밀도 계산 ────────────────────
   const sigma = spot * atmIV * Math.sqrt(dte / 365) || 1;
   const probRaw = sorted.map(s => {
     const iv  = s.avg_iv ?? atmIV;
@@ -1139,42 +1133,6 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   });
   const maxProb  = Math.max(...probRaw, 1e-10);
   const normProb = probRaw.map(p => p / maxProb);
-
-  // ── 6. Vanna 누적 곡선 (vixDir 반영, spot 기준 방향성) ──
-  // VIX 상승: spot 아래 방향으로 음수 vanna 압력 시각화
-  // VIX 하락: spot 위 방향으로 양수 vanna 압력 시각화
-  // 중립: raw vanna 단순 누적
-  const vannaCum = (() => {
-    if (vixDir === 'up') {
-      // spot 아래: spot에서 멀어질수록 누적, spot 위는 0
-      let cum = 0;
-      const result = new Array(sorted.length).fill(0);
-      for (let i = sorted.length - 1; i >= 0; i--) {
-        if (sorted[i].strike >= spot) { result[i] = 0; continue; }
-        const contribution = -(sorted[i].vanna ?? 0); // 음수 vanna = 매도 압력
-        if (contribution > 0) cum += contribution;
-        result[i] = -cum; // 하방 압력이므로 음수로 표시
-      }
-      return result;
-    } else if (vixDir === 'down') {
-      // spot 위: spot에서 멀어질수록 누적, spot 아래는 0
-      let cum = 0;
-      const result = new Array(sorted.length).fill(0);
-      for (let i = 0; i < sorted.length; i++) {
-        if (sorted[i].strike < spot) { result[i] = 0; continue; }
-        const contribution = sorted[i].vanna ?? 0; // 양수 vanna = 매수 압력
-        if (contribution > 0) cum += contribution;
-        result[i] = cum;
-      }
-      return result;
-    } else {
-      // 중립: 전체 raw 누적
-      let cum = 0;
-      return sorted.map(s => { cum += s.vanna ?? 0; return cum; });
-    }
-  })();
-  const maxAbsV   = Math.max(...vannaCum.map(Math.abs), 1e-10);
-  const normVanna = vannaCum.map(v => v / maxAbsV);
 
   // ── 7. Canvas 생성 ──────────────────────────────────────
   el.innerHTML = '';
