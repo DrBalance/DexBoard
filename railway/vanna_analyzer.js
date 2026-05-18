@@ -718,16 +718,13 @@ if (strikes.length > 0) {
 for (const [expiry, strikes] of Object.entries(expirations)) {
   const flipStrike = calcFlipStrike(strikes);
 
-  // DTE: strikes 배열 첫 항목에서 추출
   const dte = strikes[0]?.dte ?? null;
 
-  // ATM strike: 현재가 기준 가장 가까운 strike
   const atmStrike = strikes.reduce((best, s) =>
     Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best
   , strikes[0]);
   const atmIV = atmStrike?.avg_iv ?? null;
 
-  // OTM Call/Put IV (ATM ± 5% 범위)
   const otmRange   = spot * 0.05;
   const otmCallIVs = strikes.filter(s => s.strike > spot && s.strike <= spot + otmRange).map(s => s.avg_iv).filter(Boolean);
   const otmPutIVs  = strikes.filter(s => s.strike < spot && s.strike >= spot - otmRange).map(s => s.avg_iv).filter(Boolean);
@@ -744,15 +741,6 @@ for (const [expiry, strikes] of Object.entries(expirations)) {
     otm_put_iv:  otmPutIV  != null ? +otmPutIV.toFixed(4)  : null,
     iv_skew:     ivSkew    != null ? +ivSkew.toFixed(4)     : null,
   };
-}
-
-// 만기 지난 항목 제거 (dte < 0 또는 null)
-for (const expiry of Object.keys(expirations)) {
-  const dte = expirations[expiry].dte;
-  if (dte == null || dte < 0) {
-    delete expirations[expiry];
-    console.log(`[KV] 만기 지난 항목 제거: ${expiry}`);
-  }
 }
 
 // 기존 dex:spy KV 저장 (전체 만기 -- 날짜조회 탭용)
