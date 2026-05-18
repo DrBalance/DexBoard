@@ -199,13 +199,56 @@ export function evaluateStatus({ termStructure, skewRows, spot, flipStrike, vann
 // 백엔드에서 저장한 expiry_type 필드를 우선 사용
 // 없으면 폴백으로 날짜 기반 추정
 // ─────────────────────────────────────────────────────────────────────────────
-export function classifyExpiry(expiry_date, dte) {
-  // 폴백: 금요일이면 위클리/먼슬리, 아니면 0dte
-  const d    = new Date(expiry_date);
-  const day  = d.getDay();
-  if (day !== 5) return '0dte';
-  const date = d.getDate();
-  if (date >= 15 && date <= 21) return 'monthly';
+function _getThirdFriday(year, month) {
+  let count = 0;
+  for (let d = 1; d <= 31; d++) {
+    const date = new Date(year, month, d);
+    if (date.getMonth() !== month) break;
+    if (date.getDay() === 5) {
+      count++;
+      if (count === 3) {
+        const m  = String(date.getMonth() + 1).padStart(2, '0');
+        const dd = String(date.getDate()).padStart(2, '0');
+        return `${date.getFullYear()}-${m}-${dd}`;
+      }
+    }
+  }
+  return null;
+}
+
+export function classifyExpiry(expiry_date, allExpiries = []) {
+  const d   = new Date(expiry_date);
+  const day = d.getDay();
+
+  // 월/화/수 → 0DTE
+  if (day <= 3) return '0dte';
+
+  // 목요일 → 다음날 금요일이 데이터에 있으면 0DTE
+  if (day === 4) {
+    const friday = new Date(d);
+    friday.setDate(d.getDate() + 1);
+    const m  = String(friday.getMonth() + 1).padStart(2, '0');
+    const dd = String(friday.getDate()).padStart(2, '0');
+    const fridayStr = `${friday.getFullYear()}-${m}-${dd}`;
+    if (allExpiries.includes(fridayStr)) return '0dte';
+  }
+
+  // 금요일 or 당겨진 목요일 → 3째주 금요일과 비교
+  const thirdFriday = _getThirdFriday(d.getFullYear(), d.getMonth());
+  if (expiry_date === thirdFriday) return 'monthly';
+
+  // 3째주 금요일이 휴장 → 목요일로 당겨진 경우
+  if (thirdFriday) {
+    const tf = new Date(thirdFriday);
+    tf.setDate(tf.getDate() - 1);
+    const m  = String(tf.getMonth() + 1).padStart(2, '0');
+    const dd = String(tf.getDate()).padStart(2, '0');
+    const thirdThursdayStr = `${tf.getFullYear()}-${m}-${dd}`;
+    if (expiry_date === thirdThursdayStr && !allExpiries.includes(thirdFriday)) {
+      return 'monthly';
+    }
+  }
+
   return 'weekly';
 }
 
@@ -236,11 +279,12 @@ export function renderDexTermStructure(expiryRows, options = {}) {
   if (!el) return;
 
   // 1. 정규화 + 타입 분류 + DTE 필터
+  const allExpiries = expiryRows.map(r => r.expiry_date);
   const rows = expiryRows
     .filter(r => r.dex != null && r.dte != null && r.dte <= maxDTE)
     .map(r => ({
       ...r,
-      type: r.expiry_type ?? r.type ?? classifyExpiry(r.expiry_date, r.dte),
+      type: r.expiry_type ?? r.type ?? classifyExpiry(r.expiry_date, allExpiries),
     }))
     .sort((a, b) => a.dte - b.dte);
 
