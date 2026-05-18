@@ -666,6 +666,7 @@ function _renderSPYTermStructure(expirations) {
       // 만기별 총 DEX = strike별 dex 합산
       const totalDex = strikes.reduce((acc, s) => acc + (s.dex ?? 0), 0);
 
+      const allExpiries = Object.keys(expirations);
       return {
         expiry_date,
         dte,
@@ -675,7 +676,7 @@ function _renderSPYTermStructure(expirations) {
         otm_put_iv:  d.otm_put_iv  ?? null,
         call_oi:     strikes.reduce((a, s) => a + (s.callOI ?? s.call_oi ?? 0), 0),
         put_oi:      strikes.reduce((a, s) => a + (s.putOI  ?? s.put_oi  ?? 0), 0),
-        type:        classifyExpiry(expiry_date, dte),
+        expiry_type: d.expiry_type ?? classifyExpiry(expiry_date, allExpiries),
       };
     })
     .filter(Boolean)

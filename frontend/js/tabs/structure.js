@@ -408,7 +408,7 @@ async function loadAndRenderCharts(symbol, scoreRow) {
     renderVerdict({ termData, skewData, emData: [], spot, flipStrike, vannaSum, rows });  // 작업3: 종합판단 개선
     renderOIDistribution(symbol, rows, spot, flipStrike, []);                        // 작업2: OI 확률 분포
     renderDexTermStructure(
-      rows.map(r => ({ ...r, type: classifyExpiry(r.expiry_date, r.dte) })),
+      rows.map(r => ({ ...r, expiry_type: r.expiry_type ?? classifyExpiry(r.expiry_date, rows.map(x => x.expiry_date)) })),
       {
         mode:   'stock',
         maxDTE: 90,
