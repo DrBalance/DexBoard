@@ -1097,11 +1097,14 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
     return null;
   }
 
-  // VIX 하락 → 상방 EM (spot 위, 낮→높 순, 양수 vanna)
-  const vannaFlipUp   = findSlopeExhaustPoint(aboveSpot, 1);
+  // VIX 하락 → 상방 EM (spot 위, spot에서 가까운 것부터 = 낮→높 역순)
+  // 0DTE ATM 위 콜의 vanna는 양수 → vannaSign=+1
+  const upStrikes     = [...aboveSpot].sort((a, b) => a.strike - b.strike); // 낮→높 = spot에서 가까운 순
+  const vannaFlipUp   = findSlopeExhaustPoint(upStrikes, 1);
 
-  // VIX 상승 → 하방 EM (spot 아래, spot에서 가까운 것부터, 음수 vanna)
-  const downStrikes   = [...belowSpot].reverse();
+  // VIX 상승 → 하방 EM (spot 아래, spot에서 가까운 것부터 = 높→낮)
+  // 0DTE ATM 아래 풋의 vanna는 음수 → vannaSign=-1
+  const downStrikes   = [...belowSpot].sort((a, b) => b.strike - a.strike); // 높→낮 = spot에서 가까운 순
   const vannaFlipDown = findSlopeExhaustPoint(downStrikes, -1);
 
   // ── 3. GEX Flip Zone (기존 누적합 방식) ─────────────────
@@ -1329,9 +1332,9 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
 
     // EM 경계
     if (emLower >= zoom.viewMin && emLower <= zoom.viewMax)
-      vline(xOf(emLower), 'rgba(251,191,36,0.6)', [6, 3]);
+      vline(xOf(emLower), 'rgba(251,191,36,0.8)', [6, 3], `$${emLower.toFixed(0)}`, PT + cH - 8);
     if (emUpper >= zoom.viewMin && emUpper <= zoom.viewMax)
-      vline(xOf(emUpper), 'rgba(251,191,36,0.6)', [6, 3]);
+      vline(xOf(emUpper), 'rgba(251,191,36,0.8)', [6, 3], `$${emUpper.toFixed(0)}`, PT + cH - 8);
 
     // ── X축 눈금 ──────────────────────────────────────────
     const step = _niceStep(zoom.viewMax - zoom.viewMin, 8);
