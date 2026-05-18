@@ -721,15 +721,30 @@ const resultsByExpiry = Object.fromEntries(results.map(r => [r.expiry_date, r]))
 for (const [expiry, strikes] of Object.entries(expirations)) {
   const flipStrike = calcFlipStrike(strikes);
   const r = resultsByExpiry[expiry] ?? {};
+
+  // dte: results에 없으면 만기일로 직접 계산
+  const calcDte = (() => {
+    const exp = new Date(`${expiry}T16:00:00-05:00`);
+    return Math.max(0, Math.round((exp - new Date()) / 86_400_000));
+  })();
+
   expirations[expiry] = {
     strikes,
     flip_strike:  flipStrike,
-    dte:          r.dte          ?? null,
+    dte:          r.dte ?? calcDte,
     atm_iv:       r.atm_iv       ?? null,
     otm_call_iv:  r.otm_call_iv  ?? null,
     otm_put_iv:   r.otm_put_iv   ?? null,
     iv_skew:      r.iv_skew      ?? null,
   };
+}
+
+// 만기 지난 항목 제거 (dte < 0)
+for (const expiry of Object.keys(expirations)) {
+  if ((expirations[expiry].dte ?? 0) < 0) {
+    delete expirations[expiry];
+    console.log(`[KV] 만기 지난 항목 제거: ${expiry}`);
+  }
 }
 
 // 기존 dex:spy KV 저장 (전체 만기 -- 날짜조회 탭용)
