@@ -138,13 +138,66 @@ return { symbol, expiry, type, strike, dte };
 }
 
 // ─────────────────────────────────────────────────────────────────
-// classifyExpiry
+// getThirdFriday: 해당 월의 3번째 금요일 날짜 문자열 반환
 // ─────────────────────────────────────────────────────────────────
-export function classifyExpiry(dte, expiry, nextTradingDate) {
-if (expiry === nextTradingDate) return "0dte";
-if (dte <= 7)  return "weekly";
-if (dte <= 35) return "monthly";
-return "quarterly";
+function getThirdFriday(year, month) {
+  let count = 0;
+  for (let d = 1; d <= 31; d++) {
+    const date = new Date(year, month, d);
+    if (date.getMonth() !== month) break;
+    if (date.getDay() === 5) {
+      count++;
+      if (count === 3) {
+        const m = String(date.getMonth() + 1).padStart(2, '0');
+        const dd = String(date.getDate()).padStart(2, '0');
+        return `${date.getFullYear()}-${m}-${dd}`;
+      }
+    }
+  }
+  return null;
+}
+
+// ─────────────────────────────────────────────────────────────────
+// classifyExpiry
+// expiry_date: 'YYYY-MM-DD'
+// allExpiries: 전체 만기일 문자열 배열 (Object.keys(expirations))
+// ─────────────────────────────────────────────────────────────────
+export function classifyExpiry(expiry_date, allExpiries) {
+  const d   = new Date(expiry_date);
+  const day = d.getDay();  // 0=일,1=월,2=화,3=수,4=목,5=금
+
+  // 월/화/수 → 무조건 0DTE
+  if (day <= 3) return '0dte';
+
+  // 목요일 → 같은 주 금요일이 데이터에 있으면 0DTE
+  if (day === 4) {
+    const friday = new Date(d);
+    friday.setDate(d.getDate() + 1);
+    const m  = String(friday.getMonth() + 1).padStart(2, '0');
+    const dd = String(friday.getDate()).padStart(2, '0');
+    const fridayStr = `${friday.getFullYear()}-${m}-${dd}`;
+    if (allExpiries.includes(fridayStr)) return '0dte';
+  }
+
+  // 금요일 or 당겨진 목요일 → 3째주 금요일과 비교
+  const thirdFriday = getThirdFriday(d.getFullYear(), d.getMonth());
+
+  // 3째주 금요일이면 먼슬리
+  if (expiry_date === thirdFriday) return 'monthly';
+
+  // 3째주 금요일이 휴장 → 목요일로 당겨진 경우
+  if (thirdFriday) {
+    const tf = new Date(thirdFriday);
+    tf.setDate(tf.getDate() - 1);
+    const m  = String(tf.getMonth() + 1).padStart(2, '0');
+    const dd = String(tf.getDate()).padStart(2, '0');
+    const thirdThursdayStr = `${tf.getFullYear()}-${m}-${dd}`;
+    if (expiry_date === thirdThursdayStr && !allExpiries.includes(thirdFriday)) {
+      return 'monthly';
+    }
+  }
+
+  return 'weekly';
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -393,6 +446,7 @@ const strikeIVRows = strikes
 results.push({
   expiry_date:      expiry,
   dte,
+  expiry_type:      classifyExpiry(expiry, Object.keys(expiryMap)),
   flip_strike:      flipStrike,
   call_oi:          callOI,
   put_oi:           putOI,
@@ -732,14 +786,17 @@ for (const [expiry, strikes] of Object.entries(expirations)) {
   const otmPutIV   = otmPutIVs.length  ? otmPutIVs.reduce((a,b)  => a+b,0) / otmPutIVs.length  : null;
   const ivSkew     = (atmIV && otmCallIV && otmPutIV) ? (otmCallIV - otmPutIV) / atmIV : null;
 
+  const allExpiries = Object.keys(expirations);
+
   expirations[expiry] = {
     strikes,
-    flip_strike: flipStrike,
+    flip_strike:  flipStrike,
     dte,
-    atm_iv:      atmIV,
-    otm_call_iv: otmCallIV != null ? +otmCallIV.toFixed(4) : null,
-    otm_put_iv:  otmPutIV  != null ? +otmPutIV.toFixed(4)  : null,
-    iv_skew:     ivSkew    != null ? +ivSkew.toFixed(4)     : null,
+    expiry_type:  classifyExpiry(expiry, allExpiries),
+    atm_iv:       atmIV,
+    otm_call_iv:  otmCallIV != null ? +otmCallIV.toFixed(4) : null,
+    otm_put_iv:   otmPutIV  != null ? +otmPutIV.toFixed(4)  : null,
+    iv_skew:      ivSkew    != null ? +ivSkew.toFixed(4)     : null,
   };
 }
 
