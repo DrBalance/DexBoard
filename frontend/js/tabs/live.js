@@ -673,15 +673,18 @@ function _renderVannaDist() {
   const tsEl = document.getElementById('vd-ts');
   if (tsEl) tsEl.textContent = new Date().toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 
-  // 기존 인스턴스 해제
-  _vannaDistInst?.detach();
-
-  _vannaDistInst = renderVannaDistChart(el, strikes, spot, {
-    mode:   'single',
-    vixDir: _vixDir,
-    dte:    1,
-    label:  '0DTE 확률 분포 · Vanna Flip',
-  });
+  if (_vannaDistInst) {
+    // zoom 유지한 채 데이터만 갱신
+    _vannaDistInst.update(strikes, spot, { vixDir: _vixDir });
+  } else {
+    // 최초 생성
+    _vannaDistInst = renderVannaDistChart(el, strikes, spot, {
+      mode:   'single',
+      vixDir: _vixDir,
+      dte:    1,
+      label:  '0DTE 확률 분포 · Vanna Flip',
+    });
+  }
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
