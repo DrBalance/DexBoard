@@ -9,7 +9,7 @@ import {
   colorBySign, colorVix, COLOR,
 } from '../fmt.js';
 import { renderHeatmap, updateHeatmapSpot, setHeatmapVix } from '../heatmap.js';
-import { buildNarrative, buildAnalysisPayload }       from '../narrative.js';
+
 import { renderOIChart, updateOIChart, renderStrikeTable, renderTop5Panel } from '../oi-chart.js';
 import { initVCChart, setVixSeries, setVoldSeries } from '../vc-chart.js';
 import { renderVannaDistChart } from '../options-charts.js';
@@ -207,7 +207,6 @@ async function fetchKV({ fullUpdate = true } = {}) {
     renderTop5Panel('top5-panel', _state.strikes);
   }
 
-  renderNarrative();
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -251,7 +250,6 @@ function _onSpotUpdated() {
     });
   }
 
-  _renderNarrativeIfChanged();
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -376,287 +374,7 @@ function renderCards() {
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // 판단 패널
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-const LEVEL_STYLE = {
-  danger: { bg: 'rgba(239,68,68,.12)',   border: '#ef4444', icon: '🔴' },
-  warn:   { bg: 'rgba(245,158,11,.10)',  border: '#f59e0b', icon: '⚠️' },
-  good:   { bg: 'rgba(34,197,94,.10)',   border: '#22c55e', icon: '🟢' },
-  info:   { bg: 'rgba(107,114,128,.10)', border: '#6b7280', icon: '💬' },
-};
 
-let _lastNarrativeHtml = '';
-
-function _renderNarrativeIfChanged() {
-  const el = document.getElementById('live-narrative');
-  if (!el) return;
-  const events = buildNarrative({ ..._state, marketState: window._marketState });
-  const html = events.map(({ level, msg }) => {
-    const s = LEVEL_STYLE[level] ?? LEVEL_STYLE.info;
-    return `
-      <div style="
-        display:flex;align-items:flex-start;gap:8px;
-        padding:8px 10px;border-radius:6px;
-        background:${s.bg};border-left:3px solid ${s.border};
-        font-size:12px;line-height:1.5;color:var(--text1,#e6edf3);
-      ">
-        <span style="flex-shrink:0;margin-top:1px">${s.icon}</span>
-        <span>${msg}</span>
-      </div>`;
-  }).join('');
-  if (html === _lastNarrativeHtml) return;
-  _lastNarrativeHtml = html;
-  el.innerHTML = html;
-}
-
-function renderNarrative() {
-  const el = document.getElementById('live-narrative');
-  if (!el) return;
-  const events = buildNarrative({ ..._state, marketState: window._marketState });
-  el.innerHTML = events.map(({ level, msg }) => {
-    const s = LEVEL_STYLE[level] ?? LEVEL_STYLE.info;
-    return `
-      <div style="
-        display:flex;align-items:flex-start;gap:8px;
-        padding:8px 10px;border-radius:6px;
-        background:${s.bg};border-left:3px solid ${s.border};
-        font-size:12px;line-height:1.5;color:var(--text1,#e6edf3);
-      ">
-        <span style="flex-shrink:0;margin-top:1px">${s.icon}</span>
-        <span>${msg}</span>
-      </div>`;
-  }).join('');
-}
-
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// AI 분석
-// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-function renderAIResult(data) {
-  const el = document.getElementById('ai-analysis-result');
-  if (!el) return;
-  const { market_regime: mr, deep_dive: dd, scenarios, expert_insight } = data;
-
-  const scenarioHTML = (scenarios ?? []).map(sc => {
-    const prob  = sc.probability ?? 50;
-    const color = prob >= 60 ? '#22c55e' : prob <= 40 ? '#ef4444' : '#f59e0b';
-    return `
-      <div style="margin-bottom:6px;padding:7px 8px;border-radius:4px;
-                  background:rgba(255,255,255,.04);border:1px solid #30363d">
-        <div style="display:flex;justify-content:space-between;margin-bottom:3px">
-          <span style="font-size:11px;font-weight:600;color:${color}">${sc.case}</span>
-          <span style="font-size:12px;font-weight:700;color:${color}">${prob}%</span>
-        </div>
-        <div style="font-size:11px;color:#8b949e;margin-bottom:1px">▶ ${sc.trigger}</div>
-        <div style="font-size:11px;color:#8b949e">목표: ${sc.target}</div>
-      </div>`;
-  }).join('');
-
-  el.innerHTML = `
-    <div style="margin-bottom:8px;padding:7px 9px;border-radius:5px;
-                background:rgba(167,139,250,.1);border-left:3px solid #a78bfa">
-      <div style="font-size:10px;color:#a78bfa;font-weight:600;margin-bottom:2px">시장 국면</div>
-      <div style="font-size:12px;font-weight:700;color:#e6edf3;margin-bottom:3px">${mr?.phase ?? '—'}</div>
-      <div style="font-size:11px;color:#8b949e;margin-bottom:3px">${mr?.volatility_context ?? ''}</div>
-      <span style="font-size:10px;padding:2px 7px;border-radius:10px;
-                   background:rgba(167,139,250,.2);color:#a78bfa">${mr?.dominance ?? ''}</span>
-    </div>
-    <div style="margin-bottom:8px">
-      <div style="font-size:10px;color:#8b949e;font-weight:600;margin-bottom:4px">딜러 포지션</div>
-      <div style="font-size:11px;color:#e6edf3;line-height:1.5;margin-bottom:3px">${dd?.dealer_inventory?.gamma_exposure ?? '—'}</div>
-      <div style="font-size:11px;color:#e6edf3;line-height:1.5">${dd?.dealer_inventory?.vanna_flow ?? '—'}</div>
-    </div>
-    <div style="margin-bottom:8px;padding:7px 9px;border-radius:5px;
-                background:rgba(34,197,94,.06);border-left:3px solid #22c55e">
-      <div style="font-size:10px;color:#22c55e;font-weight:600;margin-bottom:3px">수급 (VOLD)</div>
-      <div style="font-size:11px;color:#e6edf3;margin-bottom:2px">${dd?.breadth_analysis?.vold_signal ?? '—'}</div>
-      <div style="font-size:11px;color:#8b949e">${dd?.breadth_analysis?.interpretation ?? ''}</div>
-    </div>
-    <div style="margin-bottom:8px">
-      <div style="font-size:10px;color:#8b949e;font-weight:600;margin-bottom:4px">시나리오</div>
-      ${scenarioHTML}
-    </div>
-    <div style="padding:7px 9px;border-radius:5px;
-                background:rgba(245,158,11,.08);border-left:3px solid #f59e0b">
-      <div style="font-size:10px;color:#f59e0b;font-weight:600;margin-bottom:3px">전문가 의견</div>
-      <div style="font-size:11px;color:#e6edf3;line-height:1.6">${expert_insight ?? '—'}</div>
-    </div>`;
-}
-
-let _aiLoading = false;
-
-function _renderAIWithNotice(analysis, noticeMsg = null, noticeColor = '#8b949e') {
-  const result   = document.getElementById('ai-analysis-result');
-  const scrollEl = document.getElementById('ai-result-scroll');
-  if (!result) return;
-
-  const noticeHTML = noticeMsg ? `
-    <div style="
-      font-size:11px;padding:6px 10px;margin-bottom:8px;border-radius:4px;
-      background:rgba(139,148,158,.1);border-left:3px solid ${noticeColor};
-      color:${noticeColor};
-    ">${noticeMsg}</div>` : '';
-
-  renderAIResult(analysis);
-
-  if (noticeMsg) {
-    result.insertAdjacentHTML('afterbegin', noticeHTML);
-  }
-  if (scrollEl) scrollEl.scrollTop = 0;
-}
-
-function _minutesAgo(ts) {
-  const mins = Math.floor((Date.now() - new Date(ts).getTime()) / 60_000);
-  if (mins < 1)  return '방금 전';
-  if (mins < 60) return `${mins}분 전`;
-  return `${Math.floor(mins / 60)}시간 ${mins % 60}분 전`;
-}
-
-async function requestAIAnalysis(auto = false) {
-  if (_aiLoading) return;
-  _aiLoading = true;
-
-  const btn      = document.getElementById('ai-analyze-btn');
-  const result   = document.getElementById('ai-analysis-result');
-  const wrap     = document.getElementById('ai-result-wrap');
-  const scrollEl = document.getElementById('ai-result-scroll');
-  if (!result) { _aiLoading = false; return; }
-
-  if (wrap) wrap.style.display = 'block';
-
-  let cached = null;
-  try {
-    const cacheRes = await fetch(`${CF_API}/api/ai-analysis`, {
-      signal: AbortSignal.timeout(5000),
-    });
-    if (cacheRes.ok) {
-      const cacheData = await cacheRes.json();
-      if (!cacheData.error && cacheData.analysis && cacheData.ts) {
-        cached = cacheData;
-      }
-    }
-  } catch (_) {}
-
-  const cacheAgeMs  = cached ? Date.now() - new Date(cached.ts).getTime() : Infinity;
-  const cacheValid  = cacheAgeMs < 15 * 60_000;
-
-  if (!auto && cacheValid) {
-    _renderAIWithNotice(
-      cached.analysis,
-      `📋 ${_minutesAgo(cached.ts)} 분석 결과입니다 (자동갱신 15분)`,
-      '#8b949e'
-    );
-    _aiLoading = false;
-    return;
-  }
-
-  if (auto && cacheValid) {
-    _renderAIWithNotice(cached.analysis);
-    _aiLoading = false;
-    return;
-  }
-
-  if (!auto && btn) {
-    btn.disabled    = true;
-    btn.textContent = '분석 중…';
-  }
-  result.innerHTML = `
-    <div style="text-align:center;padding:20px;color:#8b949e;font-size:12px">
-      Gemini가 분석 중입니다…
-    </div>`;
-
-  try {
-    const payload = buildAnalysisPayload({ ..._state, marketState: window._marketState });
-    const res     = await fetch(`${RAILWAY_URL}/analyze`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body:    JSON.stringify(payload),
-      signal:  AbortSignal.timeout(35_000),
-    });
-    const data = await res.json();
-
-    if (data.ok && typeof data.analysis === 'object') {
-      _renderAIWithNotice(data.analysis);
-    } else {
-      throw new Error(data.error ?? '알 수 없는 오류');
-    }
-  } catch (e) {
-    const is429    = e.message?.includes('429') || e.message?.includes('한도');
-    const isTimeout = e.name === 'TimeoutError' || e.message?.includes('timeout');
-
-    if (cached?.analysis) {
-      const noticeColor = is429 ? '#f59e0b' : '#ef4444';
-      let noticeMsg = '';
-      if (is429)          noticeMsg = `⚠️ API 한도 초과 — ${_minutesAgo(cached.ts)} 결과를 표시합니다`;
-      else if (isTimeout) noticeMsg = `⚠️ 응답 시간 초과 — ${_minutesAgo(cached.ts)} 결과를 표시합니다`;
-      else                noticeMsg = `⚠️ 분석 오류 — ${_minutesAgo(cached.ts)} 결과를 표시합니다`;
-      _renderAIWithNotice(cached.analysis, noticeMsg, noticeColor);
-    } else {
-      result.innerHTML = `
-        <div style="color:#ef4444;font-size:12px;padding:8px">
-          ⚠️ 분석 결과를 불러올 수 없습니다<br>
-          <span style="color:#8b949e;font-size:11px">${e.message}</span>
-        </div>`;
-    }
-  } finally {
-    _aiLoading = false;
-    if (!auto && btn) {
-      btn.disabled    = false;
-      btn.textContent = '🤖 AI 분석';
-    }
-  }
-}
-
-function initNarrativePanel() {
-  const container = document.getElementById('live-narrative-panel');
-  if (!container) return;
-
-  container.innerHTML = `
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-      <span style="font-size:13px;font-weight:600;color:var(--text2,#8b949e)">실시간 판단</span>
-      <button id="ai-analyze-btn" style="
-        padding:4px 12px;font-size:11px;border-radius:4px;
-        border:1px solid #a78bfa;background:rgba(167,139,250,.12);
-        color:#a78bfa;cursor:pointer;white-space:nowrap;
-      ">🤖 AI 분석</button>
-    </div>
-    <div id="live-narrative" style="display:flex;flex-direction:column;gap:8px;margin-bottom:10px;font-size:14px;line-height:1.7"></div>
-    <div id="ai-result-wrap" style="display:none">
-      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-        <span style="font-size:13px;font-weight:600;color:#a78bfa">🤖 AI 분석 결과</span>
-        <div style="display:flex;gap:4px">
-          <button id="ai-scroll-up" style="
-            width:26px;height:20px;border-radius:3px;
-            border:1px solid #30363d;background:transparent;
-            color:#8b949e;cursor:pointer;font-size:11px;
-            display:flex;align-items:center;justify-content:center;
-          ">▲</button>
-          <button id="ai-scroll-down" style="
-            width:26px;height:20px;border-radius:3px;
-            border:1px solid #30363d;background:transparent;
-            color:#8b949e;cursor:pointer;font-size:11px;
-            display:flex;align-items:center;justify-content:center;
-          ">▼</button>
-        </div>
-      </div>
-      <div id="ai-result-scroll" style="
-        max-height:280px;overflow-y:scroll;
-        overscroll-behavior:contain;
-        border:1px solid #30363d;border-radius:6px;
-        padding:12px;background:rgba(13,17,23,.6);
-        font-size:13px;line-height:1.8;
-      ">
-        <div id="ai-analysis-result"></div>
-      </div>
-    </div>`;
-
-  document.getElementById('ai-analyze-btn')?.addEventListener('click', () => {
-    const wrap = document.getElementById('ai-result-wrap');
-    if (wrap) wrap.style.display = 'block';
-    requestAIAnalysis(false);
-  });
-
-  const scrollEl = document.getElementById('ai-result-scroll');
-  document.getElementById('ai-scroll-up')?.addEventListener('click',   () => { if (scrollEl) scrollEl.scrollTop -= 80; });
-  document.getElementById('ai-scroll-down')?.addEventListener('click', () => { if (scrollEl) scrollEl.scrollTop += 80; });
-}
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 // Vanna Distribution Chart
@@ -691,8 +409,6 @@ function _renderVannaDist() {
 // initLive / refreshLive
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 export async function initLive() {
-
-  initNarrativePanel();
 
   initVCChart('vc-chart-wrap');
 
@@ -810,10 +526,6 @@ function onLiveTick({ h, m, s }) {
         fetchKV({ fullUpdate: false });
       }
 
-      // 30분: AI 분석
-      if (m % 30 === 2 && s === 5) {
-        requestAIAnalysis(true);
-      }
     }
   }
 
