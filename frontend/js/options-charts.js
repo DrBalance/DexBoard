@@ -1685,7 +1685,7 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   el.appendChild(canvas);
 
   // ── 9. 줌 상태 초기화 ──────────────────────────────────
-  const viewRange = (emUpper - emLower) * 1.6;
+  const viewRange = (emUpper - emLower) * 3.2;
   const initMin   = spot - viewRange / 2;
   const initMax   = spot + viewRange / 2;
   const zoom = zoomState ?? createZoomState({
@@ -1817,7 +1817,7 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
       cumDexVis.forEach((d, i) => {
         const x = xOf(d.strike);
         // +1 → 위(PT), -1 → 아래(PT+cH), 0 → 중간(zeroY)
-        const y = zeroY - d.v * (cH * 0.45);
+        const y = zeroY + d.v * (cH * 0.45);
         i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
       });
       ctx.strokeStyle = 'rgba(234,179,8,0.9)';
