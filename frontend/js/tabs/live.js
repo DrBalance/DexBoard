@@ -730,16 +730,6 @@ export async function initLive() {
 
   registerTickCallback(onLiveTick);
 
-  // VIX 방향 버튼
-  ['up', 'neutral', 'down'].forEach(dir => {
-    document.getElementById(`vd-vix-${dir}`)?.addEventListener('click', () => {
-      _vixDir = dir;
-      ['up', 'neutral', 'down'].forEach(d => {
-        document.getElementById(`vd-vix-${d}`)?.classList.toggle('active', d === dir);
-      });
-      _renderVannaDist();
-    });
-  });
 }
 
 export function refreshLive() {
