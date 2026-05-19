@@ -59,7 +59,7 @@ export function attachZoomScroll(canvas, zoomState, onDraw, opts = {}) {
     padR      = 16,
     zoomSpeed = 0.0012,
     minZoom   = 1,
-    maxZoom   = 20,
+    maxZoom   = 50,
   } = opts;
 
   let dragStart = null; // { x, viewMin, viewMax }
