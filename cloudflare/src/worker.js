@@ -274,12 +274,13 @@ export default {
         const stmts = rows.map(r =>
           env.DB.prepare(`
             INSERT OR REPLACE INTO options_strikes
-            (date, symbol, expiry_date, dte, strike, call_iv, put_iv, avg_iv, call_delta, call_oi, put_oi)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?)
+            (date, symbol, expiry_date, dte, strike, call_iv, put_iv, avg_iv, call_delta, call_oi, put_oi, dex, gex, vanna, charm)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
           `).bind(
             r.date, r.symbol, r.expiry_date, r.dte,
             r.strike, r.call_iv ?? null, r.put_iv ?? null, r.avg_iv ?? null,
             r.call_delta ?? null, r.call_oi ?? null, r.put_oi ?? null,
+            r.dex ?? null, r.gex ?? null, r.vanna ?? null, r.charm ?? null,
           )
         );
         await env.DB.batch(stmts);
