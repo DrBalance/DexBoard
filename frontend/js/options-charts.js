@@ -1563,6 +1563,13 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
     return null;
   }
 
+  // Vanna 합산값이 유효한지 확인
+  const totalVanna = sorted.reduce((s, r) => s + Math.abs(r.vanna ?? 0), 0);
+  if (totalVanna < 1e-6) {
+    el.innerHTML = '<div style="padding:12px;color:var(--text3);font-size:12px">Vanna 데이터 없음 (차트 생략)</div>';
+    return null;
+  }
+
   const minS = sorted[0].strike;
   const maxS = sorted[sorted.length - 1].strike;
 
@@ -1709,21 +1716,28 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
       ctx.beginPath(); ctx.moveTo(PL, y); ctx.lineTo(W - PR, y); ctx.stroke();
     }
 
+    // ── 변곡 내부 계산 (dVanna 상위 5%) ─────────────────
+    const dVannaArr = sorted.map((s, i) =>
+      i === 0 ? 0 : (s.vanna ?? 0) - (sorted[i-1].vanna ?? 0)
+    );
+
+    const absVals = dVannaArr.map(Math.abs).sort((a,b) => b-a);
+    const top5Thr = absVals[Math.max(0, Math.floor(absVals.length * 0.05) - 1)] ?? 0;
+
+    // 변곡: dVanna 절대값 상위 5% strike
+    const downInfl = sorted
+      .filter((s, i) => s.strike < spot && Math.abs(dVannaArr[i]) >= top5Thr && top5Thr > 0)
+      .map(s => s.strike).sort((a,b) => b-a);
+
+    const upInfl = sorted
+      .filter((s, i) => s.strike > spot && Math.abs(dVannaArr[i]) >= top5Thr && top5Thr > 0)
+      .map(s => s.strike).sort((a,b) => a-b);
+
+    // 기준점: 현재가
+    const upperBase = spot;
+    const lowerBase = spot;
+
     // ── 변곡 기반 음영 구간 ───────────────────────────────
-    // markers에서 변곡/천정/바닥 추출
-    const inflections = markers.filter(m => m.type === 'inflection').map(m => m.price).sort((a,b) => a-b);
-    const ceilings    = markers.filter(m => m.type === 'ceiling').map(m => m.price);
-    const floors      = markers.filter(m => m.type === 'floor').map(m => m.price);
-
-    // 천정/바닥 없으면 emUpper/emLower 사용
-    const upperBase = ceilings.length ? Math.min(...ceilings) : spot;
-    const lowerBase = floors.length   ? Math.max(...floors)   : spot;
-
-    // 하락 변곡들 (현재가 아래, 가까운 순)
-    const downInfl = inflections.filter(p => p < spot).sort((a,b) => b-a);
-    // 상승 변곡들 (현재가 위, 가까운 순)
-    const upInfl   = inflections.filter(p => p > spot).sort((a,b) => a-b);
-
     function fillZone(x1, x2, color) {
       const px1 = Math.max(xOf(Math.max(x1, zoom.viewMin)), PL);
       const px2 = Math.min(xOf(Math.min(x2, zoom.viewMax)), W - PR);
@@ -1734,28 +1748,22 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
       ctx.restore();
     }
 
-    // 하락 구간 (빨강)
-    const downZones = [lowerBase, ...downInfl, emLower].filter((v,i,a) => a.indexOf(v)===i).sort((a,b)=>b-a);
     const downAlphas = [0.40, 0.25, 0.12];
+    const upAlphas   = [0.40, 0.25, 0.12];
+
+    // 하락 구간: spot → 변곡들 → emLower
+    const downZones = [spot, ...downInfl, emLower]
+      .filter((v,i,a) => a.indexOf(v) === i).sort((a,b) => b-a);
     for (let i = 0; i < downZones.length - 1; i++) {
-      const alpha = downAlphas[Math.min(i, downAlphas.length-1)];
-      fillZone(downZones[i+1], downZones[i], `rgba(239,68,68,${alpha})`);
+      fillZone(downZones[i+1], downZones[i], `rgba(239,68,68,${downAlphas[Math.min(i, downAlphas.length-1)]})`);
     }
-    if (downZones.length === 1) fillZone(emLower, lowerBase, 'rgba(239,68,68,0.12)');
 
-    // 상승 구간 (초록)
-    const upZones = [upperBase, ...upInfl, emUpper].filter((v,i,a) => a.indexOf(v)===i).sort((a,b)=>a-b);
-    const upAlphas = [0.40, 0.25, 0.12];
+    // 상승 구간: spot → 변곡들 → emUpper
+    const upZones = [spot, ...upInfl, emUpper]
+      .filter((v,i,a) => a.indexOf(v) === i).sort((a,b) => a-b);
     for (let i = 0; i < upZones.length - 1; i++) {
-      const alpha = upAlphas[Math.min(i, upAlphas.length-1)];
-      fillZone(upZones[i], upZones[i+1], `rgba(34,197,94,${alpha})`);
+      fillZone(upZones[i], upZones[i+1], `rgba(34,197,94,${upAlphas[Math.min(i, upAlphas.length-1)]})`);
     }
-    if (upZones.length === 1) fillZone(upperBase, emUpper, 'rgba(34,197,94,0.12)');
-
-    // 중첩 구간 (노란색 45%) - 하락 1차와 상승 1차가 겹치는 경우
-    const overlapL = Math.max(lowerBase, emLower);
-    const overlapR = Math.min(upperBase, emUpper);
-    if (overlapR > overlapL) fillZone(overlapL, overlapR, 'rgba(234,179,8,0.45)');
 
     // ── Vanna 누적합 곡선 ──────────────────────────────────
     const vannaVis = sorted
@@ -1819,48 +1827,31 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
 
     // Spot
     if (spot >= zoom.viewMin && spot <= zoom.viewMax)
-      vline(xOf(spot), '#ffffff', [], `$${spot}`, PT + 14);
+      vline(xOf(spot), '#ffffff', [], `${spot}`, PT + 14);
 
     // Vanna Flip Up (상단 EM, VIX↓)
     if (vannaFlipUp != null && vannaFlipUp >= zoom.viewMin && vannaFlipUp <= zoom.viewMax)
-      vline(xOf(vannaFlipUp), '#a78bfa', [6, 3], `VF↑$${vannaFlipUp}`, PT + 14);
+      vline(xOf(vannaFlipUp), '#a78bfa', [6, 3], `VF↑${vannaFlipUp}`, PT + 14);
 
     // Vanna Flip Down (하단 EM, VIX↑)
     if (vannaFlipDown != null && vannaFlipDown >= zoom.viewMin && vannaFlipDown <= zoom.viewMax)
-      vline(xOf(vannaFlipDown), '#f472b6', [6, 3], `VF↓$${vannaFlipDown}`, PT + 26);
+      vline(xOf(vannaFlipDown), '#f472b6', [6, 3], `VF↓${vannaFlipDown}`, PT + 26);
 
     // GEX Flip
     if (gexFlip != null && gexFlip >= zoom.viewMin && gexFlip <= zoom.viewMax)
-      vline(xOf(gexFlip), '#fbbf24', [2, 4], `GF$${gexFlip}`, PT + 38);
+      vline(xOf(gexFlip), '#fbbf24', [2, 4], `GF${gexFlip}`, PT + 38);
 
-    // 외부 마커 (변곡/플립존/천정/바닥)
-    markers.forEach(m => {
-      if (m.price < zoom.viewMin || m.price > zoom.viewMax) return;
-      const mx = xOf(m.price);
-      let color, dash, labelY;
-      if (m.type === 'flip') {
-        color = '#fb923c'; dash = [3, 3]; labelY = PT + 50;       // 플립존: 주황 얇은 점선
-      } else if (m.type === 'inflection') {
-        color = '#60a5fa'; dash = [4, 3]; labelY = PT + 62;       // 변곡: 파랑 점선
-      } else if (m.type === 'ceiling') {
-        color = '#f87171'; dash = [5, 2]; labelY = PT + 74;       // 천정: 빨강 점선
-      } else if (m.type === 'floor') {
-        color = '#4ade80'; dash = [5, 2]; labelY = PT + 74;       // 바닥: 초록 점선
-      } else {
-        color = '#94a3b8'; dash = [3, 3]; labelY = PT + 50;
-      }
-      vline(mx, color, dash, m.label ?? `$${m.price}`, labelY);
+    // 변곡선 표시
+    downInfl.forEach((p, i) => {
+      if (p < zoom.viewMin || p > zoom.viewMax) return;
+      const alpha = i === 0 ? 0.85 : 0.65;
+      vline(xOf(p), `rgba(239,68,68,${alpha})`, [4,3], `${p}`, PT + 52 + i * 14);
     });
-
-    // EM 경계 배경 음영
-    if (emLower >= zoom.viewMin && emUpper <= zoom.viewMax) {
-      const lx = xOf(Math.max(emLower, zoom.viewMin));
-      const ux = xOf(Math.min(emUpper, zoom.viewMax));
-      ctx.save();
-      ctx.fillStyle = 'rgba(167,139,250,0.06)';
-      ctx.fillRect(lx, PT, ux - lx, cH);
-      ctx.restore();
-    }
+    upInfl.forEach((p, i) => {
+      if (p < zoom.viewMin || p > zoom.viewMax) return;
+      const alpha = i === 0 ? 0.85 : 0.65;
+      vline(xOf(p), `rgba(34,197,94,${alpha})`, [4,3], `${p}`, PT + 52 + i * 14);
+    });
 
     // EM 경계선
     if (emLower >= zoom.viewMin && emLower <= zoom.viewMax) {
@@ -1868,9 +1859,9 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
       vline(x, 'rgba(251,191,36,0.8)', [6, 3]);
       ctx.save();
       ctx.fillStyle = 'rgba(251,191,36,0.9)';
-      ctx.font = 'bold 10px sans-serif';
+      ctx.font = 'bold 10px Arial, sans-serif';
       ctx.textAlign = 'left';
-      ctx.fillText(`$${emLower.toFixed(0)}`, x + 3, PT + cH * 0.55);
+      ctx.fillText(`${emLower.toFixed(0)}`, x + 3, PT + cH * 0.55);
       ctx.restore();
     }
     if (emUpper >= zoom.viewMin && emUpper <= zoom.viewMax) {
@@ -1878,9 +1869,9 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
       vline(x, 'rgba(251,191,36,0.8)', [6, 3]);
       ctx.save();
       ctx.fillStyle = 'rgba(251,191,36,0.9)';
-      ctx.font = 'bold 10px sans-serif';
+      ctx.font = 'bold 10px Arial, sans-serif';
       ctx.textAlign = 'right';
-      ctx.fillText(`$${emUpper.toFixed(0)}`, x - 3, PT + cH * 0.55);
+      ctx.fillText(`${emUpper.toFixed(0)}`, x - 3, PT + cH * 0.55);
       ctx.restore();
     }
 
