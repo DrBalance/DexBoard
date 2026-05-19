@@ -1780,16 +1780,6 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
     }
 
     // ── Vanna 누적합 곡선 ──────────────────────────────────
-    // ── Zero line ─────────────────────────────────────────
-    const zeroY = PT + cH * 0.5;
-    ctx.beginPath();
-    ctx.moveTo(PL, zeroY); ctx.lineTo(W - PR, zeroY);
-    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
-    ctx.lineWidth   = 1;
-    ctx.setLineDash([2, 4]);
-    ctx.stroke();
-    ctx.setLineDash([]);
-
     // ── Vanna 누적 곡선 (보라, S자) ───────────────────────
     const vannaVis = sorted
       .map((s, i) => ({ strike: s.strike, nv: normVannaCum[i] }))
@@ -1808,21 +1798,37 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
     }
 
     // ── DEX 누적 곡선 (노랑, 부호 그대로) ────────────────
+    const minCumDex = Math.min(...cumDexArr);
+    const maxCumDex = Math.max(...cumDexArr);
+    const cumDexRange = Math.max(maxCumDex - minCumDex, 1e-10);
+
     const cumDexVis = sorted
-      .map((s, i) => ({ strike: s.strike, v: normCumDex[i] }))
+      .map((s, i) => ({ strike: s.strike, v: cumDexArr[i] }))
       .filter(d => d.strike >= zoom.viewMin && d.strike <= zoom.viewMax);
 
     if (cumDexVis.length > 1) {
+      const baseY = PT + cH;
       ctx.beginPath();
       cumDexVis.forEach((d, i) => {
         const x = xOf(d.strike);
-        // +1 → 위(PT), -1 → 아래(PT+cH), 0 → 중간(zeroY)
-        const y = zeroY + d.v * (cH * 0.45);
+        const y = baseY - ((d.v - minCumDex) / cumDexRange) * cH * 0.85;
         i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
       });
       ctx.strokeStyle = 'rgba(234,179,8,0.9)';
       ctx.lineWidth   = 2;
       ctx.stroke();
+    }
+
+    // zero line
+    const zeroLineY = PT + cH - ((0 - minCumDex) / cumDexRange) * cH * 0.85;
+    if (zeroLineY >= PT && zeroLineY <= PT + cH) {
+      ctx.beginPath();
+      ctx.moveTo(PL, zeroLineY); ctx.lineTo(W - PR, zeroLineY);
+      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.lineWidth   = 1;
+      ctx.setLineDash([2, 4]);
+      ctx.stroke();
+      ctx.setLineDash([]);
     }
 
     // ── 수직선 그리기 헬퍼 (레이블 선 옆 배치) ───────────
