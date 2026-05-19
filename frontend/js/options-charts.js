@@ -881,7 +881,7 @@ export function renderSkewChart(skewData) {
     return;
   }
 
-  const W = 520, H = 160, PL = 48, PR = 16, PT = 16, PB = 36;
+  const W = Math.max(el.clientWidth || 700, 500), H = 220, PL = 48, PR = 16, PT = 16, PB = 36;
   const cW = W - PL - PR, cH = H - PT - PB;
 
   const skews = skewData.map(r => r.skew);
@@ -950,7 +950,7 @@ Put IV: ${(r.put_iv * 100).toFixed(1)}% / Call IV: ${(r.call_iv * 100).toFixed(1
 
     <!-- SVG 바 차트 -->
     <div style="overflow-x:auto">
-      <svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block">
+      <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">
         <!-- 제로 라인 -->
         <line x1="${PL}" y1="${zeroY.toFixed(1)}" x2="${W - PR}" y2="${zeroY.toFixed(1)}"
           stroke="var(--text3)" stroke-width="0.8" stroke-dasharray="4,2"/>
@@ -1055,7 +1055,7 @@ export async function loadSmileChart(symbol, expiry, spot) {
 }
 
 export function renderSmileCurve(container, rows, spot, expiry) {
-  const W = 520, H = 200, PL = 52, PR = 16, PT = 16, PB = 36;
+  const W = Math.max((container.clientWidth || 700), 500), H = 280, PL = 52, PR = 16, PT = 16, PB = 36;
   const cW = W - PL - PR, cH = H - PT - PB;
 
   // avg_iv 기준으로 정렬
@@ -1150,7 +1150,7 @@ export function renderSmileCurve(container, rows, spot, expiry) {
 
     <!-- SVG Smile 곡선 -->
     <div style="overflow-x:auto">
-      <svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block">
+      <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">
         ${yTicks}
         <!-- ATM 수직선 -->
         ${atmX ? `
@@ -1254,7 +1254,7 @@ export async function renderOIDistribution(symbol, expiryRows, spot, flipStrike,
     const normProb = probDist.map(p => p / maxProb);
 
     // SVG 렌더링
-    const W = 560, H = 300, PL = 56, PR = 16, PT = 20, PB = 40;
+    const W = Math.max(el.clientWidth || 700, 500), H = 300, PL = 56, PR = 16, PT = 20, PB = 40;
     const cW = W - PL - PR, cH = H - PT - PB;
     const midY = PT + cH / 2; // 중앙 (Call 위/Put 아래)
 
@@ -1361,7 +1361,7 @@ export async function renderOIDistribution(symbol, expiryRows, spot, flipStrike,
 
       <!-- SVG 차트 -->
       <div style="overflow-x:auto">
-        <svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block">
+        <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">
           <!-- EM 음영 -->
           ${emShade}
           <!-- 중앙선 -->
@@ -1445,7 +1445,7 @@ export function renderSkewChartImproved(skewData, allRows) {
     return                              { label: 'Skew 균형 ✓',       color: '#22c55e', desc: '공포/탐욕 균형 — 옵션 구조 중립' };
   })();
 
-  const W = 520, H = 160, PL = 48, PR = 16, PT = 16, PB = 36;
+  const W = Math.max(el.clientWidth || 700, 500), H = 220, PL = 48, PR = 16, PT = 16, PB = 36;
   const cW = W - PL - PR, cH = H - PT - PB;
   const skews = enriched.map(r => r.netSkew);
   const dtes  = enriched.map(r => r.dte);
@@ -1504,7 +1504,7 @@ Put IV: ${(r.put_iv*100).toFixed(1)}% / Call IV: ${(r.call_iv*100).toFixed(1)}%
       </div>
     </div>
     <div style="overflow-x:auto">
-      <svg viewBox="0 0 ${W} ${H}" width="100%" style="max-width:${W}px;display:block">
+      <svg viewBox="0 0 ${W} ${H}" width="100%" style="display:block">
         <line x1="${PL}" y1="${zeroY.toFixed(1)}" x2="${W-PR}" y2="${zeroY.toFixed(1)}"
           stroke="var(--text3)" stroke-width="0.8" stroke-dasharray="4,2"/>
         <text x="${PL-4}" y="${(zeroY+4).toFixed(1)}" text-anchor="end" font-size="9" fill="var(--text3)">0%</text>
