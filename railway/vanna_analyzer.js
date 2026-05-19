@@ -417,7 +417,7 @@ const strikeGexList = strikes.map(s => {
 
 const flipStrike = calcFlipStrike(strikeGexList);
 
-// ── 스트라이크별 IV 곡선 데이터 (Smile 곡선용)
+// ── 스트라이크별 IV 곡선 데이터 (Smile 곡선용 + 히트맵/EM용 Greeks 포함)
 // ATM ± 20% 범위 내, IV가 있는 스트라이크만
 const smileRange = spot * 0.20;
 const strikeIVRows = strikes
@@ -430,6 +430,16 @@ const strikeIVRows = strikes
     if (!avgIV) return null;
     const delta = s.callDeltaCount > 0
       ? +(s.callDelta / s.callDeltaCount).toFixed(4) : null;
+
+    // Greeks 계산 (히트맵 / EM 차트용)
+    const dteG = dte === 0 ? 0.001 : dte;
+    const g    = calcGreeks(spot, s.strike, dteG, avgIV);
+    const netOI = s.callOI - s.putOI;
+    const sDex   = g ? +((g.delta * s.callOI * 100 - g.delta * s.putOI * 100) / 1e6).toFixed(6) : null;
+    const sGex   = g ? +(netOI * g.gamma * 100 * spot / 1e6).toFixed(6) : null;
+    const sVanna = g ? +(g.vanna * netOI * 100 * spot / 1e6).toFixed(6) : null;
+    const sCharm = g ? +(g.charm * netOI * 100 / 1e6).toFixed(6) : null;
+
     return {
       strike:     s.strike,
       call_iv:    cIV,
@@ -438,6 +448,10 @@ const strikeIVRows = strikes
       call_delta: delta,
       call_oi:    s.callOI,
       put_oi:     s.putOI,
+      dex:        sDex,
+      gex:        sGex,
+      vanna:      sVanna,
+      charm:      sCharm,
     };
   })
   .filter(Boolean)
