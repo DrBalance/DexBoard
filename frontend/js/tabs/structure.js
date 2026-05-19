@@ -19,6 +19,7 @@ import {
   renderSkewChartImproved,
   renderSmileSelector,
   renderOIDistribution,
+  renderVannaDistChart,
 } from '../options-charts.js';
 
 // ── 내부 상태
@@ -96,13 +97,23 @@ function renderShell() {
       <div id="struct-verdict"></div>
     </div>
 
-    <!-- 섹션 4: OI 확률 분포 -->
+    <!-- 섹션 4: 만기별 DEX 히트맵 + EM 차트 -->
     <div class="struct-panel">
-      <div class="struct-panel-title">
-        <span class="panel-icon">◈</span> OI 확률 분포
-        <span class="panel-sub">Monthly 합산 · Call Wall · Flip Zone · EM 범위</span>
+      <div class="struct-panel-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <span>
+          <span class="panel-icon">▦</span> DEX 히트맵 · EM 분포
+          <span class="panel-sub">만기 선택 합산 · 딜러 헤징 압력 · Expected Move</span>
+        </span>
+        <div style="display:flex;gap:6px">
+          <button id="st-all-btn"   style="font-size:10px;padding:2px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer">전체선택</button>
+          <button id="st-none-btn"  style="font-size:10px;padding:2px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer">전체해제</button>
+          <button id="st-apply-btn" style="font-size:10px;padding:2px 10px;background:var(--accent);border:1px solid var(--accent);border-radius:4px;color:#fff;cursor:pointer;font-weight:600">적용</button>
+        </div>
       </div>
-      <div id="struct-oi-dist"></div>
+      <div id="st-expiry-panel" style="padding:8px 14px;border-bottom:1px solid var(--border)"></div>
+      <div id="st-heatmap-canvas" style="padding:4px 0"></div>
+      <div style="padding:8px 14px 4px;font-size:11px;color:var(--text3)">선택만기 합산 · Expected Move</div>
+      <div id="st-expiry-em" style="padding:0 14px 14px"></div>
     </div>
 
     <!-- 섹션 5: Term Structure 곡선 -->
@@ -344,16 +355,17 @@ function fmtK(n) {
 // ============================================
 async function loadAndRenderCharts(symbol, scoreRow) {
   // 로딩 표시
-  ['struct-term', 'struct-skew', 'struct-heatmap', 'struct-oi-dist', 'struct-weekly-oi'].forEach(id => {
+  ['struct-term', 'struct-skew', 'struct-heatmap', 'struct-weekly-oi'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.innerHTML = `<div style="padding:16px;color:var(--text3);font-size:12px">로딩 중...</div>`;
   });
 
   try {
-    // 오늘 + 전일 데이터 동시 로드
-    const [res, histRes] = await Promise.all([
+    // 오늘 + 전일 + options-strikes 동시 로드
+    const [res, histRes, strikesRes] = await Promise.all([
       fetch(`${CF_API}/api/options-dex/${symbol}`),
       fetch(`${CF_API}/api/options-dex/${symbol}/history?days=3`),
+      fetch(`${CF_API}/api/options-strikes/${symbol}`),
     ]);
 
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -373,7 +385,7 @@ async function loadAndRenderCharts(symbol, scoreRow) {
     }
 
     if (!rows.length) {
-      ['struct-term', 'struct-skew', 'struct-heatmap', 'struct-oi-dist', 'struct-weekly-oi'].forEach(id => {
+      ['struct-term', 'struct-skew', 'struct-heatmap', 'struct-weekly-oi'].forEach(id => {
         const el = document.getElementById(id);
         if (el) el.innerHTML = `<div style="padding:16px;color:var(--text3);font-size:12px">데이터 없음</div>`;
       });
@@ -381,6 +393,27 @@ async function loadAndRenderCharts(symbol, scoreRow) {
     }
 
     const spot = scoreRow?.close ?? null;
+
+    // options-strikes → expirations 객체 변환 (히트맵/EM용)
+    let strikesExpirations = {};
+    if (strikesRes?.ok) {
+      const strikesData = await strikesRes.json();
+      const strikeRows  = strikesData.rows ?? [];
+      strikeRows.forEach(s => {
+        if (!strikesExpirations[s.expiry_date]) {
+          strikesExpirations[s.expiry_date] = { strikes: [], flip_strike: null };
+        }
+        strikesExpirations[s.expiry_date].strikes.push({
+          strike: s.strike,
+          dex:    s.dex    ?? 0,
+          gex:    s.gex    ?? 0,
+          vanna:  s.vanna  ?? 0,
+          charm:  s.charm  ?? 0,
+          callOI: s.call_oi ?? 0,
+          putOI:  s.put_oi  ?? 0,
+        });
+      });
+    }
 
     // 공통 계산
     const termData   = calculateTermStructure(rows, prevRows);
@@ -406,8 +439,8 @@ async function loadAndRenderCharts(symbol, scoreRow) {
     }
 
     // 각 섹션 렌더링
-    renderVerdict({ termData, skewData, emData: [], spot, flipStrike, vannaSum, rows });  // 작업3: 종합판단 개선
-    renderOIDistribution(symbol, rows, spot, flipStrike, []);                        // 작업2: OI 확률 분포
+    renderVerdict({ termData, skewData, emData: [], spot, flipStrike, vannaSum, rows });
+    _stRenderHeatmapSection(strikesExpirations, spot);  // 히트맵 + EM 차트
     renderDexTermStructure(
       rows.map(r => ({ ...r, expiry_type: r.expiry_type ?? classifyExpiry(r.expiry_date, rows.map(x => x.expiry_date)) })),
       {
@@ -1124,3 +1157,391 @@ function renderWeeklyOIChart(row, spot, isHighlighted) {
 // 작업 6: IV Skew 판정 수정 (역사적 평균 대비)
 // renderSkewChart를 개선한 새 버전
 // ============================================
+
+// ============================================
+// 히트맵 + EM 차트 섹션 (market.js 로직 포팅)
+// ============================================
+
+// ── 색상 상수 ──────────────────────────────────────────────
+const _ST_C_CALL   = { r: 63,  g: 185, b: 80  };
+const _ST_C_PUT    = { r: 248, g: 81,  b: 73  };
+const _ST_C_SPOT   = 'rgba(210,153,34,0.9)';
+const _ST_C_BORDER = 'rgba(255,255,255,0.06)';
+const _ST_ROW_COLORS = [
+  '#58a6ff','#3fb950','#d29922','#bc64dc',
+  '#f0883e','#2dd4bf','#a78bfa','#fb8f44',
+  '#39d353','#ff6b6b',
+];
+
+// ── 상태 ──────────────────────────────────────────────────
+let _stExpiryConfig = {};
+let _stEmInst       = null;
+
+// ── DTE 계산 ──────────────────────────────────────────────
+function _stCalcDTE(expiry) {
+  const exp = new Date(`${expiry}T16:00:00-05:00`);
+  return Math.max(0, Math.round((exp - new Date()) / 86_400_000));
+}
+
+// ── 만기 설정 초기화 ─────────────────────────────────────
+function _stInitExpiryConfig(expirations) {
+  const existing = Object.keys(_stExpiryConfig);
+  Object.keys(expirations).forEach((expiry, i) => {
+    if (_stExpiryConfig[expiry]) return;
+    const dte = _stCalcDTE(expiry);
+    _stExpiryConfig[expiry] = {
+      enabled: dte <= 65,
+      weight:  1.0,
+      dte,
+      color: _ST_ROW_COLORS[i % _ST_ROW_COLORS.length],
+    };
+  });
+  existing.forEach(e => {
+    if (!expirations[e]) delete _stExpiryConfig[e];
+  });
+}
+
+// ── 만기 선택 패널 렌더링 ────────────────────────────────
+function _stRenderExpiryPanel() {
+  const container = document.getElementById('st-expiry-panel');
+  if (!container) return;
+
+  const sorted = Object.entries(_stExpiryConfig)
+    .sort(([a], [b]) => a.localeCompare(b));
+
+  container.innerHTML = `
+    <div style="display:flex;flex-wrap:wrap;gap:6px">
+      ${sorted.map(([expiry, cfg]) => {
+        const dteStr = cfg.dte === 0 ? '0DTE' : `D-${cfg.dte}`;
+        return `
+          <label style="display:inline-flex;align-items:center;gap:4px;cursor:pointer;
+            background:${cfg.enabled ? cfg.color + '22' : 'var(--bg3)'};
+            border:1px solid ${cfg.enabled ? cfg.color + '66' : 'var(--border)'};
+            border-radius:4px;padding:3px 8px;font-size:10px;color:var(--text);
+            transition:background 0.15s">
+            <input type="checkbox" data-expiry="${expiry}"
+              ${cfg.enabled ? 'checked' : ''}
+              style="width:10px;height:10px;cursor:pointer;accent-color:${cfg.color}">
+            <span style="font-family:var(--mono)">${expiry.slice(5)}</span>
+            <span style="color:var(--text3)">${dteStr}</span>
+          </label>`;
+      }).join('')}
+    </div>`;
+
+  container.querySelectorAll('input[type=checkbox]').forEach(chk => {
+    chk.addEventListener('change', (e) => {
+      const exp = e.target.dataset.expiry;
+      if (_stExpiryConfig[exp]) _stExpiryConfig[exp].enabled = e.target.checked;
+      _stRenderExpiryPanel();
+    });
+  });
+}
+
+// ── 가중합산 계산 ────────────────────────────────────────
+function _stBuildWeighted(expirations) {
+  const strikeMap = {};
+  for (const [expiry, expiryData] of Object.entries(expirations)) {
+    const cfg = _stExpiryConfig[expiry];
+    if (!cfg?.enabled) continue;
+    const w = cfg.weight;
+    const strikes = Array.isArray(expiryData) ? expiryData : (expiryData.strikes ?? []);
+    for (const s of strikes) {
+      if (!strikeMap[s.strike]) {
+        strikeMap[s.strike] = { strike: s.strike, callDex: 0, putDex: 0, netDex: 0, gex: 0, vanna: 0, charm: 0 };
+      }
+      const e = strikeMap[s.strike];
+      e.callDex += s.dex > 0 ? s.dex * w : 0;
+      e.putDex  += s.dex < 0 ? s.dex * w : 0;
+      e.netDex  += s.dex   * w;
+      e.gex     += (s.gex   ?? 0) * w;
+      e.vanna   += (s.vanna ?? 0) * w;
+      e.charm   += (s.charm ?? 0) * w;
+    }
+  }
+  return Object.values(strikeMap).sort((a, b) => a.strike - b.strike);
+}
+
+// ── Key Level 추출 ───────────────────────────────────────
+function _stExtractKeyLevels({ strikes, flip_strike }, spot) {
+  const above = strikes.filter(s => s.dex > 0 && s.strike > (spot || 0));
+  const M     = above.length ? above.reduce((a, b) => a.dex > b.dex ? a : b) : null;
+  const below = strikes.filter(s => s.dex < 0 && s.strike <= (spot || Infinity));
+  const m     = below.length ? below.reduce((a, b) => Math.abs(a.dex) > Math.abs(b.dex) ? a : b) : null;
+  return { M: M?.strike ?? null, m: m?.strike ?? null, G: flip_strike ?? null };
+}
+
+// ── 드래그 스크롤 ────────────────────────────────────────
+function _stAttachDragScroll(el) {
+  let isDown = false, startX = 0, scrollLeft = 0;
+  el.addEventListener('mousedown', (e) => {
+    isDown = true; el.style.cursor = 'grabbing';
+    startX = e.pageX - el.offsetLeft; scrollLeft = el.scrollLeft;
+  });
+  el.addEventListener('mouseleave', () => { isDown = false; el.style.cursor = ''; });
+  el.addEventListener('mouseup',    () => { isDown = false; el.style.cursor = ''; });
+  el.addEventListener('mousemove',  (e) => {
+    if (!isDown) return;
+    e.preventDefault();
+    el.scrollLeft = scrollLeft - (e.pageX - el.offsetLeft - startX) * 1.2;
+  });
+  let tx = 0, ts = 0;
+  el.addEventListener('touchstart', (e) => { tx = e.touches[0].pageX; ts = el.scrollLeft; }, { passive: true });
+  el.addEventListener('touchmove',  (e) => { el.scrollLeft = ts + (tx - e.touches[0].pageX); }, { passive: true });
+}
+
+// ── 히트맵 렌더링 ────────────────────────────────────────
+function _stRenderHeatmap(expirations, weighted, spot) {
+  const container = document.getElementById('st-heatmap-canvas');
+  if (!container) return;
+
+  const allStrikes = [...new Set(
+    Object.values(expirations)
+      .flatMap(e => Array.isArray(e) ? e : (e.strikes ?? []))
+      .map(s => s.strike)
+  )].sort((a, b) => a - b);
+
+  if (!allStrikes.length) return;
+
+  const enabledExpiries = Object.entries(_stExpiryConfig)
+    .filter(([, cfg]) => cfg.enabled)
+    .sort(([a], [b]) => a.localeCompare(b));
+
+  if (!enabledExpiries.length) return;
+
+  const ROW_H = 28, LABEL_W = 72, CELL_W = 28, HEADER_H = 22, SUM_H = 32, LEGEND_H = 18;
+  const rows    = enabledExpiries.length;
+  const canvasW = allStrikes.length * CELL_W;
+  const canvasH = HEADER_H + rows * ROW_H + SUM_H + LEGEND_H + 10;
+  const spotCol = spot ? allStrikes.findIndex(s => s >= spot) : -1;
+
+  const maxVal = Math.max(...Object.values(expirations)
+    .flatMap(e => Array.isArray(e) ? e : (e.strikes ?? []))
+    .map(s => Math.abs(s.dex ?? 0)), 1);
+  const maxSum = Math.max(...weighted.map(s => Math.abs(s.netDex)), 1);
+
+  const C_M = `rgb(${_ST_C_CALL.r},${_ST_C_CALL.g},${_ST_C_CALL.b})`;
+  const C_m = `rgb(${_ST_C_PUT.r},${_ST_C_PUT.g},${_ST_C_PUT.b})`;
+  const C_G = 'rgb(139,92,246)';
+
+  function drawMarker(ctx, x, y, cellW, cellH, hasM, hasm, hasG) {
+    if (!hasM && !hasm && !hasG) return;
+    const x1 = x+1, y1 = y+1, w = cellW-2, h = cellH-2;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x1,y1,w,h); ctx.clip();
+    if ((hasM&&hasG)||( hasm&&hasG&&!hasM)) {
+      ctx.strokeStyle=C_G; ctx.lineWidth=1.5; ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(x1,y1+h); ctx.lineTo(x1+w,y1); ctx.stroke();
+    }
+    if (hasM&&hasm&&!hasG) {
+      ctx.strokeStyle=C_m; ctx.lineWidth=1.5; ctx.setLineDash([]);
+      ctx.beginPath(); ctx.moveTo(x1,y1+h); ctx.lineTo(x1+w,y1); ctx.stroke();
+    }
+    if (hasM&&hasm&&hasG) {
+      ctx.strokeStyle=C_m; ctx.lineWidth=1.5;
+      ctx.beginPath(); ctx.moveTo(x1,y1+h); ctx.lineTo(x1+w,y1); ctx.stroke();
+      ctx.strokeStyle=C_G;
+      ctx.beginPath(); ctx.moveTo(x1+w,y1+h); ctx.lineTo(x1,y1); ctx.stroke();
+    }
+    ctx.restore();
+    ctx.lineWidth=1.8; ctx.setLineDash([]);
+    const cnt = [hasM,hasm,hasG].filter(Boolean).length;
+    if (cnt===1) {
+      ctx.strokeStyle = hasM?C_M:hasm?C_m:C_G;
+      ctx.strokeRect(x1,y1,w,h);
+    } else {
+      let cA,cB;
+      if (hasM&&hasG&&!hasm)      { cA=C_M; cB=C_G; }
+      else if (hasm&&hasG&&!hasM) { cA=C_m; cB=C_G; }
+      else                        { cA=C_M; cB=C_m; }
+      ctx.strokeStyle=cA; ctx.beginPath(); ctx.moveTo(x1+w,y1); ctx.lineTo(x1,y1); ctx.lineTo(x1,y1+h); ctx.stroke();
+      ctx.strokeStyle=cB; ctx.beginPath(); ctx.moveTo(x1,y1+h); ctx.lineTo(x1+w,y1+h); ctx.lineTo(x1+w,y1); ctx.stroke();
+    }
+    const label=[hasM?'M':'',hasm?'m':'',hasG?'G':''].filter(Boolean).join('');
+    ctx.fillStyle='#fff'; ctx.font=`bold ${label.length>=3?7:8}px monospace`;
+    ctx.textAlign='right'; ctx.fillText(label,x1+w-1,y1+9);
+  }
+
+  // sticky 라벨 캔버스
+  const lblCanvas = document.createElement('canvas');
+  lblCanvas.width = LABEL_W; lblCanvas.height = canvasH;
+  lblCanvas.style.cssText = `display:block;flex-shrink:0;width:${LABEL_W}px;height:${canvasH}px;position:sticky;left:0;z-index:2;`;
+  const lctx = lblCanvas.getContext('2d');
+  lctx.fillStyle = '#0d1117'; lctx.fillRect(0,0,LABEL_W,canvasH);
+  enabledExpiries.forEach(([expiry,cfg], rowIdx) => {
+    const y = HEADER_H + rowIdx * ROW_H;
+    lctx.fillStyle=cfg.color; lctx.font='13px monospace'; lctx.textAlign='right';
+    lctx.fillText(expiry.slice(5), LABEL_W-4, y+ROW_H/2+3);
+    lctx.fillStyle='#555'; lctx.font='11px monospace';
+    lctx.fillText(cfg.dte===0?'0DTE':`${cfg.dte}d`, LABEL_W-4, y+ROW_H/2+12);
+  });
+  const sumY = HEADER_H + rows * ROW_H + 4;
+  lctx.strokeStyle='rgba(255,255,255,0.12)'; lctx.lineWidth=1; lctx.setLineDash([]);
+  lctx.beginPath(); lctx.moveTo(0,sumY-4); lctx.lineTo(LABEL_W,sumY-4); lctx.stroke();
+  lctx.fillStyle='#c9d1d9'; lctx.font='13px monospace'; lctx.textAlign='right';
+  lctx.fillText('합산', LABEL_W-4, sumY+SUM_H/2+4);
+
+  // 데이터 캔버스
+  const dataCanvas = document.createElement('canvas');
+  dataCanvas.width = canvasW; dataCanvas.height = canvasH;
+  dataCanvas.style.cssText = `display:block;width:${canvasW}px;height:${canvasH}px;`;
+  const ctx = dataCanvas.getContext('2d');
+  ctx.fillStyle='#0d1117'; ctx.fillRect(0,0,canvasW,canvasH);
+
+  // 스트라이크 헤더
+  ctx.font='9px monospace'; ctx.textAlign='center';
+  allStrikes.forEach((strike, i) => {
+    const x = i*CELL_W + CELL_W/2;
+    const isSpot = i===spotCol;
+    ctx.fillStyle = isSpot ? _ST_C_SPOT : (strike%5===0?'#8b949e':'transparent');
+    if (isSpot||strike%5===0) ctx.fillText(`$${strike}`,x,HEADER_H-5);
+  });
+
+  // 만기별 행
+  enabledExpiries.forEach(([expiry,cfg], rowIdx) => {
+    const expiryData = expirations[expiry] ?? {};
+    const rawStrikes = Array.isArray(expiryData)?expiryData:(expiryData.strikes??[]);
+    const flipStrike = Array.isArray(expiryData)?null:(expiryData.flip_strike??null);
+    const strikeMap  = {}; rawStrikes.forEach(s=>{strikeMap[s.strike]=s;});
+    const kl = _stExtractKeyLevels({strikes:rawStrikes,flip_strike:flipStrike},spot);
+    const y  = HEADER_H + rowIdx*ROW_H;
+    allStrikes.forEach((strike,i) => {
+      const x = i*CELL_W;
+      const s = strikeMap[strike];
+      ctx.fillStyle=_ST_C_BORDER; ctx.fillRect(x+1,y+2,CELL_W-2,ROW_H-4);
+      if (s) {
+        const dex = (s.dex??0)*cfg.weight;
+        const intensity = Math.min(Math.abs(dex)/maxVal,1);
+        const c = dex>=0?_ST_C_CALL:_ST_C_PUT;
+        ctx.fillStyle=`rgba(${c.r},${c.g},${c.b},${(intensity*0.8+0.1).toFixed(2)})`;
+        ctx.fillRect(x+1,y+2,CELL_W-2,ROW_H-4);
+      }
+      drawMarker(ctx,x,y+2,CELL_W,ROW_H-4,strike===kl.M,strike===kl.m,strike===kl.G);
+    });
+  });
+
+  // 구분선
+  ctx.strokeStyle='rgba(255,255,255,0.12)'; ctx.lineWidth=1; ctx.setLineDash([]);
+  ctx.beginPath(); ctx.moveTo(0,sumY-4); ctx.lineTo(canvasW,sumY-4); ctx.stroke();
+
+  // 합산 행
+  const weightedAsRaw = weighted.map(s=>({strike:s.strike,dex:s.netDex}));
+  const sumKl = _stExtractKeyLevels({strikes:weightedAsRaw,flip_strike:null},spot);
+  ctx.fillStyle='rgba(255,255,255,0.03)'; ctx.fillRect(0,sumY,canvasW,SUM_H);
+  allStrikes.forEach((strike,i) => {
+    const x = i*CELL_W;
+    const s = weighted.find(w=>w.strike===strike);
+    ctx.fillStyle=_ST_C_BORDER; ctx.fillRect(x+1,sumY+2,CELL_W-2,SUM_H-4);
+    if (s&&s.netDex!==0) {
+      const intensity=Math.min(Math.abs(s.netDex)/maxSum,1);
+      const c=s.netDex>=0?_ST_C_CALL:_ST_C_PUT;
+      ctx.fillStyle=`rgba(${c.r},${c.g},${c.b},${(intensity*0.9+0.1).toFixed(2)})`;
+      ctx.fillRect(x+1,sumY+2,CELL_W-2,SUM_H-4);
+    }
+    drawMarker(ctx,x,sumY+2,CELL_W,SUM_H-4,strike===sumKl.M,strike===sumKl.m,strike===sumKl.G);
+  });
+
+  // spot 선
+  if (spot&&spotCol>=0) {
+    const sx=spotCol*CELL_W, mx=sx+CELL_W/2;
+    ctx.save(); ctx.strokeStyle=_ST_C_SPOT; ctx.lineWidth=1.5; ctx.setLineDash([]); ctx.globalAlpha=0.85;
+    ctx.beginPath(); ctx.moveTo(sx,HEADER_H); ctx.lineTo(sx,sumY+SUM_H); ctx.stroke();
+    ctx.globalAlpha=1; ctx.restore();
+    ctx.fillStyle=_ST_C_SPOT;
+    ctx.beginPath(); ctx.moveTo(mx,sumY-2); ctx.lineTo(mx-5,sumY-9); ctx.lineTo(mx+5,sumY-9);
+    ctx.closePath(); ctx.fill();
+    ctx.font='9px monospace'; ctx.textAlign='center';
+    ctx.fillText(`$${spot.toFixed(0)}`,mx,sumY-11);
+  }
+
+  // DOM 조립
+  const scrollDiv = document.createElement('div');
+  scrollDiv.style.cssText='overflow-x:auto;overflow-y:hidden;-webkit-overflow-scrolling:touch;flex:1;min-width:0;';
+  scrollDiv.appendChild(dataCanvas);
+  container.innerHTML='';
+  container.style.cssText='display:flex;flex-direction:row;align-items:stretch;border-top:1px solid var(--border);border-bottom:1px solid var(--border);';
+  container.appendChild(lblCanvas);
+  container.appendChild(scrollDiv);
+
+  // 범례
+  const legDiv = document.createElement('div');
+  legDiv.style.cssText='padding:4px 8px;display:flex;justify-content:space-between;font-size:10px;color:var(--text3)';
+  legDiv.innerHTML='<span>■ 녹색: 딜러 매수 헤지 &nbsp;■ 빨간색: 딜러 매도 헤지</span><span>색상 농도 = 헤징 압력 강도</span>';
+  container.parentElement?.insertBefore(legDiv, container.nextSibling);
+
+  if (spotCol>=0) {
+    const scrollTarget = spotCol*CELL_W - scrollDiv.clientWidth/2 + CELL_W/2;
+    scrollDiv.scrollLeft = Math.max(0,scrollTarget);
+  }
+  if (!scrollDiv._dragScrollBound) {
+    _stAttachDragScroll(scrollDiv);
+    scrollDiv._dragScrollBound = true;
+  }
+}
+
+// ── EM 차트 렌더링 ───────────────────────────────────────
+function _stRenderEM(weighted, spot) {
+  const el = document.getElementById('st-expiry-em');
+  if (!el||!weighted?.length||!spot) return;
+
+  const strikes = weighted.map(s => ({
+    strike: s.strike,
+    dex:    s.netDex,
+    vanna:  s.vanna,
+    gex:    s.gex,
+    avg_iv: null,
+  }));
+
+  const prevZoom = _stEmInst?._zoomRef ?? null;
+  _stEmInst?.detach();
+  _stEmInst = renderVannaDistChart(el, strikes, spot, {
+    mode:      'combined',
+    vixDir:    'neutral',
+    dte:       30,
+    label:     '합산 만기 EM · Vanna 기반',
+    zoomState: prevZoom,
+  });
+}
+
+// ── 전체 히트맵 섹션 진입점 ──────────────────────────────
+function _stRenderHeatmapSection(expirations, spot) {
+  if (!Object.keys(expirations).length) {
+    const panel = document.getElementById('st-expiry-panel');
+    if (panel) panel.innerHTML = '<div style="padding:12px;color:var(--text3);font-size:12px">Strike 데이터 없음 (스크리너 실행 후 조회하세요)</div>';
+    return;
+  }
+
+  _stInitExpiryConfig(expirations);
+  _stRenderExpiryPanel();
+
+  const weighted = _stBuildWeighted(expirations);
+  _stRenderHeatmap(expirations, weighted, spot);
+  _stRenderEM(weighted, spot);
+
+  // 버튼 이벤트 (최초 1회만)
+  const applyBtn = document.getElementById('st-apply-btn');
+  const allBtn   = document.getElementById('st-all-btn');
+  const noneBtn  = document.getElementById('st-none-btn');
+
+  if (applyBtn && !applyBtn._bound) {
+    applyBtn._bound = true;
+    applyBtn.addEventListener('click', () => {
+      const w2 = _stBuildWeighted(expirations);
+      _stRenderHeatmap(expirations, w2, spot);
+      _stRenderEM(w2, spot);
+    });
+  }
+  if (allBtn && !allBtn._bound) {
+    allBtn._bound = true;
+    allBtn.addEventListener('click', () => {
+      Object.keys(_stExpiryConfig).forEach(e => { _stExpiryConfig[e].enabled = true; });
+      _stRenderExpiryPanel();
+    });
+  }
+  if (noneBtn && !noneBtn._bound) {
+    noneBtn._bound = true;
+    noneBtn.addEventListener('click', () => {
+      Object.keys(_stExpiryConfig).forEach(e => { _stExpiryConfig[e].enabled = false; });
+      _stRenderExpiryPanel();
+    });
+  }
+}
