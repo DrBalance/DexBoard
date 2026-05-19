@@ -1681,8 +1681,11 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   canvas.style.cssText = 'display:block;width:100%;height:280px;';
   el.appendChild(canvas);
 
-  // ── 8. 줌 상태 초기화 (외부 zoomState 있으면 유지) ────────
-  const zoom = zoomState ?? createZoomState({ minX: minS, maxX: maxS });
+  // ── 8. 줌 상태 초기화 (외부 zoomState 있으면 유지, EM 경계로 범위 한정) ────
+  const viewPad  = (emUpper - emLower) * 0.1;
+  const initMin  = emLower - viewPad;
+  const initMax  = emUpper + viewPad;
+  const zoom = zoomState ?? createZoomState({ minX: initMin, maxX: initMax });
 
   // ── 9. 그리기 함수 ──────────────────────────────────────
   const PL = 52, PR = 16, PT = 24, PB = 32;
@@ -1724,14 +1727,22 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
     const absVals = dVannaArr.map(Math.abs).sort((a,b) => b-a);
     const top5Thr = absVals[Math.max(0, Math.floor(absVals.length * 0.05) - 1)] ?? 0;
 
-    // 변곡: dVanna 절대값 상위 5% strike
-    const downInfl = sorted
-      .filter((s, i) => s.strike < spot && Math.abs(dVannaArr[i]) >= top5Thr && top5Thr > 0)
-      .map(s => s.strike).sort((a,b) => b-a);
+    // 변곡: dVanna 절대값 상위 2개 (상하 각각)
+    const strikeWithDV = sorted.map((s, i) => ({ strike: s.strike, absDV: Math.abs(dVannaArr[i]) }));
 
-    const upInfl = sorted
-      .filter((s, i) => s.strike > spot && Math.abs(dVannaArr[i]) >= top5Thr && top5Thr > 0)
-      .map(s => s.strike).sort((a,b) => a-b);
+    const downInfl = strikeWithDV
+      .filter(s => s.strike < spot && s.absDV >= top5Thr && top5Thr > 0)
+      .sort((a, b) => b.absDV - a.absDV)
+      .slice(0, 2)
+      .map(s => s.strike)
+      .sort((a,b) => b-a);
+
+    const upInfl = strikeWithDV
+      .filter(s => s.strike > spot && s.absDV >= top5Thr && top5Thr > 0)
+      .sort((a, b) => b.absDV - a.absDV)
+      .slice(0, 2)
+      .map(s => s.strike)
+      .sort((a,b) => a-b);
 
     // 기준점: 현재가
     const upperBase = spot;
