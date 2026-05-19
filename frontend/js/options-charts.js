@@ -1638,10 +1638,20 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   const emUpper = vannaFlipUp   ?? (spot + symEM);
   const emLower = vannaFlipDown ?? (spot - symEM);
 
-  // ── 7. DEX 절대값 기반 분포 계산 ───────────────────────
-  const probRaw  = sorted.map(s => Math.abs(s.dex ?? 0));
-  const maxProb  = Math.max(...probRaw, 1e-10);
-  const normProb = probRaw.map(p => p / maxProb);
+  // ── 7. 확률분포 계산 (누적선 미분 = 차분 절대값) ────────
+  // Vanna 차분 절대값 (보라) — 누적 S자의 기울기
+  const vannaDistRaw = sorted.map((s, i) =>
+    i === 0 ? 0 : Math.abs((s.vanna ?? 0) - (sorted[i-1].vanna ?? 0))
+  );
+  const maxVannaDist  = Math.max(...vannaDistRaw, 1e-10);
+  const normVannaDist = vannaDistRaw.map(v => v / maxVannaDist);
+
+  // DEX 차분 절대값 (노랑) — 동일 방식
+  const dexDistRaw = sorted.map((s, i) =>
+    i === 0 ? 0 : Math.abs((s.dex ?? 0) - (sorted[i-1].dex ?? 0))
+  );
+  const maxDexDist  = Math.max(...dexDistRaw, 1e-10);
+  const normDexDist = dexDistRaw.map(v => v / maxDexDist);
 
   // ── 8. DEX Flip Zone (누적 DEX 부호 전환 지점) ──────────
   let cumDex = 0, dexFlip = null, prevDexSign = null;
@@ -1773,49 +1783,44 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
     }
 
     // ── Vanna 누적합 곡선 ──────────────────────────────────
-    const vannaVis = sorted
-      .map((s, i) => ({ strike: s.strike, nv: normVanna[i] }))
+    // ── Vanna 차분 분포 곡선 (보라) ──────────────────────
+    const vannaDistVis = sorted
+      .map((s, i) => ({ strike: s.strike, v: normVannaDist[i] }))
       .filter(d => d.strike >= zoom.viewMin && d.strike <= zoom.viewMax);
 
-    if (vannaVis.length > 1) {
-      const midY = PT + cH / 2;
+    if (vannaDistVis.length > 1) {
+      const baseY = PT + cH;
       ctx.beginPath();
-      vannaVis.forEach((d, i) => {
+      vannaDistVis.forEach((d, i) => {
         const x = xOf(d.strike);
-        const y = midY - d.nv * (cH / 2) * 0.7;
+        const y = baseY - d.v * cH * 0.85;
         i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
       });
       ctx.strokeStyle = 'rgba(167,139,250,0.85)';
       ctx.lineWidth   = 1.8;
       ctx.stroke();
-
-      ctx.beginPath();
-      ctx.moveTo(PL, midY); ctx.lineTo(W - PR, midY);
-      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-      ctx.lineWidth   = 1;
-      ctx.stroke();
     }
 
-    // ── 확률 밀도 곡선 (채우기 없이 선만) ────────────────
-    const probVis = sorted
-      .map((s, i) => ({ strike: s.strike, p: normProb[i] }))
+    // ── DEX 차분 분포 곡선 (노랑) ────────────────────────
+    const dexDistVis = sorted
+      .map((s, i) => ({ strike: s.strike, v: normDexDist[i] }))
       .filter(d => d.strike >= zoom.viewMin && d.strike <= zoom.viewMax);
 
-    if (probVis.length > 1) {
+    if (dexDistVis.length > 1) {
       const baseY = PT + cH;
       ctx.beginPath();
-      probVis.forEach((d, i) => {
+      dexDistVis.forEach((d, i) => {
         const x = xOf(d.strike);
-        const y = baseY - d.p * cH * 0.85;
+        const y = baseY - d.v * cH * 0.85;
         i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
       });
-      ctx.strokeStyle = 'rgba(59,130,246,0.9)';
+      ctx.strokeStyle = 'rgba(234,179,8,0.9)';
       ctx.lineWidth   = 2.5;
       ctx.stroke();
     }
 
-    // ── 수직선 그리기 헬퍼 ───────────────────────────────
-    function vline(x, color, dash, label, labelY) {
+    // ── 수직선 그리기 헬퍼 (레이블 선 옆 배치) ───────────
+    function vline(x, color, dash, label, side = 'right') {
       if (x < PL || x > W - PR) return;
       ctx.save();
       ctx.strokeStyle = color;
@@ -1825,21 +1830,21 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
       ctx.setLineDash([]);
       if (label) {
         ctx.fillStyle = color;
-        ctx.font      = 'bold 10px sans-serif';
-        ctx.textAlign = 'center';
-        ctx.fillText(label, x, labelY ?? PT + 12);
+        ctx.font      = 'bold 10px Arial, sans-serif';
+        ctx.textAlign = side === 'right' ? 'left' : 'right';
+        const lx = side === 'right' ? x + 3 : x - 3;
+        ctx.fillText(label, lx, PT + 20);
       }
       ctx.restore();
     }
 
     // Spot
     if (spot >= zoom.viewMin && spot <= zoom.viewMax)
-      vline(xOf(spot), '#ffffff', [], `${spot}`, PT + 14);
+      vline(xOf(spot), '#ffffff', [], `${spot}`, 'right');
 
     // DEX Flip (현재가가 콜/풋 어느 영역인지 경계)
     if (dexFlip != null && dexFlip >= zoom.viewMin && dexFlip <= zoom.viewMax) {
-      vline(xOf(dexFlip), '#fbbf24', [4, 3], `DEX Flip ${dexFlip}`, PT + 14);
-      // 현재가 위치 표시
+      vline(xOf(dexFlip), '#fbbf24', [4, 3], `DEX Flip ${dexFlip}`, spot > dexFlip ? 'left' : 'right');
       const inCallZone = spot > dexFlip;
       ctx.save();
       ctx.fillStyle = inCallZone ? 'rgba(34,197,94,0.7)' : 'rgba(239,68,68,0.7)';
@@ -1853,35 +1858,19 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
     downInfl.forEach((p, i) => {
       if (p < zoom.viewMin || p > zoom.viewMax) return;
       const alpha = i === 0 ? 0.85 : 0.65;
-      vline(xOf(p), `rgba(239,68,68,${alpha})`, [4,3], `${p}`, PT + 52 + i * 14);
+      vline(xOf(p), `rgba(239,68,68,${alpha})`, [4,3], `${p}`, 'left');
     });
     upInfl.forEach((p, i) => {
       if (p < zoom.viewMin || p > zoom.viewMax) return;
       const alpha = i === 0 ? 0.85 : 0.65;
-      vline(xOf(p), `rgba(34,197,94,${alpha})`, [4,3], `${p}`, PT + 52 + i * 14);
+      vline(xOf(p), `rgba(34,197,94,${alpha})`, [4,3], `${p}`, 'right');
     });
 
     // EM 경계선
-    if (emLower >= zoom.viewMin && emLower <= zoom.viewMax) {
-      const x = xOf(emLower);
-      vline(x, 'rgba(251,191,36,0.8)', [6, 3]);
-      ctx.save();
-      ctx.fillStyle = 'rgba(251,191,36,0.9)';
-      ctx.font = 'bold 10px Arial, sans-serif';
-      ctx.textAlign = 'left';
-      ctx.fillText(`${emLower.toFixed(0)}`, x + 3, PT + cH * 0.55);
-      ctx.restore();
-    }
-    if (emUpper >= zoom.viewMin && emUpper <= zoom.viewMax) {
-      const x = xOf(emUpper);
-      vline(x, 'rgba(251,191,36,0.8)', [6, 3]);
-      ctx.save();
-      ctx.fillStyle = 'rgba(251,191,36,0.9)';
-      ctx.font = 'bold 10px Arial, sans-serif';
-      ctx.textAlign = 'right';
-      ctx.fillText(`${emUpper.toFixed(0)}`, x - 3, PT + cH * 0.55);
-      ctx.restore();
-    }
+    if (emLower >= zoom.viewMin && emLower <= zoom.viewMax)
+      vline(xOf(emLower), 'rgba(251,191,36,0.8)', [6, 3], `${emLower.toFixed(0)}`, 'right');
+    if (emUpper >= zoom.viewMin && emUpper <= zoom.viewMax)
+      vline(xOf(emUpper), 'rgba(251,191,36,0.8)', [6, 3], `${emUpper.toFixed(0)}`, 'left');
 
     // ── X축 눈금 ──────────────────────────────────────────
     const step = _niceStep(zoom.viewMax - zoom.viewMin, 8);
@@ -1907,11 +1896,11 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
 
     // ── 범례 ──────────────────────────────────────────────
     const legends = [
-      { color: 'rgba(239,68,68,0.40)',   label: '하락' },
-      { color: 'rgba(34,197,94,0.40)',   label: '상승' },
-      { color: 'rgba(234,179,8,0.45)',   label: '중첩' },
-      { color: 'rgba(59,130,246,0.9)',   label: 'DEX 분포', line: true, lw: 2.5 },
-      { color: 'rgba(167,139,250,0.85)', label: 'Vanna 누적', line: true, lw: 1.8 },
+      { color: 'rgba(239,68,68,0.40)',  label: '하락' },
+      { color: 'rgba(34,197,94,0.40)',  label: '상승' },
+      { color: 'rgba(234,179,8,0.45)',  label: '중첩' },
+      { color: 'rgba(167,139,250,0.85)', label: 'Vanna 분포', line: true, lw: 1.8 },
+      { color: 'rgba(234,179,8,0.9)',   label: 'DEX 분포',   line: true, lw: 2.5 },
     ];
     let lx = PL;
     ctx.font = '10px Arial, sans-serif';
