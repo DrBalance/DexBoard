@@ -1638,20 +1638,13 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   const emUpper = vannaFlipUp   ?? (spot + symEM);
   const emLower = vannaFlipDown ?? (spot - symEM);
 
-  // ── 7. 확률분포 계산 (누적선 미분 = 차분 절대값) ────────
-  // Vanna 차분 절대값 (보라) — 누적 S자의 기울기
-  const vannaDistRaw = sorted.map((s, i) =>
-    i === 0 ? 0 : Math.abs((s.vanna ?? 0) - (sorted[i-1].vanna ?? 0))
-  );
-  const maxVannaDist  = Math.max(...vannaDistRaw, 1e-10);
-  const normVannaDist = vannaDistRaw.map(v => v / maxVannaDist);
-
-  // DEX 차분 절대값 (노랑) — 동일 방식
-  const dexDistRaw = sorted.map((s, i) =>
-    i === 0 ? 0 : Math.abs((s.dex ?? 0) - (sorted[i-1].dex ?? 0))
-  );
-  const maxDexDist  = Math.max(...dexDistRaw, 1e-10);
-  const normDexDist = dexDistRaw.map(v => v / maxDexDist);
+  // ── 7. DEX 누적 계산 ────────────────────────────────────
+  let _cumDexArr = 0;
+  const cumDexArr = sorted.map(s => { _cumDexArr += (s.dex ?? 0); return _cumDexArr; });
+  const minCumDex = Math.min(...cumDexArr);
+  const maxCumDex = Math.max(...cumDexArr);
+  const cumDexRange = Math.max(maxCumDex - minCumDex, 1e-10);
+  const normCumDex = cumDexArr.map(v => (v - minCumDex) / cumDexRange);
 
   // ── 8. DEX Flip Zone (누적 DEX 부호 전환 지점) ──────────
   let cumDex = 0, dexFlip = null, prevDexSign = null;
@@ -1783,39 +1776,21 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
     }
 
     // ── Vanna 누적합 곡선 ──────────────────────────────────
-    // ── Vanna 차분 분포 곡선 (보라) ──────────────────────
-    const vannaDistVis = sorted
-      .map((s, i) => ({ strike: s.strike, v: normVannaDist[i] }))
+    // ── DEX 누적 곡선 (S자) ───────────────────────────────
+    const cumDexVis = sorted
+      .map((s, i) => ({ strike: s.strike, v: normCumDex[i] }))
       .filter(d => d.strike >= zoom.viewMin && d.strike <= zoom.viewMax);
 
-    if (vannaDistVis.length > 1) {
+    if (cumDexVis.length > 1) {
       const baseY = PT + cH;
       ctx.beginPath();
-      vannaDistVis.forEach((d, i) => {
-        const x = xOf(d.strike);
-        const y = baseY - d.v * cH * 0.85;
-        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
-      });
-      ctx.strokeStyle = 'rgba(167,139,250,0.85)';
-      ctx.lineWidth   = 1.8;
-      ctx.stroke();
-    }
-
-    // ── DEX 차분 분포 곡선 (노랑) ────────────────────────
-    const dexDistVis = sorted
-      .map((s, i) => ({ strike: s.strike, v: normDexDist[i] }))
-      .filter(d => d.strike >= zoom.viewMin && d.strike <= zoom.viewMax);
-
-    if (dexDistVis.length > 1) {
-      const baseY = PT + cH;
-      ctx.beginPath();
-      dexDistVis.forEach((d, i) => {
+      cumDexVis.forEach((d, i) => {
         const x = xOf(d.strike);
         const y = baseY - d.v * cH * 0.85;
         i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
       });
       ctx.strokeStyle = 'rgba(234,179,8,0.9)';
-      ctx.lineWidth   = 2.5;
+      ctx.lineWidth   = 2;
       ctx.stroke();
     }
 
@@ -1899,8 +1874,7 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
       { color: 'rgba(239,68,68,0.40)',  label: '하락' },
       { color: 'rgba(34,197,94,0.40)',  label: '상승' },
       { color: 'rgba(234,179,8,0.45)',  label: '중첩' },
-      { color: 'rgba(167,139,250,0.85)', label: 'Vanna 분포', line: true, lw: 1.8 },
-      { color: 'rgba(234,179,8,0.9)',   label: 'DEX 분포',   line: true, lw: 2.5 },
+      { color: 'rgba(234,179,8,0.9)',   label: 'DEX 누적', line: true, lw: 2 },
     ];
     let lx = PL;
     ctx.font = '10px Arial, sans-serif';
