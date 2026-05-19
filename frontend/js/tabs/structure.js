@@ -440,7 +440,7 @@ async function loadAndRenderCharts(symbol, scoreRow) {
 
     // 각 섹션 렌더링
     renderVerdict({ termData, skewData, emData: [], spot, flipStrike, vannaSum, rows });
-    _stRenderHeatmapSection(strikesExpirations, spot);  // 히트맵 + EM 차트
+    _stRenderHeatmapSection(strikesExpirations, spot, symbol);
     renderDexTermStructure(
       rows.map(r => ({ ...r, expiry_type: r.expiry_type ?? classifyExpiry(r.expiry_date, rows.map(x => x.expiry_date)) })),
       {
@@ -1176,6 +1176,7 @@ const _ST_ROW_COLORS = [
 // ── 상태 ──────────────────────────────────────────────────
 let _stExpiryConfig = {};
 let _stEmInst       = null;
+let _stLastSymbol   = null;
 
 // ── DTE 계산 ──────────────────────────────────────────────
 function _stCalcDTE(expiry) {
@@ -1462,8 +1463,11 @@ function _stRenderHeatmap(expirations, weighted, spot) {
   container.appendChild(lblCanvas);
   container.appendChild(scrollDiv);
 
-  // 범례
+  // 범례 (기존 범례 제거 후 재삽입)
+  const legId = 'st-heatmap-legend';
+  document.getElementById(legId)?.remove();
   const legDiv = document.createElement('div');
+  legDiv.id = legId;
   legDiv.style.cssText='padding:4px 8px;display:flex;justify-content:space-between;font-size:10px;color:var(--text3)';
   legDiv.innerHTML='<span>■ 녹색: 딜러 매수 헤지 &nbsp;■ 빨간색: 딜러 매도 헤지</span><span>색상 농도 = 헤징 압력 강도</span>';
   container.parentElement?.insertBefore(legDiv, container.nextSibling);
@@ -1491,23 +1495,32 @@ function _stRenderEM(weighted, spot) {
     avg_iv: null,
   }));
 
-  const prevZoom = _stEmInst?._zoomRef ?? null;
-  _stEmInst?.detach();
-  _stEmInst = renderVannaDistChart(el, strikes, spot, {
-    mode:      'combined',
-    vixDir:    'neutral',
-    dte:       30,
-    label:     '합산 만기 EM · Vanna 기반',
-    zoomState: prevZoom,
-  });
+  if (_stEmInst) {
+    _stEmInst.update(strikes, spot, { vixDir: 'neutral' });
+  } else {
+    _stEmInst = renderVannaDistChart(el, strikes, spot, {
+      mode:  'combined',
+      vixDir: 'neutral',
+      dte:    30,
+      label:  '합산 만기 EM · Vanna 기반',
+    });
+  }
 }
 
 // ── 전체 히트맵 섹션 진입점 ──────────────────────────────
-function _stRenderHeatmapSection(expirations, spot) {
+function _stRenderHeatmapSection(expirations, spot, symbol) {
   if (!Object.keys(expirations).length) {
     const panel = document.getElementById('st-expiry-panel');
     if (panel) panel.innerHTML = '<div style="padding:12px;color:var(--text3);font-size:12px">Strike 데이터 없음 (스크리너 실행 후 조회하세요)</div>';
     return;
+  }
+
+  // 심볼 변경 시 EM 인스턴스 초기화
+  if (_stLastSymbol !== symbol) {
+    _stEmInst?.detach?.();
+    _stEmInst = null;
+    _stExpiryConfig = {};
+    _stLastSymbol = symbol;
   }
 
   _stInitExpiryConfig(expirations);
