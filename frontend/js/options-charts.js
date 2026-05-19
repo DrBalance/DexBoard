@@ -1824,7 +1824,7 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
     if (zeroLineY >= PT && zeroLineY <= PT + cH) {
       ctx.beginPath();
       ctx.moveTo(PL, zeroLineY); ctx.lineTo(W - PR, zeroLineY);
-      ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+      ctx.strokeStyle = 'rgba(255,255,255,0.8)';
       ctx.lineWidth   = 1;
       ctx.setLineDash([2, 4]);
       ctx.stroke();
@@ -1913,6 +1913,7 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
       { color: 'rgba(234,179,8,0.45)',   label: '중첩' },
       { color: 'rgba(167,139,250,0.7)',  label: 'Vanna 누적', line: true, lw: 1.5 },
       { color: 'rgba(234,179,8,0.9)',    label: 'DEX 누적',   line: true, lw: 2 },
+      { color: 'rgba(255,255,255,0.8)',  label: 'DEX Zero',   line: true, lw: 1, dash: true },
     ];
     let lx = PL;
     ctx.font = '10px Arial, sans-serif';
@@ -1921,9 +1922,11 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
         ctx.save();
         ctx.strokeStyle = lg.color;
         ctx.lineWidth   = lg.lw;
+        if (lg.dash) ctx.setLineDash([2, 4]);
         ctx.beginPath();
         ctx.moveTo(lx, PT - 12); ctx.lineTo(lx + 14, PT - 12);
         ctx.stroke();
+        ctx.setLineDash([]);
         ctx.restore();
         lx += 18;
       } else {
