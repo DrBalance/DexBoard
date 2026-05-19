@@ -322,12 +322,13 @@ export function renderDexTermStructure(expiryRows, options = {}) {
     const maxAbsDex = Math.max(...selectedRows.map(r => Math.abs(r.dex)), 0.001);
     function bR(dex) { return Math.max(7, Math.sqrt(Math.abs(dex) / maxAbsDex) * 34); }
 
-    const CALL_FILL   = 'rgba(55,138,221,0.58)';
-    const CALL_STROKE = '#378ADD';
-    const PUT_FILL    = 'rgba(226,75,74,0.58)';
-    const PUT_STROKE  = '#E24B4A';
-    const ZERO_FILL   = 'rgba(99,153,34,0.6)';
-    const ZERO_STROKE = '#639922';
+    const CALL_FILL    = 'rgba(34,197,94,0.55)';   // 녹색계열 (콜우세)
+    const CALL_STROKE  = '#22c55e';
+    const PUT_FILL     = 'rgba(239,68,68,0.55)';   // 붉은색계열 (풋우세)
+    const PUT_STROKE   = '#ef4444';
+    const ZERO_BORDER  = 'rgba(255,255,255,0.8)';  // 0DTE 테두리: 흰색
+    const WEEK_BORDER  = '#eab308';                 // 위클리 테두리: 노란색
+    const MONTH_BORDER = '#a855f7';                 // 먼슬리 테두리: 보라색
 
     const byType = { '0dte': [], weekly: [], monthly: [] };
     selectedRows.forEach(r => { (byType[r.type] ?? byType.weekly).push(r); });
@@ -373,10 +374,10 @@ export function renderDexTermStructure(expiryRows, options = {}) {
         data: byType['0dte'].map(r => ({
           x: r.dte, y: r.dex, r: bR(r.dex), label: r.expiry_date,
         })),
-        backgroundColor: ZERO_FILL,
-        borderColor: ZERO_STROKE,
-        borderWidth: 1.5,
-        pointStyle: 'rect',
+        backgroundColor: byType['0dte'].map(r => r.dex >= 0 ? CALL_FILL : PUT_FILL),
+        borderColor:     ZERO_BORDER,
+        borderWidth: 2,
+        pointStyle: 'triangle',
         order: 3,
       });
     }
@@ -389,8 +390,8 @@ export function renderDexTermStructure(expiryRows, options = {}) {
           x: r.dte, y: r.dex, r: bR(r.dex), label: r.expiry_date,
         })),
         backgroundColor: byType.weekly.map(r => r.dex >= 0 ? CALL_FILL : PUT_FILL),
-        borderColor:     byType.weekly.map(r => r.dex >= 0 ? CALL_STROKE : PUT_STROKE),
-        borderWidth: 1.5,
+        borderColor:     WEEK_BORDER,
+        borderWidth: 2,
         pointStyle: 'circle',
         order: 2,
       });
@@ -404,9 +405,9 @@ export function renderDexTermStructure(expiryRows, options = {}) {
           x: r.dte, y: r.dex, r: bR(r.dex), label: r.expiry_date,
         })),
         backgroundColor: byType.monthly.map(r => r.dex >= 0 ? CALL_FILL : PUT_FILL),
-        borderColor:     byType.monthly.map(r => r.dex >= 0 ? CALL_STROKE : PUT_STROKE),
+        borderColor:     MONTH_BORDER,
         borderWidth: 2,
-        pointStyle: 'triangle',
+        pointStyle: 'rect',
         order: 1,
       });
     }
@@ -416,26 +417,29 @@ export function renderDexTermStructure(expiryRows, options = {}) {
 
   // 5. 카드 HTML
   function renderCards(stats) {
-    const { dexCenter, mSlope, wSlope, maxRow } = stats;
+    const { dexCenter, mSlope, wSlope, maxRow, monthly, weekly } = stats;
 
     const centerLabel = dexCenter == null ? '—'
       : dexCenter < 21  ? `D-${dexCenter.toFixed(0)} · 단기집중`
       : dexCenter < 45  ? `D-${dexCenter.toFixed(0)} · 중기베팅`
       :                   `D-${dexCenter.toFixed(0)} · 장기베팅`;
 
-    const mSlopeLabel = mSlope == null ? '데이터 부족'
-      : mSlope > 0  ? '콜 확대 ↑'
-      : mSlope < 0  ? '풋 확대 ↓'
-      : '중립 →';
-    const mSlopeColor = mSlope == null ? 'var(--text3)'
-      : mSlope > 0 ? '#378ADD' : mSlope < 0 ? '#E24B4A' : 'var(--text3)';
+    const mLastDex = monthly.length ? monthly[monthly.length - 1].dex : null;
+    const wLastDex = weekly.length  ? weekly[weekly.length - 1].dex   : null;
 
-    const wSlopeLabel = wSlope == null ? '데이터 부족'
-      : wSlope > 0  ? '콜 확대 ↑'
-      : wSlope < 0  ? '풋 확대 ↓'
-      : '중립 →';
-    const wSlopeColor = wSlope == null ? 'var(--text3)'
-      : wSlope > 0 ? '#378ADD' : wSlope < 0 ? '#E24B4A' : 'var(--text3)';
+    function slopeLabel(slope, lastDex) {
+      if (slope == null) return ['데이터 부족', 'var(--text3)'];
+      if (slope === 0)   return ['중립 →', 'var(--text3)'];
+      const isPositiveDex = lastDex >= 0;
+      if (isPositiveDex && slope > 0)  return ['콜 확대 ↑', '#22c55e'];
+      if (isPositiveDex && slope < 0)  return ['콜 축소 ↓', '#ef4444'];
+      if (!isPositiveDex && slope < 0) return ['풋 확대 ↓', '#ef4444'];
+      if (!isPositiveDex && slope > 0) return ['풋 축소 ↑', '#22c55e'];
+      return ['중립 →', 'var(--text3)'];
+    }
+
+    const [mSlopeLabel, mSlopeColor] = slopeLabel(mSlope, mLastDex);
+    const [wSlopeLabel, wSlopeColor] = slopeLabel(wSlope, wLastDex);
 
     return `
       <div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">
@@ -467,7 +471,7 @@ export function renderDexTermStructure(expiryRows, options = {}) {
       : ['weekly', 'monthly'];
 
     const typeLabel = { '0dte': '0DTE', weekly: '위클리', monthly: '먼슬리' };
-    const typeColor = { '0dte': '#639922', weekly: '#378ADD', monthly: '#D4537E' };
+    const typeColor = { '0dte': 'rgba(255,255,255,0.8)', weekly: '#eab308', monthly: '#a855f7' };
 
     const grouped = {};
     typeOrder.forEach(t => { grouped[t] = []; });
@@ -507,7 +511,7 @@ export function renderDexTermStructure(expiryRows, options = {}) {
           <div style="display:flex;gap:6px">
             <button id="dts-all" style="font-size:10px;padding:2px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer">전체선택</button>
             <button id="dts-none" style="font-size:10px;padding:2px 8px;background:var(--bg3);border:1px solid var(--border);border-radius:4px;color:var(--text);cursor:pointer">전체해제</button>
-            <button id="dts-monthly" style="font-size:10px;padding:2px 8px;background:#D4537E22;border:1px solid #D4537E44;border-radius:4px;color:#D4537E;cursor:pointer">먼슬리만</button>
+            <button id="dts-monthly" style="font-size:10px;padding:2px 8px;background:#a855f722;border:1px solid #a855f744;border-radius:4px;color:#a855f7;cursor:pointer">먼슬리만</button>
           </div>
         </div>
         ${sections}
@@ -520,23 +524,22 @@ export function renderDexTermStructure(expiryRows, options = {}) {
   const statsId  = 'dex-term-stats-' + Math.random().toString(36).slice(2, 7);
 
   el.innerHTML = `
-    <div style="font-size:11px;color:var(--text3);margin-bottom:6px;display:flex;gap:12px;flex-wrap:wrap">
+    <div style="font-size:11px;color:var(--text3);margin-bottom:6px;display:flex;gap:14px;flex-wrap:wrap;align-items:center">
       <span style="display:inline-flex;align-items:center;gap:4px">
-        <svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="rgba(55,138,221,0.6)" stroke="#378ADD" stroke-width="1.2"/></svg>위클리 콜우세
+        <svg width="14" height="12"><polygon points="7,1 13,11 1,11" fill="rgba(255,255,255,0.15)" stroke="rgba(255,255,255,0.8)" stroke-width="1.5"/></svg>0DTE
       </span>
       <span style="display:inline-flex;align-items:center;gap:4px">
-        <svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="rgba(226,75,74,0.6)" stroke="#E24B4A" stroke-width="1.2"/></svg>위클리 풋우세
+        <svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="rgba(255,255,255,0.1)" stroke="#eab308" stroke-width="1.5"/></svg>위클리
       </span>
       <span style="display:inline-flex;align-items:center;gap:4px">
-        <svg width="14" height="12"><polygon points="7,1 13,11 1,11" fill="rgba(55,138,221,0.6)" stroke="#378ADD" stroke-width="1.2"/></svg>먼슬리 콜우세
+        <svg width="12" height="12"><rect x="1" y="1" width="10" height="10" fill="rgba(255,255,255,0.1)" stroke="#a855f7" stroke-width="1.5"/></svg>먼슬리
+      </span>
+      <span style="display:inline-flex;align-items:center;gap:4px;margin-left:8px">
+        <svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="rgba(34,197,94,0.6)"/></svg>콜우세
       </span>
       <span style="display:inline-flex;align-items:center;gap:4px">
-        <svg width="14" height="12"><polygon points="7,1 13,11 1,11" fill="rgba(226,75,74,0.6)" stroke="#E24B4A" stroke-width="1.2"/></svg>먼슬리 풋우세
+        <svg width="12" height="12"><circle cx="6" cy="6" r="5" fill="rgba(239,68,68,0.6)"/></svg>풋우세
       </span>
-      ${mode === 'index' ? `
-      <span style="display:inline-flex;align-items:center;gap:4px">
-        <svg width="12" height="12"><rect x="1" y="1" width="10" height="10" rx="2" fill="rgba(99,153,34,0.6)" stroke="#639922" stroke-width="1.2"/></svg>0DTE
-      </span>` : ''}
       <span style="margin-left:auto;color:var(--text3);font-size:10px">버블 크기 = DEX 절대값</span>
     </div>
 
@@ -556,6 +559,7 @@ export function renderDexTermStructure(expiryRows, options = {}) {
   const textColor = isDark ? '#9ca3af' : '#6b7280';
 
   let chartInst = null;
+  let isFirstDraw = true;
 
   function getSelectedRows() {
     return rows.filter(r => selectionState[r.expiry_date]);
@@ -565,12 +569,14 @@ export function renderDexTermStructure(expiryRows, options = {}) {
     const canvas = el.querySelector(`#${canvasId}`);
     if (!canvas) return;
 
-    const dexVals  = selectedRows.map(r => r.dex);
+    const dexVals   = selectedRows.map(r => r.dex);
     const maxAbsDex = Math.max(...dexVals.map(Math.abs), 0.001);
-    const yPad     = maxAbsDex * 0.18;
-    const yMin     = Math.min(...dexVals) - yPad;
-    const yMax     = Math.max(...dexVals) + yPad;
-    const xMax     = Math.max(...selectedRows.map(r => r.dte), 10) + 5;
+    const yPad      = maxAbsDex * 0.18;
+    const yMin      = Math.min(...dexVals) - yPad;
+    const yMax      = Math.max(...dexVals) + yPad;
+    const xMax      = Math.max(...selectedRows.map(r => r.dte), 10) + 5;
+    const animDuration = isFirstDraw ? 600 : 0;
+    isFirstDraw = false;
 
     if (chartInst) chartInst.destroy();
 
@@ -578,6 +584,7 @@ export function renderDexTermStructure(expiryRows, options = {}) {
       type: 'bubble',
       data: { datasets: buildChartData(selectedRows) },
       options: {
+        animation: { duration: animDuration },
         responsive: true,
         maintainAspectRatio: false,
         layout: { padding: { top: 12, right: 20, bottom: 4, left: 4 } },
@@ -635,9 +642,9 @@ export function renderDexTermStructure(expiryRows, options = {}) {
     el.querySelectorAll('input[data-expiry]').forEach(chk => {
       const expiry    = chk.dataset.expiry;
       const row       = rows.find(r => r.expiry_date === expiry);
-      const typeColor = row?.type === 'monthly' ? '#D4537E'
-                      : row?.type === '0dte'    ? '#639922'
-                      :                           '#378ADD';
+      const typeColor = row?.type === 'monthly' ? '#a855f7'
+                      : row?.type === '0dte'    ? 'rgba(255,255,255,0.8)'
+                      :                           '#eab308';
       const label = chk.closest('label');
       if (!label) return;
       const on = selectionState[expiry];
