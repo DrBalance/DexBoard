@@ -1545,10 +1545,12 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   if (!el || !strikes?.length || !spot) return null;
 
   const {
-    mode   = 'single',
-    vixDir = 'neutral',
-    dte    = 1,
-    label  = '확률 분포 · Vanna Flip',
+    mode      = 'single',
+    vixDir    = 'neutral',
+    dte       = 1,
+    label     = '확률 분포 · Vanna Flip',
+    markers   = [],   // [{ price, type: 'flip'|'inflection'|'ceiling'|'floor', label }]
+    zoomState = null, // 외부에서 zoom 상태 주입 (업데이트 시 유지용)
   } = opts;
 
   // ── 1. 데이터 정렬 ──────────────────────────────────────
@@ -1566,41 +1568,48 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
 
   // ── 2. vixDir에 따른 vanna 기여값 결정 ─────────────────
   //
-  // VIX↑: 음수 vanna 절대값 (딜러 매도 압력 발생원)
-  // VIX↓: 양수 vanna 값     (딜러 매수 압력 발생원)
-  // 중립:  전체 vanna 절대값
-  //
-  // 왼→오른 누적으로 S자 곡선 형성
-  // 양끝 플랫에서 안쪽으로 좁혀오며 EM 경계 탐색
+  // VIX 합성: 상단=VIX↓ 기반, 하단=VIX↑ 기반
+  // 하나의 차트에 상하 방향 모두 표시
 
-  function vannaContrib(v) {
-    if (vixDir === 'up')   return v < 0 ? Math.abs(v) : 0;
-    if (vixDir === 'down') return v > 0 ? v : 0;
-    return Math.abs(v);
-  }
+  function vannaContribDown(v) { return v < 0 ? Math.abs(v) : 0; }  // VIX↑ → 하락 압력
+  function vannaContribUp(v)   { return v > 0 ? v : 0; }             // VIX↓ → 상승 압력
+  function vannaContribAll(v)  { return Math.abs(v); }               // 중립
 
-  // ── 3. Vanna 누적 곡선 (왼→오른, S자) ──────────────────
-  const vannaVals = sorted.map(s => vannaContrib(s.vanna ?? 0));
-  let _cumV = 0;
-  const vannaCum  = vannaVals.map(v => { _cumV += v; return _cumV; });
-  const maxAbsV   = Math.max(...vannaCum, 1e-10);
-  const normVanna = vannaCum.map(v => v / maxAbsV);
+  // ── 3. Vanna 누적 곡선 (합성: 상단/하단 각각) ──────────
+  // 하단 EM (VIX↑ 시나리오)
+  const vannaValsDown = sorted.map(s => vannaContribDown(s.vanna ?? 0));
+  let _cumD = 0;
+  const vannaCumDown = vannaValsDown.map(v => { _cumD += v; return _cumD; });
 
-  // ── 4. EM 경계: 양끝에서 안쪽으로 좁혀오기 ─────────────
+  // 상단 EM (VIX↓ 시나리오)
+  const vannaValsUp = sorted.map(s => vannaContribUp(s.vanna ?? 0));
+  let _cumU = 0;
+  const vannaCumUp = vannaValsUp.map(v => { _cumU += v; return _cumU; });
+
+  // 표시용 Vanna 누적 (vixDir에 따라 or 합성)
+  const vannaValsDisp = sorted.map(s => vannaContribAll(s.vanna ?? 0));
+  let _cumA = 0;
+  const vannaCumDisp = vannaValsDisp.map(v => { _cumA += v; return _cumA; });
+  const maxAbsV   = Math.max(...vannaCumDisp, 1e-10);
+  const normVanna = vannaCumDisp.map(v => v / maxAbsV);
+
+  // ── 4. EM 경계: 합성 상단(VIX↓)/하단(VIX↑) ─────────────
   const SLOPE_THRESHOLD = 0.15;
-  const maxSlope  = Math.max(...vannaVals, 1e-10);
-  const threshold = maxSlope * SLOPE_THRESHOLD;
 
-  // 하방 EM: 왼쪽 끝부터 → 안쪽으로
+  // 하방 EM (VIX↑): 왼쪽 끝부터 안쪽으로
+  const maxSlopeDown = Math.max(...vannaValsDown, 1e-10);
+  const threshDown   = maxSlopeDown * SLOPE_THRESHOLD;
   let vannaFlipDown = sorted[0].strike;
   for (let i = 0; i < sorted.length; i++) {
-    if (vannaVals[i] >= threshold) { vannaFlipDown = sorted[i].strike; break; }
+    if (vannaValsDown[i] >= threshDown) { vannaFlipDown = sorted[i].strike; break; }
   }
 
-  // 상방 EM: 오른쪽 끝부터 → 안쪽으로
+  // 상방 EM (VIX↓): 오른쪽 끝부터 안쪽으로
+  const maxSlopeUp = Math.max(...vannaValsUp, 1e-10);
+  const threshUp   = maxSlopeUp * SLOPE_THRESHOLD;
   let vannaFlipUp = sorted[sorted.length - 1].strike;
   for (let i = sorted.length - 1; i >= 0; i--) {
-    if (vannaVals[i] >= threshold) { vannaFlipUp = sorted[i].strike; break; }
+    if (vannaValsUp[i] >= threshUp) { vannaFlipUp = sorted[i].strike; break; }
   }
 
   // ── 5. GEX Flip Zone ────────────────────────────────────
@@ -1612,7 +1621,7 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
     prevGexSign = sign;
   }
 
-  // ── 6. ATM IV 기반 대칭 EM (폴백용) ────────────────────
+  // ── 6. ATM IV 기반 EM (폴백용) ─────────────────────────
   const atmStrike = sorted.reduce((best, s) =>
     Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best
   );
@@ -1622,10 +1631,16 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   const emUpper = vannaFlipUp   ?? (spot + symEM);
   const emLower = vannaFlipDown ?? (spot - symEM);
 
-  // ── 7. IV Smile 기반 확률 밀도 계산 ────────────────────
+  // ── 7. IV Smile 기반 비대칭 확률 밀도 계산 ──────────────
+  // 상단(strike > spot): call IV 사용
+  // 하단(strike < spot): put IV 사용
   const sigma = spot * atmIV * Math.sqrt(dte / 365) || 1;
   const probRaw = sorted.map(s => {
-    const iv  = s.avg_iv ?? atmIV;
+    const isCall = s.strike >= spot;
+    // call_iv / put_iv 있으면 사용, 없으면 avg_iv 폴백
+    const iv = isCall
+      ? (s.call_iv ?? s.avg_iv ?? atmIV)
+      : (s.put_iv  ?? s.avg_iv ?? atmIV);
     const sig = spot * iv * Math.sqrt(dte / 365) || sigma;
     const d   = s.strike - spot;
     return Math.exp(-0.5 * (d / sig) ** 2) / (sig * Math.sqrt(2 * Math.PI));
@@ -1659,8 +1674,8 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   canvas.style.cssText = 'display:block;width:100%;height:280px;';
   el.appendChild(canvas);
 
-  // ── 8. 줌 상태 초기화 ───────────────────────────────────
-  const zoom = createZoomState({ minX: minS, maxX: maxS });
+  // ── 8. 줌 상태 초기화 (외부 zoomState 있으면 유지) ────────
+  const zoom = zoomState ?? createZoomState({ minX: minS, maxX: maxS });
 
   // ── 9. 그리기 함수 ──────────────────────────────────────
   const PL = 52, PR = 16, PT = 24, PB = 32;
@@ -1694,15 +1709,55 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
       ctx.beginPath(); ctx.moveTo(PL, y); ctx.lineTo(W - PR, y); ctx.stroke();
     }
 
-    // ── EM 범위 배경 ──────────────────────────────────────
-    const emLX = xOf(Math.max(emLower, zoom.viewMin));
-    const emUX = xOf(Math.min(emUpper, zoom.viewMax));
-    if (emUX > emLX) {
-      ctx.fillStyle = 'rgba(251,191,36,0.06)';
-      ctx.fillRect(emLX, PT, emUX - emLX, cH);
+    // ── 변곡 기반 음영 구간 ───────────────────────────────
+    // markers에서 변곡/천정/바닥 추출
+    const inflections = markers.filter(m => m.type === 'inflection').map(m => m.price).sort((a,b) => a-b);
+    const ceilings    = markers.filter(m => m.type === 'ceiling').map(m => m.price);
+    const floors      = markers.filter(m => m.type === 'floor').map(m => m.price);
+
+    // 천정/바닥 없으면 emUpper/emLower 사용
+    const upperBase = ceilings.length ? Math.min(...ceilings) : spot;
+    const lowerBase = floors.length   ? Math.max(...floors)   : spot;
+
+    // 하락 변곡들 (현재가 아래, 가까운 순)
+    const downInfl = inflections.filter(p => p < spot).sort((a,b) => b-a);
+    // 상승 변곡들 (현재가 위, 가까운 순)
+    const upInfl   = inflections.filter(p => p > spot).sort((a,b) => a-b);
+
+    function fillZone(x1, x2, color) {
+      const px1 = Math.max(xOf(Math.max(x1, zoom.viewMin)), PL);
+      const px2 = Math.min(xOf(Math.min(x2, zoom.viewMax)), W - PR);
+      if (px2 <= px1) return;
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.fillRect(px1, PT, px2 - px1, cH);
+      ctx.restore();
     }
 
-    // ── Vanna 누적합 곡선 (배경 레이어) ───────────────────
+    // 하락 구간 (빨강)
+    const downZones = [lowerBase, ...downInfl, emLower].filter((v,i,a) => a.indexOf(v)===i).sort((a,b)=>b-a);
+    const downAlphas = [0.40, 0.25, 0.12];
+    for (let i = 0; i < downZones.length - 1; i++) {
+      const alpha = downAlphas[Math.min(i, downAlphas.length-1)];
+      fillZone(downZones[i+1], downZones[i], `rgba(239,68,68,${alpha})`);
+    }
+    if (downZones.length === 1) fillZone(emLower, lowerBase, 'rgba(239,68,68,0.12)');
+
+    // 상승 구간 (초록)
+    const upZones = [upperBase, ...upInfl, emUpper].filter((v,i,a) => a.indexOf(v)===i).sort((a,b)=>a-b);
+    const upAlphas = [0.40, 0.25, 0.12];
+    for (let i = 0; i < upZones.length - 1; i++) {
+      const alpha = upAlphas[Math.min(i, upAlphas.length-1)];
+      fillZone(upZones[i], upZones[i+1], `rgba(34,197,94,${alpha})`);
+    }
+    if (upZones.length === 1) fillZone(upperBase, emUpper, 'rgba(34,197,94,0.12)');
+
+    // 중첩 구간 (노란색 45%) - 하락 1차와 상승 1차가 겹치는 경우
+    const overlapL = Math.max(lowerBase, emLower);
+    const overlapR = Math.min(upperBase, emUpper);
+    if (overlapR > overlapL) fillZone(overlapL, overlapR, 'rgba(234,179,8,0.45)');
+
+    // ── Vanna 누적합 곡선 ──────────────────────────────────
     const vannaVis = sorted
       .map((s, i) => ({ strike: s.strike, nv: normVanna[i] }))
       .filter(d => d.strike >= zoom.viewMin && d.strike <= zoom.viewMax);
@@ -1715,11 +1770,10 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
         const y = midY - d.nv * (cH / 2) * 0.7;
         i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
       });
-      ctx.strokeStyle = 'rgba(167,139,250,0.35)';
-      ctx.lineWidth   = 1.5;
+      ctx.strokeStyle = 'rgba(167,139,250,0.85)';
+      ctx.lineWidth   = 1.8;
       ctx.stroke();
 
-      // 0선
       ctx.beginPath();
       ctx.moveTo(PL, midY); ctx.lineTo(W - PR, midY);
       ctx.strokeStyle = 'rgba(255,255,255,0.08)';
@@ -1727,7 +1781,7 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
       ctx.stroke();
     }
 
-    // ── 확률 밀도 곡선 (채우기) ───────────────────────────
+    // ── 확률 밀도 곡선 (채우기 없이 선만) ────────────────
     const probVis = sorted
       .map((s, i) => ({ strike: s.strike, p: normProb[i] }))
       .filter(d => d.strike >= zoom.viewMin && d.strike <= zoom.viewMax);
@@ -1740,16 +1794,9 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
         const y = baseY - d.p * cH * 0.85;
         i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
       });
-      ctx.strokeStyle = '#3b82f6';
-      ctx.lineWidth   = 2;
+      ctx.strokeStyle = 'rgba(59,130,246,0.9)';
+      ctx.lineWidth   = 2.5;
       ctx.stroke();
-
-      // 채우기
-      ctx.lineTo(xOf(probVis[probVis.length - 1].strike), baseY);
-      ctx.lineTo(xOf(probVis[0].strike), baseY);
-      ctx.closePath();
-      ctx.fillStyle = 'rgba(59,130,246,0.12)';
-      ctx.fill();
     }
 
     // ── 수직선 그리기 헬퍼 ───────────────────────────────
@@ -1774,19 +1821,48 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
     if (spot >= zoom.viewMin && spot <= zoom.viewMax)
       vline(xOf(spot), '#ffffff', [], `$${spot}`, PT + 14);
 
-    // Vanna Flip Up
+    // Vanna Flip Up (상단 EM, VIX↓)
     if (vannaFlipUp != null && vannaFlipUp >= zoom.viewMin && vannaFlipUp <= zoom.viewMax)
-      vline(xOf(vannaFlipUp), '#a78bfa', [4, 3], `VF↑$${vannaFlipUp}`, PT + 14);
+      vline(xOf(vannaFlipUp), '#a78bfa', [6, 3], `VF↑$${vannaFlipUp}`, PT + 14);
 
-    // Vanna Flip Down
+    // Vanna Flip Down (하단 EM, VIX↑)
     if (vannaFlipDown != null && vannaFlipDown >= zoom.viewMin && vannaFlipDown <= zoom.viewMax)
-      vline(xOf(vannaFlipDown), '#f472b6', [4, 3], `VF↓$${vannaFlipDown}`, PT + 26);
+      vline(xOf(vannaFlipDown), '#f472b6', [6, 3], `VF↓$${vannaFlipDown}`, PT + 26);
 
-    // GEX Flip (비교용)
+    // GEX Flip
     if (gexFlip != null && gexFlip >= zoom.viewMin && gexFlip <= zoom.viewMax)
       vline(xOf(gexFlip), '#fbbf24', [2, 4], `GF$${gexFlip}`, PT + 38);
 
-    // EM 경계
+    // 외부 마커 (변곡/플립존/천정/바닥)
+    markers.forEach(m => {
+      if (m.price < zoom.viewMin || m.price > zoom.viewMax) return;
+      const mx = xOf(m.price);
+      let color, dash, labelY;
+      if (m.type === 'flip') {
+        color = '#fb923c'; dash = [3, 3]; labelY = PT + 50;       // 플립존: 주황 얇은 점선
+      } else if (m.type === 'inflection') {
+        color = '#60a5fa'; dash = [4, 3]; labelY = PT + 62;       // 변곡: 파랑 점선
+      } else if (m.type === 'ceiling') {
+        color = '#f87171'; dash = [5, 2]; labelY = PT + 74;       // 천정: 빨강 점선
+      } else if (m.type === 'floor') {
+        color = '#4ade80'; dash = [5, 2]; labelY = PT + 74;       // 바닥: 초록 점선
+      } else {
+        color = '#94a3b8'; dash = [3, 3]; labelY = PT + 50;
+      }
+      vline(mx, color, dash, m.label ?? `$${m.price}`, labelY);
+    });
+
+    // EM 경계 배경 음영
+    if (emLower >= zoom.viewMin && emUpper <= zoom.viewMax) {
+      const lx = xOf(Math.max(emLower, zoom.viewMin));
+      const ux = xOf(Math.min(emUpper, zoom.viewMax));
+      ctx.save();
+      ctx.fillStyle = 'rgba(167,139,250,0.06)';
+      ctx.fillRect(lx, PT, ux - lx, cH);
+      ctx.restore();
+    }
+
+    // EM 경계선
     if (emLower >= zoom.viewMin && emLower <= zoom.viewMax) {
       const x = xOf(emLower);
       vline(x, 'rgba(251,191,36,0.8)', [6, 3]);
@@ -1832,19 +1908,33 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
 
     // ── 범례 ──────────────────────────────────────────────
     const legends = [
-      { color: '#3b82f6', label: 'IV 확률 분포' },
-      { color: '#a78bfa', label: 'Vanna 누적' },
-      { color: '#fbbf24', label: 'EM 범위' },
+      { color: 'rgba(239,68,68,0.40)',  label: '하락' },
+      { color: 'rgba(34,197,94,0.40)',  label: '상승' },
+      { color: 'rgba(234,179,8,0.45)',  label: '중첩' },
+      { color: '#3b82f6',              label: 'IV 확률분포', line: true, lw: 2.5 },
+      { color: 'rgba(167,139,250,0.85)', label: 'Vanna 누적', line: true, lw: 1.8 },
     ];
     let lx = PL;
-    ctx.font = '10px sans-serif';
+    ctx.font = '10px Arial, sans-serif';
     legends.forEach(lg => {
-      ctx.fillStyle = lg.color;
-      ctx.fillRect(lx, PT - 16, 10, 8);
+      if (lg.line) {
+        ctx.save();
+        ctx.strokeStyle = lg.color;
+        ctx.lineWidth   = lg.lw;
+        ctx.beginPath();
+        ctx.moveTo(lx, PT - 12); ctx.lineTo(lx + 14, PT - 12);
+        ctx.stroke();
+        ctx.restore();
+        lx += 18;
+      } else {
+        ctx.fillStyle = lg.color;
+        ctx.fillRect(lx, PT - 18, 10, 8);
+        lx += 14;
+      }
       ctx.fillStyle = 'rgba(156,163,175,0.9)';
       ctx.textAlign = 'left';
-      ctx.fillText(lg.label, lx + 13, PT - 8);
-      lx += ctx.measureText(lg.label).width + 30;
+      ctx.fillText(lg.label, lx, PT - 10);
+      lx += ctx.measureText(lg.label).width + 16;
     });
   }
 
@@ -1857,12 +1947,13 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   const detachZoom = attachZoomScroll(canvas, zoom, draw, { padL: PL, padR: PR });
 
   return {
+    _zoomRef: zoom,
     detach() {
       detachZoom();
       ro.disconnect();
     },
     update(newStrikes, newSpot, newOpts = {}) {
-      renderVannaDistChart(el, newStrikes, newSpot, { ...opts, ...newOpts });
+      renderVannaDistChart(el, newStrikes, newSpot, { ...opts, ...newOpts, zoomState: zoom });
     },
   };
 }
