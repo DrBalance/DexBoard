@@ -54,7 +54,7 @@ function renderShell() {
   el.dataset.ready = '1';
 
   el.innerHTML = `
-<div class="struct-container">
+<div class="struct-container" style="width:100%;max-width:100%;box-sizing:border-box">
 
   <!-- 검색 바 -->
   <div class="struct-search-bar">
@@ -392,6 +392,7 @@ async function loadAndRenderCharts(symbol, scoreRow) {
     // 상태 뱃지를 헤더에 업데이트
     const strip = document.getElementById('struct-score-strip');
     if (strip) {
+      strip.innerHTML = '';
       strip.innerHTML += `
         <span style="
           background:${statusResult.color}22;color:${statusResult.color};
