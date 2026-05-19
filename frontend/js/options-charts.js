@@ -1638,13 +1638,19 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   const emUpper = vannaFlipUp   ?? (spot + symEM);
   const emLower = vannaFlipDown ?? (spot - symEM);
 
-  // ── 7. DEX 누적 계산 ────────────────────────────────────
+  // ── 7. DEX 누적 + Vanna 누적 계산 ──────────────────────
+  // DEX 누적 (부호 그대로)
   let _cumDexArr = 0;
   const cumDexArr = sorted.map(s => { _cumDexArr += (s.dex ?? 0); return _cumDexArr; });
-  const minCumDex = Math.min(...cumDexArr);
-  const maxCumDex = Math.max(...cumDexArr);
-  const cumDexRange = Math.max(maxCumDex - minCumDex, 1e-10);
-  const normCumDex = cumDexArr.map(v => (v - minCumDex) / cumDexRange);
+  const maxAbsCumDex = Math.max(...cumDexArr.map(Math.abs), 1e-10);
+  // -1 ~ +1 정규화 (부호 유지)
+  const normCumDex = cumDexArr.map(v => v / maxAbsCumDex);
+
+  // Vanna 누적 (왼→오른, S자)
+  let _cumV = 0;
+  const vannaCumArr = sorted.map(s => { _cumV += Math.abs(s.vanna ?? 0); return _cumV; });
+  const maxCumV  = Math.max(...vannaCumArr, 1e-10);
+  const normVanna = vannaCumArr.map(v => v / maxCumV);
 
   // ── 8. DEX Flip Zone (누적 DEX 부호 전환 지점) ──────────
   let cumDex = 0, dexFlip = null, prevDexSign = null;
@@ -1679,9 +1685,7 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   el.appendChild(canvas);
 
   // ── 9. 줌 상태 초기화 ──────────────────────────────────
-  // 전체 범위: minS~maxS (드래그/줌아웃 한계)
-  // 초기 뷰: 현재가 중심 ± EM 범위의 0.8배
-  const viewRange = (emUpper - emLower) * 0.8;
+  const viewRange = (emUpper - emLower) * 1.6;
   const initMin   = spot - viewRange / 2;
   const initMax   = spot + viewRange / 2;
   const zoom = zoomState ?? createZoomState({
@@ -1776,17 +1780,44 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
     }
 
     // ── Vanna 누적합 곡선 ──────────────────────────────────
-    // ── DEX 누적 곡선 (S자) ───────────────────────────────
+    // ── Zero line ─────────────────────────────────────────
+    const zeroY = PT + cH * 0.5;
+    ctx.beginPath();
+    ctx.moveTo(PL, zeroY); ctx.lineTo(W - PR, zeroY);
+    ctx.strokeStyle = 'rgba(255,255,255,0.15)';
+    ctx.lineWidth   = 1;
+    ctx.setLineDash([2, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // ── Vanna 누적 곡선 (보라, S자) ───────────────────────
+    const vannaVis = sorted
+      .map((s, i) => ({ strike: s.strike, nv: normVanna[i] }))
+      .filter(d => d.strike >= zoom.viewMin && d.strike <= zoom.viewMax);
+
+    if (vannaVis.length > 1) {
+      ctx.beginPath();
+      vannaVis.forEach((d, i) => {
+        const x = xOf(d.strike);
+        const y = PT + cH - d.nv * cH * 0.85;
+        i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
+      });
+      ctx.strokeStyle = 'rgba(167,139,250,0.7)';
+      ctx.lineWidth   = 1.5;
+      ctx.stroke();
+    }
+
+    // ── DEX 누적 곡선 (노랑, 부호 그대로) ────────────────
     const cumDexVis = sorted
       .map((s, i) => ({ strike: s.strike, v: normCumDex[i] }))
       .filter(d => d.strike >= zoom.viewMin && d.strike <= zoom.viewMax);
 
     if (cumDexVis.length > 1) {
-      const baseY = PT + cH;
       ctx.beginPath();
       cumDexVis.forEach((d, i) => {
         const x = xOf(d.strike);
-        const y = baseY - d.v * cH * 0.85;
+        // +1 → 위(PT), -1 → 아래(PT+cH), 0 → 중간(zeroY)
+        const y = zeroY - d.v * (cH * 0.45);
         i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
       });
       ctx.strokeStyle = 'rgba(234,179,8,0.9)';
@@ -1871,10 +1902,11 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
 
     // ── 범례 ──────────────────────────────────────────────
     const legends = [
-      { color: 'rgba(239,68,68,0.40)',  label: '하락' },
-      { color: 'rgba(34,197,94,0.40)',  label: '상승' },
-      { color: 'rgba(234,179,8,0.45)',  label: '중첩' },
-      { color: 'rgba(234,179,8,0.9)',   label: 'DEX 누적', line: true, lw: 2 },
+      { color: 'rgba(239,68,68,0.40)',   label: '하락' },
+      { color: 'rgba(34,197,94,0.40)',   label: '상승' },
+      { color: 'rgba(234,179,8,0.45)',   label: '중첩' },
+      { color: 'rgba(167,139,250,0.7)',  label: 'Vanna 누적', line: true, lw: 1.5 },
+      { color: 'rgba(234,179,8,0.9)',    label: 'DEX 누적',   line: true, lw: 2 },
     ];
     let lx = PL;
     ctx.font = '10px Arial, sans-serif';
