@@ -1649,8 +1649,8 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   // Vanna 누적 (왼→오른, S자)
   let _cumV = 0;
   const vannaCumArr = sorted.map(s => { _cumV += Math.abs(s.vanna ?? 0); return _cumV; });
-  const maxCumV  = Math.max(...vannaCumArr, 1e-10);
-  const normVanna = vannaCumArr.map(v => v / maxCumV);
+  const maxCumV      = Math.max(...vannaCumArr, 1e-10);
+  const normVannaCum = vannaCumArr.map(v => v / maxCumV);
 
   // ── 8. DEX Flip Zone (누적 DEX 부호 전환 지점) ──────────
   let cumDex = 0, dexFlip = null, prevDexSign = null;
@@ -1792,7 +1792,7 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
 
     // ── Vanna 누적 곡선 (보라, S자) ───────────────────────
     const vannaVis = sorted
-      .map((s, i) => ({ strike: s.strike, nv: normVanna[i] }))
+      .map((s, i) => ({ strike: s.strike, nv: normVannaCum[i] }))
       .filter(d => d.strike >= zoom.viewMin && d.strike <= zoom.viewMax);
 
     if (vannaVis.length > 1) {
