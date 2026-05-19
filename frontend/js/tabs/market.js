@@ -14,7 +14,7 @@
 import { bindToggle } from '../tabs.js';
 import { CF_API } from '../config.js';
 import { renderHeatmap } from '../heatmap.js';
-import { calculateTermStructure, renderTermStructure, renderDexTermStructure, classifyExpiry } from '../options-charts.js';
+import { calculateTermStructure, renderTermStructure, renderDexTermStructure, classifyExpiry, renderVannaDistChart } from '../options-charts.js';
 
 const WORKER_URL = CF_API;
 
@@ -185,7 +185,7 @@ function _apply() {
   _renderMetrics(weighted);
   _renderHeatmap(_rawData.expirations, weighted);
   _renderChart(weighted);
-  _renderExpiryBars(_rawData.expirations);
+  _renderExpiryEM(weighted);
   _renderSPYTermStructure(_rawData.expirations);
   _renderKeyLevelTable(weighted, _rawData.expirations);
 }
@@ -535,8 +535,11 @@ function _renderHeatmap(expirations, weighted) {
   container.appendChild(lblCanvas);
   container.appendChild(scrollDiv);
 
-  // 범례 div
+  // 범례 div (기존 것 제거 후 재생성)
+  const legId = 'mk-heatmap-legend';
+  document.getElementById(legId)?.remove();
   const legDiv = document.createElement('div');
+  legDiv.id = legId;
   legDiv.style.cssText = 'padding:4px 8px 0;display:flex;justify-content:space-between;font-size:10px;color:var(--text3)';
   legDiv.innerHTML = '<span>■ 녹색: 딜러 매수 헤지 &nbsp;■ 빨간색: 딜러 매도 헤지</span><span>색상 농도 = 헤징 압력 강도</span>';
 
@@ -689,43 +692,42 @@ function _renderSPYTermStructure(expirations) {
   });
 }
 
-// ── 만기별 DEX 분포 바 ────────────────────────────────────
-// [BUG FIX] .strikes 추출 일관화
-function _renderExpiryBars(expirations) {
-  const container = _el('mk-expiry-bars');
-  if (!container) return;
+// ── 합산 데이터 EM 차트 ───────────────────────────────────
+let _expiryEmInst = null;
 
-  const items = Object.entries(_expiryConfig)
-    .filter(([, cfg]) => cfg.enabled)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([expiry, cfg]) => {
-      const expiryData = expirations[expiry];
-      const strikes = Array.isArray(expiryData)
-        ? expiryData
-        : (expiryData?.strikes ?? []);
-      const dex = strikes.reduce((acc, s) => acc + s.dex * cfg.weight, 0);
-      return { expiry, dex, cfg };
-    });
+function _renderExpiryEM(weighted) {
+  const el = _el('mk-expiry-em');
+  if (!el) return;
 
-  const total = items.reduce((a, b) => a + Math.abs(b.dex), 0) || 1;
+  if (!weighted?.length) {
+    el.innerHTML = '<div style="padding:12px;color:var(--text3);font-size:12px">데이터 없음</div>';
+    return;
+  }
 
-  container.innerHTML = items.map(({ expiry, dex, cfg }) => {
-    const pct   = Math.abs(dex) / total * 100;
-    const color = dex >= 0 ? 'var(--green)' : 'var(--red)';
-    const sign  = dex >= 0 ? '+' : '';
-    const label = `${expiry.slice(5)} (${cfg.dte === 0 ? '0DTE' : cfg.dte + 'd'}) ×${cfg.weight}`;
-    return `
-      <div style="display:flex;align-items:center;gap:10px">
-        <span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:${cfg.color};flex-shrink:0"></span>
-        <span style="font-size:11px;color:var(--text3);width:160px;flex-shrink:0;font-family:var(--mono)">${label}</span>
-        <div style="flex:1;background:var(--bg3);border-radius:4px;height:16px;overflow:hidden">
-          <div style="width:${pct.toFixed(1)}%;height:100%;background:${color};border-radius:4px;transition:width 0.3s"></div>
-        </div>
-        <span style="font-family:var(--mono);font-size:12px;color:${color};width:72px;text-align:right;flex-shrink:0">${sign}${_fmtM(dex)}</span>
-        <span style="font-size:10px;color:var(--text3);width:32px;text-align:right;flex-shrink:0">${pct.toFixed(0)}%</span>
-      </div>
-    `;
-  }).join('');
+  const spot = _spot;
+  if (!spot) return;
+
+  // weighted 배열을 renderVannaDistChart 형식으로 변환
+  // netDex → dex, vanna/gex는 이미 동일 필드명
+  const strikes = weighted.map(s => ({
+    strike: s.strike,
+    dex:    s.netDex,
+    vanna:  s.vanna,
+    gex:    s.gex,
+    avg_iv: null,   // 합산에는 없음 → 폴백 미사용
+  }));
+
+  // zoom 상태 유지
+  const prevZoom = _expiryEmInst?._zoomRef ?? null;
+  _expiryEmInst?.detach();
+
+  _expiryEmInst = renderVannaDistChart(el, strikes, spot, {
+    mode:      'combined',
+    vixDir:    'neutral',
+    dte:       1,
+    label:     '합산 만기 EM · Vanna 기반',
+    zoomState: prevZoom,
+  });
 }
 
 // ── Key Level Tracker ─────────────────────────────────────
@@ -1024,6 +1026,4 @@ function _showError(msg) {
   ['mk-dex','mk-call-wall','mk-put-wall','mk-flip'].forEach(id => {
     const el = _el(id); if (el) el.textContent = '--';
   });
-  const bars = _el('mk-expiry-bars');
-  if (bars) bars.innerHTML = `<div class="empty" style="color:var(--red)">오류: ${msg}</div>`;
 }
