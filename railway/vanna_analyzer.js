@@ -670,6 +670,10 @@ for (const r of rows) {
         call_delta:  s.call_delta,
         call_oi:     s.call_oi,
         put_oi:      s.put_oi,
+        dex:         s.dex,
+        gex:         s.gex,
+        vanna:       s.vanna,
+        charm:       s.charm,
       });
     }
   }
