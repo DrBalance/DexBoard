@@ -12,12 +12,12 @@
  */
 
 // ── ZoomState 생성 ───────────────────────────────────────
-export function createZoomState({ minX, maxX }) {
+export function createZoomState({ minX, maxX, initMin, initMax }) {
   const state = {
     dataMin:  minX,
     dataMax:  maxX,
-    viewMin:  minX,
-    viewMax:  maxX,
+    viewMin:  initMin ?? minX,
+    viewMax:  initMax ?? maxX,
 
     // 뷰 범위 직접 설정 (clamp 포함)
     setRange(vMin, vMax) {

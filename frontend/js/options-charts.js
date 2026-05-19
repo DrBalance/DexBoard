@@ -1638,22 +1638,19 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   const emUpper = vannaFlipUp   ?? (spot + symEM);
   const emLower = vannaFlipDown ?? (spot - symEM);
 
-  // ── 7. IV Smile 기반 비대칭 확률 밀도 계산 ──────────────
-  // 상단(strike > spot): call IV 사용
-  // 하단(strike < spot): put IV 사용
-  const sigma = spot * atmIV * Math.sqrt(dte / 365) || 1;
-  const probRaw = sorted.map(s => {
-    const isCall = s.strike >= spot;
-    // call_iv / put_iv 있으면 사용, 없으면 avg_iv 폴백
-    const iv = isCall
-      ? (s.call_iv ?? s.avg_iv ?? atmIV)
-      : (s.put_iv  ?? s.avg_iv ?? atmIV);
-    const sig = spot * iv * Math.sqrt(dte / 365) || sigma;
-    const d   = s.strike - spot;
-    return Math.exp(-0.5 * (d / sig) ** 2) / (sig * Math.sqrt(2 * Math.PI));
-  });
+  // ── 7. DEX 절대값 기반 분포 계산 ───────────────────────
+  const probRaw  = sorted.map(s => Math.abs(s.dex ?? 0));
   const maxProb  = Math.max(...probRaw, 1e-10);
   const normProb = probRaw.map(p => p / maxProb);
+
+  // ── 8. DEX Flip Zone (누적 DEX 부호 전환 지점) ──────────
+  let cumDex = 0, dexFlip = null, prevDexSign = null;
+  for (const s of sorted) {
+    cumDex += s.dex ?? 0;
+    const sign = cumDex >= 0 ? 1 : -1;
+    if (prevDexSign !== null && sign !== prevDexSign) { dexFlip = s.strike; break; }
+    prevDexSign = sign;
+  }
 
   // ── 7. Canvas 생성 ──────────────────────────────────────
   el.innerHTML = '';
@@ -1667,10 +1664,7 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
     <span style="color:var(--text);font-weight:600">${label}</span>
     <span style="display:flex;gap:12px;align-items:center">
       <span>${modeLabel}</span>
-      <span>${vixLabel}</span>
-      <span style="color:#a78bfa">▲Vanna Flip Up: ${vannaFlipUp != null ? '$' + vannaFlipUp : '--'}</span>
-      <span style="color:#f472b6">▼Vanna Flip Dn: ${vannaFlipDown != null ? '$' + vannaFlipDown : '--'}</span>
-      <span style="color:#fbbf24">GEX Flip: ${gexFlip != null ? '$' + gexFlip : '--'}</span>
+      <span style="color:#fbbf24">DEX Flip: ${dexFlip != null ? dexFlip : '--'}</span>
       <span style="color:var(--text3);font-size:10px">더블클릭: 리셋 | 휠: 줌 | 드래그: 팬</span>
     </span>
   `;
@@ -1681,11 +1675,16 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
   canvas.style.cssText = 'display:block;width:100%;height:280px;';
   el.appendChild(canvas);
 
-  // ── 8. 줌 상태 초기화 (외부 zoomState 있으면 유지, EM 경계로 범위 한정) ────
-  const viewPad  = (emUpper - emLower) * 0.1;
-  const initMin  = emLower - viewPad;
-  const initMax  = emUpper + viewPad;
-  const zoom = zoomState ?? createZoomState({ minX: initMin, maxX: initMax });
+  // ── 9. 줌 상태 초기화 ──────────────────────────────────
+  // 전체 범위: minS~maxS (드래그/줌아웃 한계)
+  // 초기 뷰: 현재가 중심 ± EM 범위의 0.8배
+  const viewRange = (emUpper - emLower) * 0.8;
+  const initMin   = spot - viewRange / 2;
+  const initMax   = spot + viewRange / 2;
+  const zoom = zoomState ?? createZoomState({
+    minX: minS, maxX: maxS,
+    initMin, initMax,
+  });
 
   // ── 9. 그리기 함수 ──────────────────────────────────────
   const PL = 52, PR = 16, PT = 24, PB = 32;
@@ -1719,27 +1718,24 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
       ctx.beginPath(); ctx.moveTo(PL, y); ctx.lineTo(W - PR, y); ctx.stroke();
     }
 
-    // ── 변곡 내부 계산 (dVanna 상위 5%) ─────────────────
-    const dVannaArr = sorted.map((s, i) =>
-      i === 0 ? 0 : (s.vanna ?? 0) - (sorted[i-1].vanna ?? 0)
-    );
+    // ── 변곡 내부 계산 (vanna 절대값 기반, EM 경계 안) ───
+    const strikeWithV = sorted.map(s => ({
+      strike: s.strike,
+      absV:   Math.abs(s.vanna ?? 0),
+    }));
 
-    const absVals = dVannaArr.map(Math.abs).sort((a,b) => b-a);
-    const top5Thr = absVals[Math.max(0, Math.floor(absVals.length * 0.05) - 1)] ?? 0;
-
-    // 변곡: dVanna 절대값 상위 2개 (상하 각각)
-    const strikeWithDV = sorted.map((s, i) => ({ strike: s.strike, absDV: Math.abs(dVannaArr[i]) }));
-
-    const downInfl = strikeWithDV
-      .filter(s => s.strike < spot && s.absDV >= top5Thr && top5Thr > 0)
-      .sort((a, b) => b.absDV - a.absDV)
+    // 하락: emLower ~ spot 구간, vanna 절대값 큰 순 최대 2개
+    const downInfl = strikeWithV
+      .filter(s => s.strike > emLower && s.strike < spot)
+      .sort((a, b) => b.absV - a.absV)
       .slice(0, 2)
       .map(s => s.strike)
       .sort((a,b) => b-a);
 
-    const upInfl = strikeWithDV
-      .filter(s => s.strike > spot && s.absDV >= top5Thr && top5Thr > 0)
-      .sort((a, b) => b.absDV - a.absDV)
+    // 상승: spot ~ emUpper 구간, vanna 절대값 큰 순 최대 2개
+    const upInfl = strikeWithV
+      .filter(s => s.strike > spot && s.strike < emUpper)
+      .sort((a, b) => b.absV - a.absV)
       .slice(0, 2)
       .map(s => s.strike)
       .sort((a,b) => a-b);
@@ -1840,17 +1836,18 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
     if (spot >= zoom.viewMin && spot <= zoom.viewMax)
       vline(xOf(spot), '#ffffff', [], `${spot}`, PT + 14);
 
-    // Vanna Flip Up (상단 EM, VIX↓)
-    if (vannaFlipUp != null && vannaFlipUp >= zoom.viewMin && vannaFlipUp <= zoom.viewMax)
-      vline(xOf(vannaFlipUp), '#a78bfa', [6, 3], `VF↑${vannaFlipUp}`, PT + 14);
-
-    // Vanna Flip Down (하단 EM, VIX↑)
-    if (vannaFlipDown != null && vannaFlipDown >= zoom.viewMin && vannaFlipDown <= zoom.viewMax)
-      vline(xOf(vannaFlipDown), '#f472b6', [6, 3], `VF↓${vannaFlipDown}`, PT + 26);
-
-    // GEX Flip
-    if (gexFlip != null && gexFlip >= zoom.viewMin && gexFlip <= zoom.viewMax)
-      vline(xOf(gexFlip), '#fbbf24', [2, 4], `GF${gexFlip}`, PT + 38);
+    // DEX Flip (현재가가 콜/풋 어느 영역인지 경계)
+    if (dexFlip != null && dexFlip >= zoom.viewMin && dexFlip <= zoom.viewMax) {
+      vline(xOf(dexFlip), '#fbbf24', [4, 3], `DEX Flip ${dexFlip}`, PT + 14);
+      // 현재가 위치 표시
+      const inCallZone = spot > dexFlip;
+      ctx.save();
+      ctx.fillStyle = inCallZone ? 'rgba(34,197,94,0.7)' : 'rgba(239,68,68,0.7)';
+      ctx.font = 'bold 10px Arial, sans-serif';
+      ctx.textAlign = 'right';
+      ctx.fillText(inCallZone ? '콜영역' : '풋영역', W - PR - 4, PT + 14);
+      ctx.restore();
+    }
 
     // 변곡선 표시
     downInfl.forEach((p, i) => {
@@ -1910,10 +1907,10 @@ export function renderVannaDistChart(el, strikes, spot, opts = {}) {
 
     // ── 범례 ──────────────────────────────────────────────
     const legends = [
-      { color: 'rgba(239,68,68,0.40)',  label: '하락' },
-      { color: 'rgba(34,197,94,0.40)',  label: '상승' },
-      { color: 'rgba(234,179,8,0.45)',  label: '중첩' },
-      { color: '#3b82f6',              label: 'IV 확률분포', line: true, lw: 2.5 },
+      { color: 'rgba(239,68,68,0.40)',   label: '하락' },
+      { color: 'rgba(34,197,94,0.40)',   label: '상승' },
+      { color: 'rgba(234,179,8,0.45)',   label: '중첩' },
+      { color: 'rgba(59,130,246,0.9)',   label: 'DEX 분포', line: true, lw: 2.5 },
       { color: 'rgba(167,139,250,0.85)', label: 'Vanna 누적', line: true, lw: 1.8 },
     ];
     let lx = PL;
