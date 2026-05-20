@@ -7,7 +7,7 @@
 
 import http from "http";
 import { calculateAndStore, collectSymbol, getTodayET } from "./vanna_analyzer.js";
-import { collectPriceIndicators as collectPriceIndicatorsNew, calcAndSaveScore } from "./screener-engine.js";
+import { runScreenerCollection, fetchScreenerSymbols } from "./screener-engine.js";
 
 const TWELVE_KEY = process.env.TWELVE_KEY || process.env.TWELVE_KEY_SPY || "";
 
@@ -564,82 +564,7 @@ try {
 
 }
 
-// ── POST /rescore ────────────────────────────────────────────────
-// 기존 options_dex + price_indicators 데이터로 점수만 재계산
-if (req.method === "POST" && req.url === "/rescore") {
-const auth = req.headers["x-cron-secret"];
-if (CRON_SECRET && auth !== CRON_SECRET) {
-res.writeHead(401);
-return res.end("Unauthorized");
-}
-
-try {
-  const dataRes = await fetch(`${CF_WORKER_URL}/api/rescore-data`, {
-    headers: { "x-cron-secret": CRON_SECRET },
-    signal: AbortSignal.timeout(15000),
-  });
-  if (!dataRes.ok) throw new Error(`rescore-data fetch failed: ${dataRes.status}`);
-  const { dex_date, dex, pi, meta } = await dataRes.json();
-
-  if (!dex?.length) {
-    return sendJSON(res, 200, { ok: false, error: "options_dex 데이터 없음" });
-  }
-
-  // price_indicators → symbol별 Map
-  const piMap = new Map();
-  for (const r of pi) {
-    piMap.set(r.symbol, {
-      bb_position: r.bb_position ?? null,
-      vol_squeeze: r.vol_ratio   ?? null,
-      close:       r.close       ?? null,
-    });
-  }
-
-  // symbols meta → symbol별 Map
-  const metaMap = new Map();
-  for (const r of meta) metaMap.set(r.symbol, r);
-
-  // options_dex → symbol별 그룹핑
-  const symbolMap = new Map();
-  for (const row of dex) {
-    if (!symbolMap.has(row.symbol)) symbolMap.set(row.symbol, []);
-    symbolMap.get(row.symbol).push(row);
-  }
-
-  // 심볼별 점수 재계산 (새 Whale 필터 기준)
-  let scoreCount = 0;
-  for (const [symbol, rows] of symbolMap) {
-    const priceData = piMap.get(symbol) ?? {};
-    try {
-      const result = await calcAndSaveScore(
-        CF_WORKER_URL, CRON_SECRET,
-        symbol, dex_date, rows,
-        {
-          close:      priceData.close       ?? null,
-          avgVolume:  priceData.avg_volume  ?? null,
-          bbPosition: priceData.bb_position ?? null,
-        }
-      );
-      if (result) scoreCount++;
-    } catch (e) {
-      console.warn(`[${symbol}] rescore 실패:`, e.message);
-    }
-  }
-
-  console.log(`[Rescore] 완료 -- ${scoreCount}개 종목 (기준일: ${dex_date})`);
-  return sendJSON(res, 200, {
-    ok:      true,
-    date:    dex_date,
-    count:   scoreCount,
-    message: `${scoreCount}개 종목 점수 재계산 완료`,
-  });
-
-} catch (err) {
-  console.error("[Rescore] 실패:", err.message);
-  return sendJSON(res, 500, { ok: false, error: err.message });
-}
-
-}
+// ── POST /rescore (deprecated — screener v3에서 제거됨) ─────────
 
 // ── POST /collect-screener ───────────────────────────────────────
 // body: { symbols: [{symbol, name, type, sector, sector_etf}], force?: boolean }
@@ -1109,162 +1034,50 @@ console.error('[snapshotOpen] error:', e.message);
 // 스크리너 백그라운드 수집 (HTTP 핸들러·스케줄러 공용)
 // ─────────────────────────────────────────────────────────────────
 async function runCollect(symbols, date) {
-try {
-// ── 1. BB 맵 전용 종목 price_indicators 수집
-let bbCount = 0;
-try {
-const bbRes = await fetch(`${CF_WORKER_URL}/api/bb-map-symbols`, {
-headers: { 'x-cron-secret': CRON_SECRET },
-signal: AbortSignal.timeout(10000),
-});
-if (bbRes.ok) {
-const bbData = await bbRes.json();
-const optionSymSet = new Set(symbols.map(s => s.symbol));
-const bbOnly = (bbData.symbols ?? []).filter(s => !optionSymSet.has(s.symbol));
+  try {
+    // 심볼 배열 정규화 (문자열 또는 객체 모두 허용)
+    const symList = symbols.map(s => (typeof s === 'string' ? s : s.symbol));
 
-    console.log(`[Screener] BB 맵 전용 종목 ${bbOnly.length}개 가격 수집`);
-    collectState.progress = { stage: 'bb_map', done: 0, total: bbOnly.length, errors: 0 };
-    for (const { symbol: sym } of bbOnly) {
-      await collectPriceIndicators(sym, CF_WORKER_URL, CRON_SECRET);
-      bbCount++;
-      collectState.progress = { stage: 'bb_map', done: bbCount, total: bbOnly.length, errors: 0 };
-      await sleep(200);
-    }
-  }
-} catch (bbErr) {
-  console.warn('[Screener] BB 맵 수집 실패 (계속 진행):', bbErr.message);
-}
-
-// ── 2. 옵션 수집 종목 처리
-const symbolsWithDate = symbols.map(s => ({ ...s, date }));
-const BATCH = 5;
-const allResults = [];
-const allErrors  = [];
-
-for (let i = 0; i < symbolsWithDate.length; i += BATCH) {
-  const batch = symbolsWithDate.slice(i, i + BATCH);
-  const settled = await Promise.allSettled(
-    batch.map(s => collectSymbol(s.symbol, date))
-  );
-
-  for (let j = 0; j < settled.length; j++) {
-    const r = settled[j];
-    if (r.status === "fulfilled") {
-      allResults.push({ ...r.value, meta: batch[j] });
-    } else {
-      allErrors.push({ symbol: batch[j].symbol, error: r.reason?.message });
-    }
-  }
-
-  collectState.progress = {
-    done:   Math.min(i + BATCH, symbolsWithDate.length),
-    total:  symbolsWithDate.length,
-    errors: allErrors.length,
-  };
-
-  if (i + BATCH < symbolsWithDate.length) await sleep(300);
-}
-
-// ── 3. 옵션 수집 종목 price_indicators 수집 (Twelve Data avg_volume 포함)
-console.log(`[Screener] 옵션 종목 ${symbols.length}개 가격 수집`);
-const priceMap = new Map();
-for (const { symbol: sym } of symbols) {
-  const pi = await collectPriceIndicatorsNew(sym, CF_WORKER_URL, CRON_SECRET, TWELVE_KEY);
-  if (pi) {
-    priceMap.set(sym, {
-      close:       pi.close       ?? null,
-      bbPosition:  pi.bbPosition  ?? null,
-      avgVolume:   pi.avgVolume   ?? null,
-    });
-  }
-  await sleep(200);
-}
-
-// ── 4. D1 저장 (새 Whale 필터 기준)
-if (allResults.length) {
-  console.log(`[Screener] ${allResults.length}개 종목 수집 완료 → D1 저장 시작`);
-
-  const dexRows    = [];
-  const strikeRows = [];
-
-  for (const { symbol, rows, strikeRows: sRows, meta } of allResults) {
-    for (const r of rows) {
-      dexRows.push({ date, symbol, ...r });
-    }
-    if (sRows?.length) {
-      for (const s of sRows) {
-        strikeRows.push(s);
+    const result = await runScreenerCollection(
+      CF_WORKER_URL,
+      CRON_SECRET,
+      symList,
+      // 진행상황 콜백 → collectState 실시간 업데이트
+      ({ done, total, errors }) => {
+        collectState.progress = { done, total, errors };
       }
-    }
+    );
+
+    collectState = {
+      running:   false,
+      startedAt: null,
+      progress:  null,
+      lastRun: {
+        date,
+        ok:         result.ok,
+        count:      result.count,
+        errors:     result.errors,
+        error_list: result.errorList?.slice(0, 10) ?? [],
+        ts:         new Date().toISOString(),
+      },
+    };
+
+    console.log(`[Screener] 완료 -- 성공: ${result.count}, 실패: ${result.errors}`);
+
+  } catch (err) {
+    console.error("[Screener] 수집 중 치명적 오류:", err.message);
+    collectState = {
+      running:   false,
+      startedAt: null,
+      progress:  null,
+      lastRun: {
+        date,
+        ok:    false,
+        error: err.message,
+        ts:    new Date().toISOString(),
+      },
+    };
   }
-
-  // options_dex 저장
-  await d1Write("/d1/options-dex", { rows: dexRows });
-
-  // options_strikes 저장 (Smile 곡선용) -- D1 batch 방식으로 전체 한 번에
-  if (strikeRows.length) {
-    try {
-      await d1Write("/d1/options-strikes", { rows: strikeRows });
-      console.log(`[Screener] options_strikes 저장: ${strikeRows.length}행`);
-    } catch (e) {
-      console.warn('[Screener] options_strikes 저장 실패 (계속 진행):', e.message);
-    }
-  }
-
-  // 새 기준으로 점수 계산 + screener_scores 저장
-  let scoreCount = 0;
-  for (const { symbol, rows: expiryRows, meta } of allResults) {
-    const priceData = priceMap.get(symbol) ?? {};
-    try {
-      const result = await calcAndSaveScore(
-        CF_WORKER_URL, CRON_SECRET,
-        symbol, date, expiryRows,
-        {
-          close:       priceData.close      ?? null,
-          avgVolume:   priceData.avgVolume  ?? null,
-          bbPosition:  priceData.bbPosition ?? null,
-        }
-      );
-      if (result) scoreCount++;
-    } catch (e) {
-      console.warn(`[${symbol}] 점수 계산 실패:`, e.message);
-    }
-  }
-
-  console.log(`[Screener] D1 저장 완료 -- DEX: ${dexRows.length}행, Strikes: ${strikeRows.length}행, Scores: ${scoreCount}행`);
-}
-
-collectState = {
-  running:   false,
-  startedAt: null,
-  progress:  null,
-  lastRun: {
-    date,
-    ok:         true,
-    count:      allResults.length,
-    bb_count:   bbCount,
-    errors:     allErrors.length,
-    error_list: allErrors.slice(0, 10),
-    ts:         new Date().toISOString(),
-  },
-};
-
-console.log(`[Screener] 완료 -- 성공: ${allResults.length}, 실패: ${allErrors.length}`);
-
-} catch (err) {
-console.error("[Screener] 수집 중 치명적 오류:", err.message);
-collectState = {
-running:   false,
-startedAt: null,
-progress:  null,
-lastRun: {
-date,
-ok:    false,
-error: err.message,
-ts:    new Date().toISOString(),
-},
-};
-}
 }
 
 // ─────────────────────────────────────────────────────────────────
@@ -1368,13 +1181,13 @@ if (session !== lastSession) {
     // D1에서 수집 대상 심볼 조회 후 수집 트리거
     (async () => {
       try {
-        const symRes = await fetch(`${CF_WORKER_URL}/api/collect-targets`, {
+        const symRes = await fetch(`${CF_WORKER_URL}/api/screener/symbols`, {
           headers: { 'x-cron-secret': CRON_SECRET },
           signal: AbortSignal.timeout(10000),
         });
-        if (!symRes.ok) throw new Error(`collect-targets: ${symRes.status}`);
+        if (!symRes.ok) throw new Error(`screener/symbols: ${symRes.status}`);
         const symData = await symRes.json();
-        const symbols = symData.symbols ?? [];
+        const symbols = (symData.symbols ?? []).map(s => s.symbol ?? s);
 
         if (!symbols.length) {
           console.warn('[scheduler] 수집 대상 심볼 없음 -- 스크리너 수집 생략');
