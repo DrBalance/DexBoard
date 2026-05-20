@@ -107,8 +107,8 @@ function renderShell() {
   <!-- ── 결과 테이블 ── -->
   <div id="sc-content" class="sc-content" style="display:none">
     <div class="sc-legend">
-      <span class="legend-item"><span class="legend-dot green"></span> 플립존 위: 딜러 롱감마 (상방 지지)</span>
-      <span class="legend-item"><span class="legend-dot red"></span> 플립존 아래: 딜러 숏감마 (변동성 증폭)</span>
+      <span class="legend-item"><span class="legend-dot green"></span> 플립존 위: 딜러 <span class="green">롱감마</span> (상방 지지)</span>
+      <span class="legend-item"><span class="legend-dot red"></span> 플립존 아래: 딜러 <span class="red">숏감마</span> (변동성 증폭)</span>
       <span class="legend-item"><span class="legend-dot amber"></span> GEX 급증: 헤징 압력 축적 중</span>
     </div>
 
@@ -452,7 +452,7 @@ function renderSummary(data) {
       <div class="sc-sum-label">플립존 아래 (숏감마)</div>
     </div>
     <div class="sc-sum-card">
-      <div class="sc-sum-num amber">${near}</div>
+      <div class="sc-sum-num" style="color:#eab308">${near}</div>
       <div class="sc-sum-label">플립존 근접 (±3%)</div>
     </div>
     <div class="sc-sum-card">
@@ -500,21 +500,24 @@ function renderTable(filter = 'all') {
     const dist = r.distance_pct;
     const gex  = r.net_gex;
 
+    const isNear    = dist != null && Math.abs(dist) <= 3;
     const distColor = dist == null ? 'muted' : dist > 0 ? 'green' : 'red';
     const distStr   = dist != null
-      ? `<span class="${distColor}">${dist > 0 ? '+' : ''}${dist.toFixed(1)}%</span>`
+      ? isNear
+        ? `<span style="color:#eab308">${dist > 0 ? '+' : ''}${dist.toFixed(1)}% ⚡</span>`
+        : `<span class="${distColor}">${dist > 0 ? '+' : ''}${dist.toFixed(1)}%</span>`
       : '-';
 
     const gexColor = gex == null ? 'muted' : gex > 0 ? 'green' : 'red';
     const gexStr   = gex != null
-      ? `<span class="${gexColor}">${gex > 0 ? '+' : ''}${(gex / 1e9).toFixed(2)}B</span>`
+      ? `<span class="${gexColor}">${gex > 0 ? '+' : ''}${gex.toFixed(1)}M</span>`
       : '-';
 
     const changeCell = (val) => {
       if (val == null) return '<span class="muted">-</span>';
       const c    = val > 0 ? 'green' : val < 0 ? 'red' : 'muted';
       const sign = val > 0 ? '+' : '';
-      return `<span class="${c}">${sign}${(val / 1e9).toFixed(2)}B</span>`;
+      return `<span class="${c}">${sign}${val.toFixed(1)}M</span>`;
     };
 
     const dirBadge = r.direction === 'up'
