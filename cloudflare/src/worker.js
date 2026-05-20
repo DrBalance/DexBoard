@@ -9,9 +9,13 @@
 //   GET  /api/spy-price       → SPY 현재가 프록시 (Twelve Data REST → CORS 우회)
 //   GET  /api/prevclose       → 전날 SPY/VIX 종가 (KV snapshot:prevclose)
 //   GET  /api/trading-date    → 현재 거래일 날짜 (Twelve Data 기준)
-//   GET  /api/screener        → 스크리너 점수 결과 (?date=YYYY-MM-DD)
-//   GET  /api/screener/sector → 섹터별 필터 (?sector=Technology&date=...)
-//   POST /api/screener/run    → 수동 스크리너 실행 (테스트용)
+//   GET  /api/screener/symbols  → 수집 대상 심볼 목록
+//   GET  /api/screener/latest   → 최신 GEX 스냅샷 (테이블용)
+//   GET  /api/screener/history  → 90일 히스토리 (스파크라인용)
+//   POST /api/screener/symbols  → 수동 종목 추가
+//   DELETE /api/screener/symbols/:sym → 수동 종목 비활성화
+//   POST /d1/screener-gex-daily       → Railway → D1 저장
+//   POST /d1/screener-gex-daily/purge → 90일 초과 삭제
 //   POST /api/calculate       → Railway DEX 계산 프록시 (CORS 우회)
 //   POST /kv-write            → internal: Railway writes KV through here
 //   GET  /kv-read             → internal: Railway reads KV through here
@@ -451,46 +455,166 @@ export default {
       return handleAdmin(path, request, env);
     }
 
-    // ── GET /api/screener ───────────────────────────────────────
-    if (request.method === "GET" && path === "/api/screener") {
-      let targetDate = url.searchParams.get("date");
-      if (!targetDate) {
-        const latest = await env.DB.prepare(
-          "SELECT MAX(date) as d FROM screener_scores"
-        ).first();
-        targetDate = latest?.d;
+    // ════════════════════════════════════════════════════════════
+    // SCREENER v3 — GEX 기반
+    // ════════════════════════════════════════════════════════════
+
+    // ── GET /api/screener/symbols ───────────────────────────────
+    // 수집 대상 심볼 목록 (active=1만)
+    if (request.method === "GET" && path === "/api/screener/symbols") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
-      if (!targetDate) return json([], 200, corsHeaders);
       const rows = await env.DB.prepare(`
-        SELECT * FROM screener_scores
-        WHERE date = ?
-        ORDER BY total_score DESC
+        SELECT symbol, name, spy_weight, spy_rank, is_manual, memo
+        FROM screener_symbols
+        WHERE active = 1
+        ORDER BY is_manual ASC, spy_rank ASC
+      `).all();
+      return json({ symbols: rows.results ?? [] }, 200, corsHeaders);
+    }
+
+    // ── GET /api/screener/latest ────────────────────────────────
+    // 가장 최신 날짜의 스냅샷 (테이블 표시용)
+    // screener_symbols JOIN → name, is_manual 포함
+    if (request.method === "GET" && path === "/api/screener/latest") {
+      const latest = await env.DB.prepare(
+        "SELECT MAX(date) as d FROM screener_gex_daily"
+      ).first();
+      const targetDate = latest?.d;
+      if (!targetDate) return json([], 200, corsHeaders);
+
+      const rows = await env.DB.prepare(`
+        SELECT
+          g.date, g.symbol, g.spot_price, g.net_gex,
+          g.flip_strike, g.distance_pct, g.atm_iv,
+          s.name, s.spy_weight, s.spy_rank, s.is_manual, s.memo
+        FROM screener_gex_daily g
+        LEFT JOIN screener_symbols s ON g.symbol = s.symbol
+        WHERE g.date = ?
+        ORDER BY ABS(g.net_gex) DESC
       `).bind(targetDate).all();
       return json(rows.results ?? [], 200, corsHeaders);
     }
 
-    // ── GET /api/screener/group ─────────────────────────────────
-    if (request.method === "GET" && path === "/api/screener/group") {
-      const groupCode = url.searchParams.get("group");
-      let targetDate  = url.searchParams.get("date");
-      if (!targetDate) {
-        const latest = await env.DB.prepare(
-          "SELECT MAX(date) as d FROM screener_scores"
-        ).first();
-        targetDate = latest?.d;
-      }
-      if (!groupCode)   return json({ error: "group param required" }, 400, corsHeaders);
-      if (!targetDate)  return json([], 200, corsHeaders);
+    // ── GET /api/screener/history ───────────────────────────────
+    // 90일 히스토리 전체 (스파크라인 + 변화량 계산용)
+    // ?symbol=NOW 로 특정 종목만 조회 가능
+    if (request.method === "GET" && path === "/api/screener/history") {
+      const sym = url.searchParams.get("symbol")?.toUpperCase() ?? null;
 
-      const rows = await env.DB.prepare(`
-        SELECT sc.*
-        FROM screener_scores sc
-        JOIN symbol_groups sg ON sc.symbol = sg.symbol
-        JOIN groups g ON sg.group_id = g.id
-        WHERE sc.date = ? AND g.code = ?
-        ORDER BY sc.total_score DESC
-      `).bind(targetDate, groupCode.toUpperCase()).all();
+      let rows;
+      if (sym) {
+        rows = await env.DB.prepare(`
+          SELECT date, symbol, net_gex, flip_strike, distance_pct, atm_iv
+          FROM screener_gex_daily
+          WHERE symbol = ?
+          ORDER BY date ASC
+        `).bind(sym).all();
+      } else {
+        rows = await env.DB.prepare(`
+          SELECT date, symbol, net_gex, flip_strike, distance_pct, atm_iv
+          FROM screener_gex_daily
+          ORDER BY symbol ASC, date ASC
+        `).all();
+      }
       return json(rows.results ?? [], 200, corsHeaders);
+    }
+
+    // ── POST /d1/screener-gex-daily ────────────────────────────
+    // Railway → D1 일별 GEX 스냅샷 저장
+    if (request.method === "POST" && path === "/d1/screener-gex-daily") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const { rows } = await request.json();
+        if (!Array.isArray(rows) || !rows.length) {
+          return json({ ok: false, error: "rows 배열 필요" }, 400, corsHeaders);
+        }
+        const stmts = rows.map(r =>
+          env.DB.prepare(`
+            INSERT OR REPLACE INTO screener_gex_daily
+              (date, symbol, spot_price, net_gex, flip_strike, distance_pct, atm_iv)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+          `).bind(
+            r.date, r.symbol,
+            r.spot_price  ?? null,
+            r.net_gex     ?? null,
+            r.flip_strike ?? null,
+            r.distance_pct ?? null,
+            r.atm_iv      ?? null,
+          )
+        );
+        const CHUNK = 50;
+        let inserted = 0;
+        for (let i = 0; i < stmts.length; i += CHUNK) {
+          await env.DB.batch(stmts.slice(i, i + CHUNK));
+          inserted += Math.min(CHUNK, stmts.length - i);
+        }
+        return json({ ok: true, inserted }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
+    // ── POST /d1/screener-gex-daily/purge ──────────────────────
+    // 90일 초과 데이터 삭제
+    if (request.method === "POST" && path === "/d1/screener-gex-daily/purge") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const { days = 90 } = await request.json().catch(() => ({}));
+        const cutoff = new Date();
+        cutoff.setDate(cutoff.getDate() - days);
+        const cutoffStr = cutoff.toISOString().split("T")[0];
+        const result = await env.DB.prepare(`
+          DELETE FROM screener_gex_daily WHERE date < ?
+        `).bind(cutoffStr).run();
+        return json({ ok: true, deleted: result.changes ?? 0, cutoff: cutoffStr }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
+    // ── POST /api/screener/symbols ──────────────────────────────
+    // 수동 종목 추가 (스트럭처 탭 "스크리너에 추가" 버튼)
+    if (request.method === "POST" && path === "/api/screener/symbols") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const { symbol, name, memo } = await request.json();
+        if (!symbol) return json({ error: "symbol 필요" }, 400, corsHeaders);
+        await env.DB.prepare(`
+          INSERT OR REPLACE INTO screener_symbols
+            (symbol, name, is_manual, active, memo)
+          VALUES (?, ?, 1, 1, ?)
+        `).bind(symbol.toUpperCase(), name ?? null, memo ?? null).run();
+        return json({ ok: true, symbol: symbol.toUpperCase() }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
+    // ── DELETE /api/screener/symbols/:symbol ────────────────────
+    // 수동 종목 비활성화 (active=0, 데이터는 90일 자연 소멸)
+    const scDelMatch = path.match(/^\/api\/screener\/symbols\/([A-Z0-9.\-]+)$/i);
+    if (request.method === "DELETE" && scDelMatch) {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      const sym = scDelMatch[1].toUpperCase();
+      await env.DB.prepare(`
+        UPDATE screener_symbols SET active = 0 WHERE symbol = ? AND is_manual = 1
+      `).bind(sym).run();
+      return json({ ok: true, symbol: sym }, 200, corsHeaders);
     }
 
     // ── POST /d1/options-dex ────────────────────────────────────
