@@ -26,23 +26,71 @@ function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-// 표준 먼슬리 판별 (매달 3번째 금요일)
-// CBOE가 일부 만기를 목요일로 표기하는 경우도 처리
-function isStandardMonthly(dateStr) {
-  const d   = new Date(dateStr + 'T00:00:00');
-  const dow = d.getDay();
-  const day = d.getDate();
+// ── 옵션 심볼 파싱 (vanna_analyzer.js 동일 로직)
+// "JNJ260522C00125000" → { expiry: "2026-05-22", type: "C", strike: 125, dte }
+function parseOption(optionStr) {
+  const match = optionStr.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
+  if (!match) return null;
+  const [, , dateStr, type, strikeStr] = match;
+  const yy     = dateStr.slice(0, 2);
+  const mm     = dateStr.slice(2, 4);
+  const dd     = dateStr.slice(4, 6);
+  const expiry = `20${yy}-${mm}-${dd}`;
+  const strike = parseInt(strikeStr, 10) / 1000;
+  const expiryDate = new Date(`${expiry}T16:00:00-05:00`);
+  const dte    = Math.round((expiryDate - new Date()) / 86_400_000);
+  return { expiry, type, strike, dte };
+}
 
-  if (dow === 5) return day >= 15 && day <= 21;           // 금요일 직접 판별
-  if (dow === 4) return (day + 1) >= 15 && (day + 1) <= 21; // 목요일 → 다음날 확인
+// ── 3번째 금요일 계산 (vanna_analyzer.js 동일 로직)
+function getThirdFriday(year, month) {
+  let count = 0;
+  for (let d = 1; d <= 31; d++) {
+    const date = new Date(year, month, d);
+    if (date.getMonth() !== month) break;
+    if (date.getDay() === 5) {
+      count++;
+      if (count === 3) {
+        const m  = String(date.getMonth() + 1).padStart(2, '0');
+        const dd = String(date.getDate()).padStart(2, '0');
+        return `${date.getFullYear()}-${m}-${dd}`;
+      }
+    }
+  }
+  return null;
+}
+
+// ── 먼슬리 판별 (vanna_analyzer.js classifyExpiry 기반)
+// allExpiries: 전체 만기 목록 (목요일로 당겨진 케이스 처리용)
+function isMonthly(expiryDate, allExpiries) {
+  const d   = new Date(expiryDate);
+  const dow = d.getDay();
+
+  // 월~수 → 절대 먼슬리 아님
+  if (dow <= 3) return false;
+
+  const thirdFriday = getThirdFriday(d.getFullYear(), d.getMonth());
+
+  // 금요일이고 3번째 금요일이면 먼슬리
+  if (dow === 5 && expiryDate === thirdFriday) return true;
+
+  // 목요일 → 3번째 금요일이 휴장으로 당겨진 경우
+  if (dow === 4 && thirdFriday) {
+    const tf = new Date(thirdFriday);
+    tf.setDate(tf.getDate() - 1);
+    const m   = String(tf.getMonth() + 1).padStart(2, '0');
+    const dd  = String(tf.getDate()).padStart(2, '0');
+    const thu = `${tf.getFullYear()}-${m}-${dd}`;
+    if (expiryDate === thu && !allExpiries.includes(thirdFriday)) return true;
+  }
+
   return false;
 }
 
 // DTE 계산
 function calcDte(expiryStr) {
-  const now    = new Date();
-  const expiry = new Date(expiryStr + 'T16:00:00');
-  return Math.max(0, Math.round((expiry - now) / 86400000));
+  const expiry = new Date(expiryStr + 'T16:00:00-05:00');
+  return Math.round((expiry - new Date()) / 86400000);
 }
 
 // ============================================
@@ -69,6 +117,7 @@ export async function fetchSpotPrice(symbol) {
 
 // ============================================
 // CBOE 옵션 체인 수집 (먼슬리만)
+// vanna_analyzer.js와 동일한 파싱 방식 사용
 // ============================================
 export async function collectMonthlyChain(symbol) {
   try {
@@ -88,53 +137,58 @@ export async function collectMonthlyChain(symbol) {
 
     if (!spot || !options.length) throw new Error('CBOE: spot or options 없음');
 
-    // 먼슬리 만기만 필터
-    const monthlyOptions = options.filter(exp => isStandardMonthly(exp.expiration_date));
+    // ── 1단계: 전체 옵션 파싱 → 만기별 스트라이크 맵 구성
+    const expiryMap = {};
 
-    if (!monthlyOptions.length) {
-      console.warn(`[${symbol}] 먼슬리 만기 없음`);
-      return { spot, chain: [] };
-    }
+    for (const o of options) {
+      const parsed = parseOption(o.option);
+      if (!parsed) continue;
 
-    // 모든 먼슬리 만기의 스트라이크 데이터 평탄화
-    const chain = [];
-    for (const exp of monthlyOptions) {
-      const expiry = exp.expiration_date;
-      const dte    = calcDte(expiry);
+      const { expiry, type, strike, dte } = parsed;
 
-      // DTE 범위 제한: 7일~90일 (너무 짧거나 긴 건 제외)
+      // DTE 범위: 7~90일
       if (dte < 7 || dte > 90) continue;
+      // OI 없는 건 제외
+      if (!o.open_interest || o.open_interest <= 0) continue;
 
-      const calls = exp.calls ?? [];
-      const puts  = exp.puts  ?? [];
-
-      // 스트라이크 기준으로 call/put 매핑
-      const callMap = {};
-      for (const c of calls) {
-        const strike = parseFloat(c.strike ?? c.strike_price ?? 0);
-        if (!strike) continue;
-        callMap[strike] = {
-          iv:    parseFloat(c.iv ?? c.implied_volatility ?? 0),
-          gamma: parseFloat(c.gamma ?? 0),
-          oi:    parseInt(c.open_interest ?? 0),
+      if (!expiryMap[expiry]) expiryMap[expiry] = { dte, strikes: {} };
+      if (!expiryMap[expiry].strikes[strike]) {
+        expiryMap[expiry].strikes[strike] = {
+          strike, dte, expiry,
+          call_oi: 0, call_iv: 0, call_gamma: 0,
+          put_oi:  0, put_iv:  0, put_gamma:  0,
         };
       }
 
-      for (const p of puts) {
-        const strike = parseFloat(p.strike ?? p.strike_price ?? 0);
-        if (!strike) continue;
-        const call = callMap[strike] ?? {};
-        chain.push({
-          expiry,
-          dte,
-          strike,
-          call_oi:    call.oi    ?? 0,
-          call_iv:    call.iv    ?? 0,
-          call_gamma: call.gamma ?? 0,
-          put_oi:     parseInt(p.open_interest ?? 0),
-          put_iv:     parseFloat(p.iv ?? p.implied_volatility ?? 0),
-          put_gamma:  parseFloat(p.gamma ?? 0),
-        });
+      const s = expiryMap[expiry].strikes[strike];
+      if (type === 'C') {
+        s.call_oi    += o.open_interest ?? 0;
+        s.call_iv     = o.iv    ?? 0;
+        s.call_gamma  = o.gamma ?? 0;
+      } else {
+        s.put_oi     += o.open_interest ?? 0;
+        s.put_iv      = o.iv    ?? 0;
+        s.put_gamma   = o.gamma ?? 0;
+      }
+    }
+
+    // ── 2단계: 전체 만기 목록 → 먼슬리 판별
+    const allExpiries = Object.keys(expiryMap);
+    const monthlyExpiries = allExpiries.filter(e => isMonthly(e, allExpiries));
+
+    if (!monthlyExpiries.length) {
+      console.warn(`[${symbol}] 먼슬리 만기 없음 (전체 만기: ${allExpiries.join(', ')})`);
+      return { spot, chain: [] };
+    }
+
+    console.log(`[${symbol}] 먼슬리 만기: ${monthlyExpiries.join(', ')}`);
+
+    // ── 3단계: 먼슬리 만기 스트라이크만 flat 배열로 변환
+    const chain = [];
+    for (const expiry of monthlyExpiries) {
+      const strikes = Object.values(expiryMap[expiry].strikes);
+      for (const s of strikes) {
+        chain.push(s);
       }
     }
 
