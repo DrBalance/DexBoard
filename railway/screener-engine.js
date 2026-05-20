@@ -217,8 +217,8 @@ export function calcNetGex(chain, spot) {
     totalGex += callGex + putGex;
   }
 
-  // 달러 단위로 반환 ($B 표기용)
-  return Math.round(totalGex * 100) / 100;
+  // $M 단위로 반환 (개별 종목은 $B가 너무 작음)
+  return Math.round(totalGex / 1e4) / 100;  // → $M, 소수 2자리
 }
 
 // ============================================
