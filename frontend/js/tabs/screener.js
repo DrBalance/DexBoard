@@ -410,7 +410,7 @@ function renderSummary(data) {
   const near    = data.filter(r => Math.abs(r.distance_pct ?? 999) <= 3).length;
   const gexUp   = data.filter(r => r.direction === 'up').length;
   const gexDown = data.filter(r => r.direction === 'down').length;
-  const manual  = data.filter(r => r.is_manual === 1).length;
+  const manual  = data.filter(r => r.groups != null).length;
 
   el.innerHTML = `
     <div class="sc-sum-card">
@@ -451,10 +451,10 @@ function renderTable(filter = 'all') {
   if (filter === 'above')  rows = rows.filter(r => (r.distance_pct ?? 0) > 0);
   if (filter === 'below')  rows = rows.filter(r => (r.distance_pct ?? 0) < 0);
   if (filter === 'near')   rows = rows.filter(r => Math.abs(r.distance_pct ?? 999) <= 3);
-  if (filter === 'manual') rows = rows.filter(r => r.is_manual === 1);
+  if (filter === 'manual') rows = rows.filter(r => r.groups != null);
 
-  const manualRows = rows.filter(r => r.is_manual === 1);
-  const spyRows    = rows.filter(r => r.is_manual !== 1);
+  const manualRows = rows.filter(r => r.groups != null);
+  const spyRows    = rows.filter(r => r.groups == null);
 
   const sortFn = (a, b) => {
     const av  = a[sortCol] ?? -Infinity;
@@ -553,7 +553,7 @@ function buildRow(r) {
     ? '<span class="sc-dir-badge down">↓ 해소</span>'
     : '<span class="sc-dir-badge flat">→ 횡보</span>';
 
-  const manualTag = r.is_manual === 1 ? '<span class="sc-manual-tag">★</span>' : '';
+  const manualTag = r.groups != null ? '<span class="sc-manual-tag">★</span>' : '';
   const flipStr   = r.flip_strike ? `$${r.flip_strike.toFixed(0)}` : '-';
   const ivStr     = r.atm_iv != null ? `${(r.atm_iv * 100).toFixed(1)}%` : '-';
 
