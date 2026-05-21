@@ -60,28 +60,36 @@ function getThirdFriday(year, month) {
   return null;
 }
 
-// ── 먼슬리 판별 (vanna_analyzer.js classifyExpiry 기반)
-// allExpiries: 전체 만기 목록 (목요일로 당겨진 케이스 처리용)
+// ── 먼슬리 판별 (options-charts.js classifyExpiry와 동일 로직)
 function isMonthly(expiryDate, allExpiries) {
   const d   = new Date(expiryDate);
   const dow = d.getDay();
 
-  // 월~수 → 절대 먼슬리 아님
+  // 월/화/수 → 먼슬리 아님
   if (dow <= 3) return false;
 
+  // 목요일 → 다음날 금요일이 allExpiries에 있으면 위클리
+  if (dow === 4) {
+    const friday = new Date(d);
+    friday.setDate(d.getDate() + 1);
+    const m  = String(friday.getMonth() + 1).padStart(2, '0');
+    const dd = String(friday.getDate()).padStart(2, '0');
+    const fridayStr = `${friday.getFullYear()}-${m}-${dd}`;
+    if (allExpiries.includes(fridayStr)) return false;
+  }
+
+  // 금요일 or 당겨진 목요일 → 3번째 금요일과 비교
   const thirdFriday = getThirdFriday(d.getFullYear(), d.getMonth());
+  if (expiryDate === thirdFriday) return true;
 
-  // 금요일이고 3번째 금요일이면 먼슬리
-  if (dow === 5 && expiryDate === thirdFriday) return true;
-
-  // 목요일 → 3번째 금요일이 휴장으로 당겨진 경우
-  if (dow === 4 && thirdFriday) {
+  // 3번째 금요일이 휴장 → 목요일로 당겨진 경우
+  if (thirdFriday) {
     const tf = new Date(thirdFriday);
     tf.setDate(tf.getDate() - 1);
-    const m   = String(tf.getMonth() + 1).padStart(2, '0');
-    const dd  = String(tf.getDate()).padStart(2, '0');
-    const thu = `${tf.getFullYear()}-${m}-${dd}`;
-    if (expiryDate === thu && !allExpiries.includes(thirdFriday)) return true;
+    const m  = String(tf.getMonth() + 1).padStart(2, '0');
+    const dd = String(tf.getDate()).padStart(2, '0');
+    const thirdThursdayStr = `${tf.getFullYear()}-${m}-${dd}`;
+    if (expiryDate === thirdThursdayStr && !allExpiries.includes(thirdFriday)) return true;
   }
 
   return false;
@@ -182,6 +190,7 @@ export async function collectMonthlyChain(symbol) {
       }
 
       const s = strikeMap[key];
+
       if (type === 'C') {
         s.call_oi    += o.open_interest ?? 0;
         s.call_iv     = o.iv    ?? 0;
