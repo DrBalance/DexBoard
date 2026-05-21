@@ -112,27 +112,7 @@ function renderShell() {
       <span class="legend-item"><span class="legend-dot amber"></span> GEX 급증: 헤징 압력 축적 중</span>
     </div>
 
-    <div class="sc-table-wrap">
-      <table class="sc-tbl" id="sc-tbl">
-        <thead>
-          <tr>
-            <th class="sc-th sortable" data-col="symbol">종목</th>
-            <th class="sc-th sortable" data-col="spot_price">현재가</th>
-            <th class="sc-th sortable" data-col="flip_strike">플립존</th>
-            <th class="sc-th sortable" data-col="distance_pct">거리</th>
-            <th class="sc-th sortable" data-col="net_gex">Net GEX</th>
-            <th class="sc-th" style="min-width:110px">GEX 추세</th>
-            <th class="sc-th sortable" data-col="gex_1d">1일 변화</th>
-            <th class="sc-th sortable" data-col="gex_5d">5일 변화</th>
-            <th class="sc-th sortable" data-col="gex_10d">10일 변화</th>
-            <th class="sc-th">방향</th>
-            <th class="sc-th sortable" data-col="atm_iv">ATM IV</th>
-            <th class="sc-th">분석</th>
-          </tr>
-        </thead>
-        <tbody id="sc-tbody"></tbody>
-      </table>
-    </div>
+    <div class="sc-table-wrap"></div>
 
     <div class="sc-footer" id="sc-footer"></div>
   </div>
@@ -157,16 +137,6 @@ function bindEvents() {
     document.querySelectorAll('#sc-filter-pills .pill').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     renderTable(btn.dataset.f);
-  });
-
-  document.getElementById('sc-tbl')?.addEventListener('click', e => {
-    const th = e.target.closest('.sortable');
-    if (!th) return;
-    const col = th.dataset.col;
-    sortDir = (sortCol === col && sortDir === 'desc') ? 'asc' : 'desc';
-    sortCol = col;
-    updateSortIndicators();
-    renderTable(getActiveFilter());
   });
 }
 
@@ -471,11 +441,11 @@ function renderSummary(data) {
 }
 
 // ============================================
-// 테이블 렌더
+// 테이블 렌더 — 수동 추가 / SPY 50개 분리
 // ============================================
 function renderTable(filter = 'all') {
-  const tbody = document.getElementById('sc-tbody');
-  if (!tbody) return;
+  const content = document.getElementById('sc-content');
+  if (!content) return;
 
   let rows = [...allResults];
   if (filter === 'above')  rows = rows.filter(r => (r.distance_pct ?? 0) > 0);
@@ -483,85 +453,134 @@ function renderTable(filter = 'all') {
   if (filter === 'near')   rows = rows.filter(r => Math.abs(r.distance_pct ?? 999) <= 3);
   if (filter === 'manual') rows = rows.filter(r => r.is_manual === 1);
 
-  rows.sort((a, b) => {
+  const manualRows = rows.filter(r => r.is_manual === 1);
+  const spyRows    = rows.filter(r => r.is_manual !== 1);
+
+  const sortFn = (a, b) => {
     const av  = a[sortCol] ?? -Infinity;
     const bv  = b[sortCol] ?? -Infinity;
     const cmp = typeof av === 'string' ? av.localeCompare(bv) : av - bv;
     return sortDir === 'asc' ? cmp : -cmp;
-  });
+  };
+  manualRows.sort(sortFn);
+  spyRows.sort(sortFn);
 
-  if (!rows.length) {
-    tbody.innerHTML = `<tr><td colspan="12" class="sc-no-data">데이터가 없습니다</td></tr>`;
-    document.getElementById('sc-footer').textContent = '';
-    return;
+  const thead = `
+    <thead>
+      <tr>
+        <th class="sc-th sortable" data-col="symbol">종목</th>
+        <th class="sc-th sortable" data-col="spot_price">현재가</th>
+        <th class="sc-th sortable" data-col="flip_strike">플립존</th>
+        <th class="sc-th sortable" data-col="distance_pct">거리</th>
+        <th class="sc-th sortable" data-col="net_gex">Net GEX</th>
+        <th class="sc-th" style="min-width:110px">GEX 추세</th>
+        <th class="sc-th sortable" data-col="gex_1d">1일 변화</th>
+        <th class="sc-th sortable" data-col="gex_5d">5일 변화</th>
+        <th class="sc-th sortable" data-col="gex_10d">10일 변화</th>
+        <th class="sc-th">방향</th>
+        <th class="sc-th sortable" data-col="atm_iv">ATM IV</th>
+        <th class="sc-th">분석</th>
+      </tr>
+    </thead>`;
+
+  const tableWrap = content.querySelector('.sc-table-wrap');
+  if (tableWrap) {
+    tableWrap.innerHTML = `
+      ${manualRows.length ? `
+        <div class="sc-tbl-section-title">⭐ 수동 추가 종목 (${manualRows.length})</div>
+        <table class="sc-tbl sc-tbl-manual">
+          ${thead}
+          <tbody>${manualRows.map(buildRow).join('')}</tbody>
+        </table>
+        <div style="margin-top:24px"></div>
+      ` : ''}
+      <div class="sc-tbl-section-title">SPY 상위 50 종목 (${spyRows.length})</div>
+      <table class="sc-tbl sc-tbl-spy">
+        ${thead}
+        <tbody>${spyRows.map(buildRow).join('')}</tbody>
+      </table>
+    `;
+
+    tableWrap.querySelectorAll('.sortable').forEach(th => {
+      th.addEventListener('click', () => {
+        const col = th.dataset.col;
+        sortDir = (sortCol === col && sortDir === 'desc') ? 'asc' : 'desc';
+        sortCol = col;
+        updateSortIndicators();
+        renderTable(getActiveFilter());
+      });
+    });
+    tableWrap.querySelectorAll('.sc-drill-btn').forEach(btn => {
+      btn.addEventListener('click', e => { e.stopPropagation(); drillToStructure(btn.dataset.sym); });
+    });
+    tableWrap.querySelectorAll('.sc-row').forEach(row => {
+      row.addEventListener('click', () => drillToStructure(row.dataset.sym));
+    });
   }
 
-  tbody.innerHTML = rows.map(r => {
-    const dist = r.distance_pct;
-    const gex  = r.net_gex;
-
-    const isNear    = dist != null && Math.abs(dist) <= 3;
-    const distColor = dist == null ? 'muted' : dist > 0 ? 'green' : 'red';
-    const distStr   = dist != null
-      ? isNear
-        ? `<span style="color:#eab308">${dist > 0 ? '+' : ''}${dist.toFixed(1)}% ⚡</span>`
-        : `<span class="${distColor}">${dist > 0 ? '+' : ''}${dist.toFixed(1)}%</span>`
-      : '-';
-
-    const gexColor = gex == null ? 'muted' : gex > 0 ? 'green' : 'red';
-    const gexStr   = gex != null
-      ? `<span class="${gexColor}">${gex > 0 ? '+' : ''}${gex.toFixed(1)}M</span>`
-      : '-';
-
-    const changeCell = (val) => {
-      if (val == null) return '<span class="muted">-</span>';
-      const c    = val > 0 ? 'green' : val < 0 ? 'red' : 'muted';
-      const sign = val > 0 ? '+' : '';
-      return `<span class="${c}">${sign}${val.toFixed(1)}M</span>`;
-    };
-
-    const dirBadge = r.direction === 'up'
-      ? '<span class="sc-dir-badge up">↑ 축적</span>'
-      : r.direction === 'down'
-      ? '<span class="sc-dir-badge down">↓ 해소</span>'
-      : '<span class="sc-dir-badge flat">→ 횡보</span>';
-
-    const manualTag = r.is_manual === 1 ? '<span class="sc-manual-tag">★</span>' : '';
-    const flipStr   = r.flip_strike ? `$${r.flip_strike.toFixed(0)}` : '-';
-    const ivStr     = r.atm_iv != null ? `${(r.atm_iv * 100).toFixed(1)}%` : '-';
-
-    return `
-      <tr class="sc-row" data-sym="${r.symbol}">
-        <td class="sc-td-sym">
-          <span class="sc-sym">${r.symbol}${manualTag}</span>
-          <span class="sc-name">${r.name ?? ''}</span>
-        </td>
-        <td class="sc-td-price">${r.spot_price ? '$' + r.spot_price.toFixed(2) : '-'}</td>
-        <td class="sc-td-price">${flipStr}</td>
-        <td class="sc-td-dist">${distStr}</td>
-        <td class="sc-td-gex">${gexStr}</td>
-        <td class="sc-td-spark">${buildSparkline(r.history ?? [], r.direction)}</td>
-        <td class="sc-td-chg">${changeCell(r.gex_1d)}</td>
-        <td class="sc-td-chg">${changeCell(r.gex_5d)}</td>
-        <td class="sc-td-chg">${changeCell(r.gex_10d)}</td>
-        <td class="sc-td-dir">${dirBadge}</td>
-        <td class="sc-td-iv">${ivStr}</td>
-        <td>
-          <button class="sc-drill-btn" data-sym="${r.symbol}" title="Structure 탭에서 분석">▶</button>
-        </td>
-      </tr>
-    `;
-  }).join('');
-
-  tbody.querySelectorAll('.sc-drill-btn').forEach(btn => {
-    btn.addEventListener('click', e => { e.stopPropagation(); drillToStructure(btn.dataset.sym); });
-  });
-  tbody.querySelectorAll('.sc-row').forEach(row => {
-    row.addEventListener('click', () => drillToStructure(row.dataset.sym));
-  });
-
-  document.getElementById('sc-footer').textContent = `${rows.length}개 종목 표시`;
+  document.getElementById('sc-footer').textContent =
+    `수동 ${manualRows.length}개 · SPY ${spyRows.length}개 표시`;
 }
+
+// ── 행 렌더 (공통)
+function buildRow(r) {
+  const dist = r.distance_pct;
+  const gex  = r.net_gex;
+
+  const isNear    = dist != null && Math.abs(dist) <= 3;
+  const distColor = dist == null ? 'muted' : dist > 0 ? 'green' : 'red';
+  const distStr   = dist != null
+    ? isNear
+      ? `<span style="color:#eab308">${dist > 0 ? '+' : ''}${dist.toFixed(1)}% ⚡</span>`
+      : `<span class="${distColor}">${dist > 0 ? '+' : ''}${dist.toFixed(1)}%</span>`
+    : '-';
+
+  const gexColor = gex == null ? 'muted' : gex > 0 ? 'green' : 'red';
+  const gexStr   = gex != null
+    ? `<span class="${gexColor}">${gex > 0 ? '+' : ''}${gex.toFixed(1)}K</span>`
+    : '<span class="muted">-</span>';
+
+  const changeCell = (val) => {
+    if (val == null) return '<span class="muted">-</span>';
+    const c    = val > 0 ? 'green' : val < 0 ? 'red' : 'muted';
+    const sign = val > 0 ? '+' : '';
+    return `<span class="${c}">${sign}${val.toFixed(1)}K</span>`;
+  };
+
+  const dirBadge = r.direction === 'up'
+    ? '<span class="sc-dir-badge up">↑ 축적</span>'
+    : r.direction === 'down'
+    ? '<span class="sc-dir-badge down">↓ 해소</span>'
+    : '<span class="sc-dir-badge flat">→ 횡보</span>';
+
+  const manualTag = r.is_manual === 1 ? '<span class="sc-manual-tag">★</span>' : '';
+  const flipStr   = r.flip_strike ? `$${r.flip_strike.toFixed(0)}` : '-';
+  const ivStr     = r.atm_iv != null ? `${(r.atm_iv * 100).toFixed(1)}%` : '-';
+
+  return `
+    <tr class="sc-row" data-sym="${r.symbol}">
+      <td class="sc-td-sym">
+        <span class="sc-sym">${r.symbol}${manualTag}</span>
+        <span class="sc-name">${r.name ?? ''}</span>
+      </td>
+      <td class="sc-td-price">${r.spot_price ? '$' + r.spot_price.toFixed(2) : '-'}</td>
+      <td class="sc-td-price">${flipStr}</td>
+      <td class="sc-td-dist">${distStr}</td>
+      <td class="sc-td-gex">${gexStr}</td>
+      <td class="sc-td-spark">${buildSparkline(r.history ?? [], r.direction)}</td>
+      <td class="sc-td-chg">${changeCell(r.gex_1d)}</td>
+      <td class="sc-td-chg">${changeCell(r.gex_5d)}</td>
+      <td class="sc-td-chg">${changeCell(r.gex_10d)}</td>
+      <td class="sc-td-dir">${dirBadge}</td>
+      <td class="sc-td-iv">${ivStr}</td>
+      <td>
+        <button class="sc-drill-btn" data-sym="${r.symbol}" title="Structure 탭에서 분석">▶</button>
+      </td>
+    </tr>
+  `;
+}
+
+
 
 // ============================================
 // 스파크라인 SVG
