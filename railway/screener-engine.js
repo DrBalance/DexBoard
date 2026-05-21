@@ -137,30 +137,51 @@ export async function collectMonthlyChain(symbol) {
 
     if (!spot || !options.length) throw new Error('CBOE: spot or options 없음');
 
-    // ── 1단계: 전체 옵션 파싱 → 만기별 스트라이크 맵 구성
-    const expiryMap = {};
+    // ── 1단계: 전체 옵션에서 만기 날짜만 추출 → 전체 만기 목록 확보
+    // OI/DTE 필터 없이 순수하게 만기 목록만 수집
+    const allExpiries = [...new Set(
+      options
+        .map(o => parseOption(o.option)?.expiry)
+        .filter(Boolean)
+    )];
+
+    if (!allExpiries.length) {
+      console.warn(`[${symbol}] 옵션 만기 파싱 실패`);
+      return { spot, chain: [] };
+    }
+
+    // ── 2단계: 전체 만기 목록 기준으로 먼슬리 만기 확정
+    const monthlyExpiries = allExpiries.filter(e => isMonthly(e, allExpiries));
+
+    if (!monthlyExpiries.length) {
+      console.warn(`[${symbol}] 먼슬리 만기 없음 (전체 만기: ${allExpiries.sort().join(', ')})`);
+      return { spot, chain: [] };
+    }
+
+    console.log(`[${symbol}] 먼슬리 만기: ${monthlyExpiries.join(', ')}`);
+
+    // ── 3단계: 확정된 먼슬리 만기에 해당하는 옵션만 추출
+    // OI 필터 없음 — OI 0이어도 포함 (GEX 기여분이 0으로 자연스럽게 처리됨)
+    const monthlySet = new Set(monthlyExpiries);
+    const strikeMap  = {};
 
     for (const o of options) {
       const parsed = parseOption(o.option);
       if (!parsed) continue;
 
       const { expiry, type, strike, dte } = parsed;
+      if (!monthlySet.has(expiry)) continue;
 
-      // DTE 범위: 7~90일
-      if (dte < 7 || dte > 90) continue;
-      // OI 없는 건 제외
-      if (!o.open_interest || o.open_interest <= 0) continue;
-
-      if (!expiryMap[expiry]) expiryMap[expiry] = { dte, strikes: {} };
-      if (!expiryMap[expiry].strikes[strike]) {
-        expiryMap[expiry].strikes[strike] = {
+      const key = `${expiry}_${strike}`;
+      if (!strikeMap[key]) {
+        strikeMap[key] = {
           strike, dte, expiry,
           call_oi: 0, call_iv: 0, call_gamma: 0,
           put_oi:  0, put_iv:  0, put_gamma:  0,
         };
       }
 
-      const s = expiryMap[expiry].strikes[strike];
+      const s = strikeMap[key];
       if (type === 'C') {
         s.call_oi    += o.open_interest ?? 0;
         s.call_iv     = o.iv    ?? 0;
@@ -172,26 +193,7 @@ export async function collectMonthlyChain(symbol) {
       }
     }
 
-    // ── 2단계: 전체 만기 목록 → 먼슬리 판별
-    const allExpiries = Object.keys(expiryMap);
-    const monthlyExpiries = allExpiries.filter(e => isMonthly(e, allExpiries));
-
-    if (!monthlyExpiries.length) {
-      console.warn(`[${symbol}] 먼슬리 만기 없음 (전체 만기: ${allExpiries.join(', ')})`);
-      return { spot, chain: [] };
-    }
-
-    console.log(`[${symbol}] 먼슬리 만기: ${monthlyExpiries.join(', ')}`);
-
-    // ── 3단계: 먼슬리 만기 스트라이크만 flat 배열로 변환
-    const chain = [];
-    for (const expiry of monthlyExpiries) {
-      const strikes = Object.values(expiryMap[expiry].strikes);
-      for (const s of strikes) {
-        chain.push(s);
-      }
-    }
-
+    const chain = Object.values(strikeMap);
     return { spot, chain };
 
   } catch (err) {
@@ -217,8 +219,8 @@ export function calcNetGex(chain, spot) {
     totalGex += callGex + putGex;
   }
 
-  // $M 단위로 반환 (개별 종목은 $B가 너무 작음)
-  return Math.round(totalGex / 1e4) / 100;  // → $M, 소수 2자리
+  // $K 단위로 반환 (개별 종목 규모에 맞게)
+  return Math.round(totalGex / 100) / 10;  // → $K, 소수 1자리
 }
 
 // ============================================
