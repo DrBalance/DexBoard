@@ -460,24 +460,26 @@ export default {
     // ════════════════════════════════════════════════════════════
 
     // ── GET /api/screener/symbols ───────────────────────────────
-    // 수집 대상 심볼 목록 (active=1만)
+    // 수집 대상 심볼 목록 — symbols 테이블 전체
     if (request.method === "GET" && path === "/api/screener/symbols") {
       const secret = request.headers.get("x-cron-secret");
       if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
       const rows = await env.DB.prepare(`
-        SELECT symbol, name, spy_weight, spy_rank, is_manual, memo
-        FROM screener_symbols
-        WHERE active = 1
-        ORDER BY is_manual ASC, spy_rank ASC
+        SELECT s.symbol, s.name, s.type,
+          GROUP_CONCAT(g.code) as groups
+        FROM symbols s
+        LEFT JOIN symbol_groups sg ON s.symbol = sg.symbol
+        LEFT JOIN groups g ON sg.group_id = g.id
+        GROUP BY s.symbol
+        ORDER BY s.symbol
       `).all();
       return json({ symbols: rows.results ?? [] }, 200, corsHeaders);
     }
 
     // ── GET /api/screener/latest ────────────────────────────────
-    // screener_symbols 기준으로 전체 표시
-    // 당일 GEX 데이터 없으면 null로 채움 (LEFT JOIN)
+    // symbols 기준 전체 표시, 당일 GEX 없으면 null
     if (request.method === "GET" && path === "/api/screener/latest") {
       const latest = await env.DB.prepare(
         "SELECT MAX(date) as d FROM screener_gex_daily"
@@ -486,14 +488,17 @@ export default {
 
       const rows = await env.DB.prepare(`
         SELECT
-          s.symbol, s.name, s.spy_weight, s.spy_rank, s.is_manual, s.memo,
-          g.date, g.spot_price, g.net_gex,
-          g.flip_strike, g.distance_pct, g.atm_iv
-        FROM screener_symbols s
-        LEFT JOIN screener_gex_daily g
-          ON g.symbol = s.symbol AND g.date = ?
-        WHERE s.active = 1
-        ORDER BY s.is_manual DESC, ABS(COALESCE(g.net_gex, 0)) DESC
+          s.symbol, s.name, s.type,
+          GROUP_CONCAT(g.code) as groups,
+          g2.date, g2.spot_price, g2.net_gex,
+          g2.flip_strike, g2.distance_pct, g2.atm_iv
+        FROM symbols s
+        LEFT JOIN symbol_groups sg ON s.symbol = sg.symbol
+        LEFT JOIN groups g ON sg.group_id = g.id
+        LEFT JOIN screener_gex_daily g2
+          ON g2.symbol = s.symbol AND g2.date = ?
+        GROUP BY s.symbol
+        ORDER BY s.symbol
       `).bind(targetDate ?? '').all();
       return json(rows.results ?? [], 200, corsHeaders);
     }

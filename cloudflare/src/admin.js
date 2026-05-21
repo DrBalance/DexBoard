@@ -1492,7 +1492,7 @@ async function handleDeleteGroup(id, env) {
       env.DB.prepare('DELETE FROM symbols WHERE symbol=?').bind(sym),
       env.DB.prepare('DELETE FROM options_flow WHERE symbol=?').bind(sym),
       env.DB.prepare('DELETE FROM price_indicators WHERE symbol=?').bind(sym),
-      env.DB.prepare('DELETE FROM screener_scores WHERE symbol=?').bind(sym),
+      env.DB.prepare('DELETE FROM screener_gex_daily WHERE symbol=?').bind(sym),
     ]);
     for (const chunk of chunkArray(delStmts, 100)) {
       await env.DB.batch(chunk);
@@ -1553,7 +1553,7 @@ async function handleRemoveGroupSymbol(id, symbol, env) {
       env.DB.prepare('DELETE FROM symbols WHERE symbol=?').bind(symbol),
       env.DB.prepare('DELETE FROM options_flow WHERE symbol=?').bind(symbol),
       env.DB.prepare('DELETE FROM price_indicators WHERE symbol=?').bind(symbol),
-      env.DB.prepare('DELETE FROM screener_scores WHERE symbol=?').bind(symbol),
+      env.DB.prepare('DELETE FROM screener_gex_daily WHERE symbol=?').bind(symbol),
     ]);
     return json({ ok: true, symbol, group_id: id, orphan_removed: true });
   }
@@ -1614,7 +1614,7 @@ async function handleDeleteSymbol(symbol, env) {
     env.DB.prepare('DELETE FROM symbols WHERE symbol=?').bind(symbol),
     env.DB.prepare('DELETE FROM options_flow WHERE symbol=?').bind(symbol),
     env.DB.prepare('DELETE FROM price_indicators WHERE symbol=?').bind(symbol),
-    env.DB.prepare('DELETE FROM screener_scores WHERE symbol=?').bind(symbol),
+    env.DB.prepare('DELETE FROM screener_gex_daily WHERE symbol=?').bind(symbol),
   ]);
   return json({ ok: true, symbol });
 }
