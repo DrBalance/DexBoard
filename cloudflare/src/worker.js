@@ -476,25 +476,25 @@ export default {
     }
 
     // ── GET /api/screener/latest ────────────────────────────────
-    // 가장 최신 날짜의 스냅샷 (테이블 표시용)
-    // screener_symbols JOIN → name, is_manual 포함
+    // screener_symbols 기준으로 전체 표시
+    // 당일 GEX 데이터 없으면 null로 채움 (LEFT JOIN)
     if (request.method === "GET" && path === "/api/screener/latest") {
       const latest = await env.DB.prepare(
         "SELECT MAX(date) as d FROM screener_gex_daily"
       ).first();
-      const targetDate = latest?.d;
-      if (!targetDate) return json([], 200, corsHeaders);
+      const targetDate = latest?.d ?? null;
 
       const rows = await env.DB.prepare(`
         SELECT
-          g.date, g.symbol, g.spot_price, g.net_gex,
-          g.flip_strike, g.distance_pct, g.atm_iv,
-          s.name, s.spy_weight, s.spy_rank, s.is_manual, s.memo
-        FROM screener_gex_daily g
-        LEFT JOIN screener_symbols s ON g.symbol = s.symbol
-        WHERE g.date = ?
-        ORDER BY ABS(g.net_gex) DESC
-      `).bind(targetDate).all();
+          s.symbol, s.name, s.spy_weight, s.spy_rank, s.is_manual, s.memo,
+          g.date, g.spot_price, g.net_gex,
+          g.flip_strike, g.distance_pct, g.atm_iv
+        FROM screener_symbols s
+        LEFT JOIN screener_gex_daily g
+          ON g.symbol = s.symbol AND g.date = ?
+        WHERE s.active = 1
+        ORDER BY s.is_manual DESC, ABS(COALESCE(g.net_gex, 0)) DESC
+      `).bind(targetDate ?? '').all();
       return json(rows.results ?? [], 200, corsHeaders);
     }
 
