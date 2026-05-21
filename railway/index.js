@@ -7,7 +7,7 @@
 
 import http from "http";
 import { calculateAndStore, collectSymbol, getTodayET } from "./vanna_analyzer.js";
-import { runScreenerCollection, fetchScreenerSymbols } from "./screener-engine.js";
+import { runScreenerCollection, fetchScreenerSymbols, analyzeSymbol } from "./screener-engine.js";
 
 const TWELVE_KEY = process.env.TWELVE_KEY || process.env.TWELVE_KEY_SPY || "";
 
@@ -627,6 +627,95 @@ runCollect(symbols, date).catch(e => console.error('[collect-screener] error:', 
 
 return;
 
+}
+
+// ── GET /analyze-symbol ───────────────────────────────────────────
+// 일회성 실시간 조회 — D1 저장 없이 결과만 반환
+// structure.js에서 저장되지 않은 종목 조회 시 사용
+if (req.method === "GET" && req.url.startsWith("/analyze-symbol")) {
+  const urlObj = new URL(req.url, `http://localhost`);
+  const symbol = urlObj.searchParams.get("symbol")?.toUpperCase();
+
+  if (!symbol) {
+    sendJSON(res, 400, { error: "symbol 파라미터 필요" });
+    return;
+  }
+
+  try {
+    sendJSON(res, 200, { ok: true, symbol, status: "collecting" });
+
+    // 이미 응답 전송 후 계산 불가 — 동기식으로 처리
+  } catch (err) {
+    sendJSON(res, 500, { ok: false, error: err.message });
+    return;
+  }
+}
+
+// ── POST /analyze-symbol ──────────────────────────────────────────
+// 일회성 실시간 조회 — collectSymbol + analyzeSymbol 동시 실행
+if (req.method === "POST" && req.url === "/analyze-symbol") {
+  const auth = req.headers["x-cron-secret"];
+  if (CRON_SECRET && auth !== CRON_SECRET) {
+    sendJSON(res, 401, { error: "Unauthorized" });
+    return;
+  }
+
+  let body = {};
+  try {
+    const raw = await new Promise((resolve, reject) => {
+      let d = '';
+      req.on('data', c => d += c);
+      req.on('end', () => resolve(d));
+      req.on('error', reject);
+    });
+    body = JSON.parse(raw || '{}');
+  } catch { body = {}; }
+
+  const symbol = body.symbol?.toUpperCase();
+  if (!symbol) {
+    sendJSON(res, 400, { error: "symbol 필요" });
+    return;
+  }
+
+  try {
+    const date = getTodayET();
+
+    // collectSymbol: 만기별 DEX/GEX/Vanna/Charm + 스트라이크별 데이터
+    // analyzeSymbol: Net GEX / 플립존 / ATM IV (screener 카드용)
+    const [collectResult, analyzeResult] = await Promise.allSettled([
+      collectSymbol(symbol, date),
+      analyzeSymbol(symbol),
+    ]);
+
+    const collected = collectResult.status === 'fulfilled' ? collectResult.value : null;
+    const analyzed  = analyzeResult.status  === 'fulfilled' ? analyzeResult.value  : null;
+
+    if (!collected && !analyzed) {
+      sendJSON(res, 404, { ok: false, error: `${symbol} 데이터를 가져올 수 없습니다` });
+      return;
+    }
+
+    sendJSON(res, 200, {
+      ok: true,
+      symbol,
+      date,
+      // screener 카드용
+      spot_price:   analyzed?.spot_price   ?? collected?.spot ?? null,
+      net_gex:      analyzed?.net_gex      ?? null,
+      flip_strike:  analyzed?.flip_strike  ?? null,
+      distance_pct: analyzed?.distance_pct ?? null,
+      atm_iv:       analyzed?.atm_iv       ?? null,
+      // structure 탭용 (히트맵/텀스트럭처)
+      rows:        collected?.rows        ?? [],
+      strikeRows:  collected?.strikeRows  ?? [],
+    });
+
+  } catch (err) {
+    console.error(`[analyze-symbol] ${symbol} 오류:`, err.message);
+    sendJSON(res, 500, { ok: false, error: err.message });
+  }
+
+  return;
 }
 
 res.writeHead(404);
