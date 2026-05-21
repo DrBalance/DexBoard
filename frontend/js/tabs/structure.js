@@ -4,7 +4,7 @@
 // ============================================
 
 import { state } from '../state.js';
-import { CF_API } from '../config.js';
+import { CF_API, RAILWAY_URL, CRON_SECRET } from '../config.js';
 import { fmt } from '../fmt.js';
 import {
   isMonthlyExpiry,
@@ -254,7 +254,7 @@ async function loadStructure(symbol) {
 
   try {
     const [screenerRes, flowRes] = await Promise.all([
-      fetch(`${CF_API}/api/screener`),
+      fetch(`${CF_API}/api/screener/latest`),
       fetch(`${CF_API}/api/structure/${symbol}`),
     ]);
 
@@ -271,7 +271,7 @@ async function loadStructure(symbol) {
     const context = flowData?.context ?? null;
 
     if (!scoreRow && !monthly.length) {
-      showState('empty', `${symbol} 데이터가 없습니다. 스크리너 실행 후 조회하세요.`);
+      showOneTimePrompt(symbol);
       return;
     }
 
@@ -285,8 +285,129 @@ async function loadStructure(symbol) {
 }
 
 // ============================================
-// 렌더링
+// 일회성 조회 프롬프트
 // ============================================
+function showOneTimePrompt(symbol) {
+  document.getElementById('struct-content').style.display = 'none';
+  const el = document.getElementById('struct-state');
+  el.style.display = 'flex';
+  el.innerHTML = `
+    <div style="
+      display:flex;flex-direction:column;align-items:center;gap:16px;
+      padding:32px;max-width:420px;text-align:center;
+    ">
+      <div style="font-size:32px">🔍</div>
+      <div style="font-size:16px;font-weight:600;color:var(--color-text-primary)">
+        ${symbol} 저장된 데이터가 없습니다
+      </div>
+      <div style="font-size:13px;color:var(--color-text-secondary);line-height:1.6">
+        지금 바로 CBOE에서 실시간 데이터를 조회할 수 있습니다.<br>
+        지속적인 모니터링을 원하시면 스크리너에 추가하세요.
+      </div>
+      <label style="
+        display:flex;align-items:center;gap:8px;
+        font-size:13px;color:var(--color-text-secondary);
+        cursor:pointer;padding:8px 12px;
+        border:1px solid var(--color-border-tertiary);border-radius:8px;
+      ">
+        <input type="checkbox" id="st-add-to-screener" style="width:16px;height:16px;cursor:pointer">
+        스크리너에 추가 (CHECK 그룹)
+      </label>
+      <button id="st-onetime-btn" style="
+        padding:10px 28px;border-radius:8px;border:none;cursor:pointer;
+        background:var(--color-primary,#3b82f6);color:#fff;
+        font-size:14px;font-weight:600;
+      ">지금 조회</button>
+      <div id="st-onetime-msg" style="font-size:12px;color:var(--color-text-secondary)"></div>
+    </div>
+  `;
+
+  document.getElementById('st-onetime-btn').addEventListener('click', () => {
+    loadOneTime(symbol);
+  });
+}
+
+async function loadOneTime(symbol) {
+  const btn     = document.getElementById('st-onetime-btn');
+  const msg     = document.getElementById('st-onetime-msg');
+  const addChk  = document.getElementById('st-add-to-screener');
+  const addToScreener = addChk?.checked ?? false;
+
+  if (btn) { btn.disabled = true; btn.textContent = '조회 중...'; }
+  if (msg) msg.textContent = 'CBOE에서 데이터 수집 중... (약 5~10초 소요)';
+
+  try {
+    const res  = await fetch(`${RAILWAY_URL}/analyze-symbol`, {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'x-cron-secret': CRON_SECRET,
+      },
+      body: JSON.stringify({ symbol }),
+      signal: AbortSignal.timeout(30000),
+    });
+
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+
+    // 스크리너 추가 요청
+    if (addToScreener) {
+      try {
+        await fetch(`${CF_API}/api/symbols/add`, {
+          method:  'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'x-cron-secret': CRON_SECRET,
+          },
+          body: JSON.stringify({ symbol, group: 'CHECK' }),
+        });
+      } catch (e) {
+        console.warn('[structure] 스크리너 추가 실패:', e.message);
+      }
+    }
+
+    // 결과로 페이지 구성
+    // scoreRow 형태로 변환
+    const scoreRow = {
+      symbol,
+      name:        data.symbol,
+      spot_price:  data.spot_price,
+      net_gex:     data.net_gex,
+      flip_strike: data.flip_strike,
+      distance_pct:data.distance_pct,
+      atm_iv:      data.atm_iv,
+      date:        data.date,
+    };
+
+    currentData = { symbol, scoreRow, monthly: data.rows ?? [], weekly: null, context: null };
+    renderContent(currentData);
+
+    // 스트라이크 데이터 → 히트맵
+    if (data.strikeRows?.length) {
+      const strikesExpirations = {};
+      data.strikeRows.forEach(s => {
+        if (!strikesExpirations[s.expiry_date]) {
+          strikesExpirations[s.expiry_date] = { strikes: [], flip_strike: null };
+        }
+        strikesExpirations[s.expiry_date].strikes.push({
+          strike: s.strike,
+          dex:    s.dex    ?? 0,
+          gex:    s.gex    ?? 0,
+          vanna:  s.vanna  ?? 0,
+          charm:  s.charm  ?? 0,
+          callOI: s.call_oi ?? 0,
+          putOI:  s.put_oi  ?? 0,
+        });
+      });
+      _stRenderHeatmapSection(strikesExpirations, data.spot_price, symbol);
+    }
+
+  } catch (err) {
+    console.error('[structure] 일회성 조회 실패:', err);
+    if (btn)  { btn.disabled = false; btn.textContent = '다시 시도'; }
+    if (msg)  msg.textContent = `조회 실패: ${err.message}`;
+  }
+}
 function renderContent({ symbol, scoreRow, monthly, weekly, context }) {
   document.getElementById('struct-state').style.display   = 'none';
   document.getElementById('struct-content').style.display = 'block';
@@ -392,7 +513,7 @@ async function loadAndRenderCharts(symbol, scoreRow) {
       return;
     }
 
-    const spot = scoreRow?.close ?? null;
+    const spot = scoreRow?.spot_price ?? null;
 
     // options-strikes → expirations 객체 변환 (히트맵/EM용)
     let strikesExpirations = {};
@@ -883,7 +1004,7 @@ function renderExpiryCardsMonthlyFocus(rows, scoreRow) {
   const el = document.getElementById('struct-expiry-cards');
   if (!el) return;
 
-  const spot = scoreRow?.close ?? null;
+  const spot = scoreRow?.spot_price ?? null;
   const sorted = [...rows].sort((a, b) => a.dte - b.dte);
 
   if (!sorted.length) {
