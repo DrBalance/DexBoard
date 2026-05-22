@@ -644,6 +644,25 @@ export default {
       }
     }
 
+    // ── POST /api/watchlist/demote ──────────────────────────────
+    // 관심종목 → 후보로 되돌리기 (is_watchlist = 0)
+    if (request.method === "POST" && path === "/api/watchlist/demote") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const { ticker } = await request.json();
+        if (!ticker) return json({ error: "ticker 필요" }, 400, corsHeaders);
+        await env.DB.prepare(`
+          UPDATE watchlist SET is_watchlist = 0 WHERE ticker = ?
+        `).bind(ticker.toUpperCase()).run();
+        return json({ ok: true, ticker: ticker.toUpperCase() }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
     // ── DELETE /api/watchlist/:ticker ───────────────────────────
     // 후보 삭제 (완전 제거)
     const watchlistDelMatch = path.match(/^\/api\/watchlist\/([A-Z0-9.\-]+)$/i);
