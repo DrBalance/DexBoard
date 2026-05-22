@@ -7,7 +7,7 @@
 
 import http from "http";
 import { calculateAndStore, collectSymbol, getTodayET } from "./vanna_analyzer.js";
-import { runScreenerCollection, fetchScreenerSymbols, analyzeSymbol } from "./screener-engine.js";
+import { runScreenerCollection, fetchScreenerSymbols, analyzeSymbol, runWatchlistScan } from "./screener-engine.js";
 
 const TWELVE_KEY = process.env.TWELVE_KEY || process.env.TWELVE_KEY_SPY || "";
 
@@ -345,6 +345,16 @@ lastRun:   null,   // { date, ok, count, errors, ts }
 };
 
 // ─────────────────────────────────────────────────────────────────
+// watchlist 스캔 상태 (메모리 내 — Railway 재시작 시 초기화)
+// ─────────────────────────────────────────────────────────────────
+let watchlistScanState = {
+  running:   false,
+  startedAt: null,
+  progress:  null,   // { done, total, promoted, errors }
+  lastRun:   null,   // { date, ok, scanned, promoted, errors, ts }
+};
+
+// ─────────────────────────────────────────────────────────────────
 // HTTP 서버
 // ─────────────────────────────────────────────────────────────────
 const corsHeaders = {
@@ -565,6 +575,95 @@ try {
 }
 
 // ── POST /rescore (deprecated — screener v3에서 제거됨) ─────────
+
+// ── GET /watchlist-scan-status ────────────────────────────────────
+if (req.method === "GET" && req.url === "/watchlist-scan-status") {
+  return sendJSON(res, 200, {
+    running:  watchlistScanState.running,
+    progress: watchlistScanState.progress,
+    last_run: watchlistScanState.lastRun,
+  });
+}
+
+// ── POST /scan-watchlist ─────────────────────────────────────────
+// watchlist.is_watchlist=FALSE 후보 스캔 → Call Wall 통과 시 승격
+if (req.method === "POST" && req.url === "/scan-watchlist") {
+  const auth = req.headers["x-cron-secret"];
+  if (CRON_SECRET && auth !== CRON_SECRET) {
+    res.writeHead(401);
+    return res.end("Unauthorized");
+  }
+
+  if (watchlistScanState.running) {
+    return sendJSON(res, 409, {
+      ok:    false,
+      error: "watchlist 스캔이 이미 진행 중입니다.",
+      progress: watchlistScanState.progress,
+    });
+  }
+
+  // 즉시 202 응답 후 백그라운드 실행
+  watchlistScanState = {
+    running:   true,
+    startedAt: new Date().toISOString(),
+    progress:  { done: 0, total: 0, promoted: 0, errors: 0 },
+    lastRun:   watchlistScanState.lastRun,
+  };
+
+  sendJSON(res, 202, {
+    ok:         true,
+    accepted:   true,
+    message:    "watchlist 스캔 시작. /watchlist-scan-status 로 진행상황 확인.",
+    started_at: watchlistScanState.startedAt,
+  });
+
+  // 백그라운드 스캔 실행
+  (async () => {
+    try {
+      const result = await runWatchlistScan(
+        CF_WORKER_URL,
+        CRON_SECRET,
+        ({ done, total, promoted, errors }) => {
+          watchlistScanState.progress = { done, total, promoted, errors };
+        }
+      );
+
+      watchlistScanState = {
+        running:   false,
+        startedAt: null,
+        progress:  null,
+        lastRun: {
+          date:     getTodayET(),
+          ok:       result.ok,
+          scanned:  result.scanned,
+          promoted: result.promoted,
+          errors:   result.errors,
+          promoted_list: result.promotedList?.slice(0, 20) ?? [],
+          ts:       new Date().toISOString(),
+        },
+      };
+
+      console.log(
+        `[watchlist scan] 완료 — 스캔 ${result.scanned}개, 승격 ${result.promoted}개, 오류 ${result.errors}개`
+      );
+    } catch (err) {
+      console.error("[watchlist scan] 치명적 오류:", err.message);
+      watchlistScanState = {
+        running:   false,
+        startedAt: null,
+        progress:  null,
+        lastRun: {
+          date:  getTodayET(),
+          ok:    false,
+          error: err.message,
+          ts:    new Date().toISOString(),
+        },
+      };
+    }
+  })();
+
+  return;
+}
 
 // ── POST /collect-screener ───────────────────────────────────────
 // body: { symbols: [{symbol, name, type, sector, sector_etf}], force?: boolean }
