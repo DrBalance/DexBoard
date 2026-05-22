@@ -197,6 +197,8 @@ input[type=color]{width:32px;height:28px;border:1px solid var(--border);border-r
   <div class="auth-card">
     <div class="auth-title">🔐 관리자 인증</div>
     <div class="auth-sub">설정 페이지</div>
+    <input type="text" class="auth-input" id="railway-input" placeholder="Railway URL (https://...)"
+      onkeydown="if(event.key==='Enter')doAuth()">
     <input type="password" class="auth-input" id="secret-input" placeholder="Secret 입력"
       onkeydown="if(event.key==='Enter')doAuth()">
     <button class="auth-btn" onclick="doAuth()">로그인</button>
@@ -447,6 +449,7 @@ input[type=color]{width:32px;height:28px;border:1px solid var(--border);border-r
 // ════════════════════════════════════════════
 const API = '';  // 같은 도메인
 let SECRET = '';
+let RAILWAY_URL = '';
 
 // ── API 호출
 async function api(method, path, body) {
@@ -462,13 +465,28 @@ async function api(method, path, body) {
   return res.json();
 }
 
+// ── Railway 직접 호출
+async function railwayFetch(method, path, body) {
+  const opts = {
+    method,
+    headers: {
+      'Content-Type': 'application/json',
+      'x-cron-secret': SECRET,
+    },
+  };
+  if (body) opts.body = JSON.stringify(body);
+  return fetch(RAILWAY_URL + path, opts);
+}
+
 // ════════════════════════════════════════════
 // 인증
 // ════════════════════════════════════════════
 async function doAuth() {
-  const val = document.getElementById('secret-input').value.trim();
+  const val     = document.getElementById('secret-input').value.trim();
+  const railway = document.getElementById('railway-input').value.trim();
   if (!val) return;
-  SECRET = val;
+  SECRET      = val;
+  RAILWAY_URL = railway.replace(/\/$/, '');  // 끝 슬래시 제거
   const d = await api('GET', '/api/admin/stats');
   if (d.error) {
     document.getElementById('auth-error').textContent = '❌ 인증 실패';
@@ -1073,11 +1091,11 @@ function fmtMarketCap(v) {
 
 async function loadWatchlistScanStatus() {
   try {
-    const res  = await fetch('/watchlist-scan-status');
+    const res  = await railwayFetch('GET', '/watchlist-scan-status');
     const data = await res.json();
     updateWatchlistScanUI(data);
   } catch (err) {
-    document.getElementById('wl-status-msg').textContent = 'Railway 연결 실패';
+    document.getElementById('wl-status-msg').textContent = 'Railway 연결 실패: ' + err.message;
   }
 }
 
@@ -1107,7 +1125,7 @@ function updateWatchlistScanUI(data) {
     // 5초마다 폴링
     if (!wlPollTimer) {
       wlPollTimer = setInterval(async () => {
-        const r = await fetch('/watchlist-scan-status').then(x => x.json()).catch(() => null);
+        const r = await railwayFetch('GET', '/watchlist-scan-status').then(x => x.json()).catch(() => null);
         if (!r) return;
         updateWatchlistScanUI(r);
         if (!r.running) {
@@ -1167,10 +1185,7 @@ async function startWatchlistScan() {
   msg.textContent = '';
 
   try {
-    const res  = await fetch('/scan-watchlist', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json', 'x-cron-secret': SECRET },
-    });
+    const res  = await railwayFetch('POST', '/scan-watchlist');
     const data = await res.json();
 
     if (res.status === 202) {
@@ -1183,7 +1198,7 @@ async function startWatchlistScan() {
       // 폴링 시작
       if (!wlPollTimer) {
         wlPollTimer = setInterval(async () => {
-          const r = await fetch('/watchlist-scan-status').then(x => x.json()).catch(() => null);
+          const r = await railwayFetch('GET', '/watchlist-scan-status').then(x => x.json()).catch(() => null);
           if (!r) return;
           updateWatchlistScanUI(r);
           if (!r.running) {
@@ -1212,7 +1227,7 @@ async function startWatchlistScan() {
 
 async function loadWatchlistActive() {
   try {
-    const res  = await fetch('/api/watchlist', { headers: { 'x-cron-secret': SECRET } });
+    const res  = await fetch('/api/watchlist', { headers: { 'x-admin-secret': SECRET } });
     const data = await res.json();
     const rows = (data.watchlist ?? []).filter(r => r.is_watchlist === 1);
 
@@ -1246,7 +1261,7 @@ async function loadWatchlistActive() {
 
 async function loadWatchlistCandidates() {
   try {
-    const res  = await fetch('/api/watchlist/candidates', { headers: { 'x-cron-secret': SECRET } });
+    const res  = await fetch('/api/watchlist/candidates', { headers: { 'x-admin-secret': SECRET } });
     const data = await res.json();
     const rows = data.candidates ?? [];
 
@@ -1280,14 +1295,14 @@ async function demoteWatchlist(ticker) {
   try {
     await fetch('/api/watchlist/scan-result', {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json', 'x-cron-secret': SECRET },
+      headers: { 'Content-Type': 'application/json', 'x-admin-secret': SECRET },
       body:    JSON.stringify({ ticker, last_scan_date: null, promote: false }),
     });
     // is_watchlist = 0으로 되돌리기 위해 직접 쿼리 — worker에 별도 라우트 필요
     // 임시: DELETE 후 재삽입 방식 대신 worker에 demote 라우트 추가 권장
     await fetch(`/api/watchlist/demote`, {
       method:  'POST',
-      headers: { 'Content-Type': 'application/json', 'x-cron-secret': SECRET },
+      headers: { 'Content-Type': 'application/json', 'x-admin-secret': SECRET },
       body:    JSON.stringify({ ticker }),
     });
     loadWatchlistActive();
