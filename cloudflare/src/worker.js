@@ -566,8 +566,7 @@ export default {
     // ── GET /api/watchlist ──────────────────────────────────────
     // 전체 watchlist 조회
     if (request.method === "GET" && path === "/api/watchlist") {
-      const secret = request.headers.get("x-cron-secret");
-      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+      if (!checkAuth(request, env)) {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
       const rows = await env.DB.prepare(`
@@ -581,8 +580,7 @@ export default {
     // ── GET /api/watchlist/candidates ──────────────────────────
     // is_watchlist = FALSE (스캔 대상 후보)
     if (request.method === "GET" && path === "/api/watchlist/candidates") {
-      const secret = request.headers.get("x-cron-secret");
-      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+      if (!checkAuth(request, env)) {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
       const rows = await env.DB.prepare(`
@@ -597,8 +595,7 @@ export default {
     // ── POST /api/watchlist ─────────────────────────────────────
     // 후보 수동 추가 (is_watchlist = 0으로 시작)
     if (request.method === "POST" && path === "/api/watchlist") {
-      const secret = request.headers.get("x-cron-secret");
-      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+      if (!checkAuth(request, env)) {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
       try {
@@ -617,8 +614,7 @@ export default {
     // ── POST /api/watchlist/scan-result ────────────────────────
     // 스캔 결과 저장: last_scan_date 갱신, promote=true 시 is_watchlist=1
     if (request.method === "POST" && path === "/api/watchlist/scan-result") {
-      const secret = request.headers.get("x-cron-secret");
-      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+      if (!checkAuth(request, env)) {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
       try {
@@ -647,8 +643,7 @@ export default {
     // ── POST /api/watchlist/demote ──────────────────────────────
     // 관심종목 → 후보로 되돌리기 (is_watchlist = 0)
     if (request.method === "POST" && path === "/api/watchlist/demote") {
-      const secret = request.headers.get("x-cron-secret");
-      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+      if (!checkAuth(request, env)) {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
       try {
