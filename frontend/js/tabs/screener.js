@@ -1,6 +1,12 @@
 // ============================================
-// js/tabs/screener.js — Screener 탭 v3
-// GEX 추세 + 플립존 근접도 기반 스크리너
+// js/tabs/screener.js — Screener 탭 v4
+//
+// 변경사항 (v3 대비):
+//   - SPY 50 그룹 구분 제거
+//   - 소형 라인차트(스파크라인) 제거
+//   - watchlist 기반 종목 관리
+//   - 만기별 rows를 종목 단위로 그룹핑하여 표시
+//   - Call Wall 정보 (target_strike / concentration_count / distance_pct) 표시
 // ============================================
 
 import { state } from '../state.js';
@@ -10,9 +16,8 @@ import { drillTo } from './structure.js';
 import { goToTab } from '../tabs.js';
 
 // ── 내부 상태
-let allResults     = [];   // 오늘 스냅샷
-let historyCache   = {};   // { symbol: [...90일 rows] }
-let sortCol        = 'abs_gex';
+let allSymbols     = [];   // 종목 단위로 집계된 데이터
+let sortCol        = 'concentration_count';
 let sortDir        = 'desc';
 let isLoading      = false;
 let statusPollTimer = null;
@@ -86,10 +91,10 @@ function renderShell() {
     <div class="screener-controls">
       <div class="sc-filter-pills" id="sc-filter-pills">
         <button class="pill active" data-f="all">전체</button>
+        <button class="pill" data-f="callwall">Call Wall (4+)</button>
         <button class="pill" data-f="above">플립존 위</button>
         <button class="pill" data-f="below">플립존 아래</button>
         <button class="pill" data-f="near">근접 (±3%)</button>
-        <button class="pill" data-f="manual">수동 추가</button>
       </div>
       <button class="screener-run-btn" id="sc-refresh-btn">↻ 새로고침</button>
     </div>
@@ -107,9 +112,9 @@ function renderShell() {
   <!-- ── 결과 테이블 ── -->
   <div id="sc-content" class="sc-content" style="display:none">
     <div class="sc-legend">
-      <span class="legend-item"><span class="legend-dot green"></span> 플립존 위: 딜러 <span class="green">롱감마</span> (상방 지지)</span>
-      <span class="legend-item"><span class="legend-dot red"></span> 플립존 아래: 딜러 <span class="red">숏감마</span> (변동성 증폭)</span>
-      <span class="legend-item"><span class="legend-dot amber"></span> GEX 급증: 헤징 압력 축적 중</span>
+      <span class="legend-item"><span class="legend-dot green"></span> 플립존 위: 딜러 <span class="green">롱감마</span></span>
+      <span class="legend-item"><span class="legend-dot red"></span> 플립존 아래: 딜러 <span class="red">숏감마</span></span>
+      <span class="legend-item"><span class="legend-dot amber"></span> Call Wall: 동일 스트라이크 콜 DEX 집중</span>
     </div>
 
     <div class="sc-table-wrap"></div>
@@ -251,6 +256,8 @@ async function startCollection(force = false) {
 
   try {
     setCollectMsg('심볼 목록 조회 중...', 'running');
+
+    // watchlist에서 is_watchlist=TRUE 종목만 가져옴
     const symRes  = await fetch(`${CF_API}/api/screener/symbols`, {
       headers: { 'x-cron-secret': CRON_SECRET },
     });
@@ -258,7 +265,7 @@ async function startCollection(force = false) {
     const symbols = (symData.symbols ?? []).map(s => s.symbol ?? s);
 
     if (!symbols.length) {
-      setCollectMsg('수집 대상이 없습니다. 설정에서 심볼을 추가해주세요.', 'error');
+      setCollectMsg('수집 대상이 없습니다. watchlist에 종목을 추가해주세요.', 'error');
       if (btn) { btn.disabled = false; btn.textContent = force ? '↻ 강제 재수집' : '▶ 지금 수집'; }
       return;
     }
@@ -318,39 +325,28 @@ async function loadScreener() {
   showState('loading', '스크리너 데이터를 불러오는 중...');
 
   try {
-    const [snapRes, histRes] = await Promise.all([
-      fetch(`${CF_API}/api/screener/latest`),
-      fetch(`${CF_API}/api/screener/history`),
-    ]);
+    const res  = await fetch(`${CF_API}/api/screener/latest`);
+    const rows = await res.json();
 
-    const snapData = await snapRes.json();
-    const histData = await histRes.json();
-
-    if (!Array.isArray(snapData) || !snapData.length) {
+    if (!Array.isArray(rows) || !rows.length) {
       showState('empty', '스크리너 데이터가 없습니다. 위의 [지금 수집] 버튼을 눌러 수집을 시작하세요.');
       return;
     }
 
-    // 히스토리 캐시 구축
-    historyCache = {};
-    if (Array.isArray(histData)) {
-      for (const row of histData) {
-        if (!historyCache[row.symbol]) historyCache[row.symbol] = [];
-        historyCache[row.symbol].push(row);
-      }
-      for (const sym of Object.keys(historyCache)) {
-        historyCache[sym].sort((a, b) => a.date.localeCompare(b.date));
-      }
+    // 만기별 rows를 종목 단위로 그룹핑
+    allSymbols = groupBySymbol(rows);
+
+    // 기준 시각 표시 (가장 최근 updated_at)
+    const latestUpdated = rows.reduce((latest, r) =>
+      r.updated_at > latest ? r.updated_at : latest, ''
+    );
+    if (latestUpdated) {
+      const d = new Date(latestUpdated);
+      document.getElementById('sc-date').textContent =
+        `기준: ${d.toLocaleDateString('ko-KR')} ${d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' })}`;
     }
 
-    allResults = snapData.map(r => enrichWithChanges(r));
-
-    const latestDate = snapData[0]?.date ?? null;
-    if (latestDate) {
-      document.getElementById('sc-date').textContent = `기준일: ${latestDate}`;
-    }
-
-    renderSummary(allResults);
+    renderSummary(allSymbols);
     showContent();
     renderTable(getActiveFilter());
 
@@ -362,40 +358,83 @@ async function loadScreener() {
   }
 }
 
-// ── 변화량 + 방향 계산
-function enrichWithChanges(row) {
-  const hist     = historyCache[row.symbol] ?? [];
-  const todayGex = row.net_gex ?? 0;
+// ============================================
+// 만기별 rows → 종목 단위 집계
+// ============================================
+function groupBySymbol(rows) {
+  const map = {};
 
-  const getGexAt = (daysAgo) => {
-    if (hist.length <= daysAgo) return null;
-    return hist[hist.length - 1 - daysAgo]?.net_gex ?? null;
-  };
+  for (const r of rows) {
+    if (!map[r.symbol]) {
+      map[r.symbol] = {
+        symbol:              r.symbol,
+        spot_price:          r.spot_price,
+        // Call Wall (종목 레벨 — 모든 만기 행에 동일값)
+        target_strike:       r.target_strike,
+        concentration_count: r.concentration_count ?? 0,
+        distance_pct:        r.distance_pct,
+        updated_at:          r.updated_at,
+        expiries:            [],   // 만기별 상세
+        // 집계용 임시
+        _gexSum:   0,
+        _dexSum:   0,
+        _flipList: [],
+        _atmIvList: [],
+      };
+    }
 
-  const gex1d  = getGexAt(1);
-  const gex5d  = getGexAt(5);
-  const gex10d = getGexAt(10);
+    const sym = map[r.symbol];
+    sym.expiries.push({
+      expiry_date:  r.expiry_date,
+      dte:          r.dte,
+      expiry_type:  r.expiry_type,
+      net_gex:      r.net_gex,
+      flip_strike:  r.flip_strike,
+      atm_iv:       r.atm_iv,
+      call_oi:      r.call_oi,
+      put_oi:       r.put_oi,
+      pcr_oi:       r.pcr_oi,
+      dex:          r.dex,
+    });
 
-  // 방향: 최근 3일 평균 대비 오늘
-  let direction = 'flat';
-  if (hist.length >= 3) {
-    const recent3 = hist.slice(-3).map(h => h.net_gex ?? 0);
-    const avg3    = recent3.reduce((a, b) => a + b, 0) / 3;
-    const diff    = todayGex - avg3;
-    const threshold = Math.abs(avg3) * 0.05;
-    if      (diff >  threshold) direction = 'up';
-    else if (diff < -threshold) direction = 'down';
+    sym._gexSum += r.net_gex ?? 0;
+    sym._dexSum += r.dex     ?? 0;
+    if (r.flip_strike) sym._flipList.push(r.flip_strike);
+    if (r.atm_iv)      sym._atmIvList.push(r.atm_iv);
   }
 
-  return {
-    ...row,
-    abs_gex:  Math.abs(todayGex),
-    gex_1d:   gex1d  != null ? todayGex - gex1d  : null,
-    gex_5d:   gex5d  != null ? todayGex - gex5d  : null,
-    gex_10d:  gex10d != null ? todayGex - gex10d : null,
-    direction,
-    history:  hist.map(h => h.net_gex),
-  };
+  return Object.values(map).map(sym => {
+    // 전체 만기 합산 GEX
+    const totalGex = sym._gexSum;
+
+    // 가장 가까운 만기 flip_strike (최단 DTE 기준)
+    const nearestExpiry = sym.expiries.reduce((a, b) => (a.dte ?? 999) < (b.dte ?? 999) ? a : b, sym.expiries[0]);
+    const flipStrike    = nearestExpiry?.flip_strike ?? null;
+
+    // ATM IV 평균
+    const atmIv = sym._atmIvList.length
+      ? sym._atmIvList.reduce((a, b) => a + b, 0) / sym._atmIvList.length
+      : null;
+
+    // 현재가 vs 플립존 거리
+    const distPct = (sym.spot_price && flipStrike)
+      ? Math.round(((sym.spot_price - flipStrike) / flipStrike) * 10000) / 100
+      : null;
+
+    delete sym._gexSum;
+    delete sym._dexSum;
+    delete sym._flipList;
+    delete sym._atmIvList;
+
+    return {
+      ...sym,
+      total_gex:   totalGex,
+      abs_gex:     Math.abs(totalGex),
+      flip_strike: flipStrike,
+      dist_pct:    distPct,
+      atm_iv:      atmIv,
+    };
+  });
 }
 
 // ============================================
@@ -405,14 +444,17 @@ function renderSummary(data) {
   const el = document.getElementById('sc-summary');
   if (!el) return;
 
-  const above   = data.filter(r => (r.distance_pct ?? 0) > 0).length;
-  const below   = data.filter(r => (r.distance_pct ?? 0) < 0).length;
-  const near    = data.filter(r => Math.abs(r.distance_pct ?? 999) <= 3).length;
-  const gexUp   = data.filter(r => r.direction === 'up').length;
-  const gexDown = data.filter(r => r.direction === 'down').length;
-  const manual  = data.filter(r => r.groups?.split(',').some(g => g.trim() !== 'SPY50')).length;
+  const callWalls = data.filter(r => (r.concentration_count ?? 0) >= 4).length;
+  const above     = data.filter(r => (r.dist_pct ?? 0) > 0).length;
+  const below     = data.filter(r => (r.dist_pct ?? 0) < 0).length;
+  const near      = data.filter(r => Math.abs(r.dist_pct ?? 999) <= 3).length;
+  const posGex    = data.filter(r => (r.total_gex ?? 0) > 0).length;
 
   el.innerHTML = `
+    <div class="sc-sum-card">
+      <div class="sc-sum-num" style="color:#eab308">${callWalls}</div>
+      <div class="sc-sum-label">Call Wall 감지 (4+ 만기)</div>
+    </div>
     <div class="sc-sum-card">
       <div class="sc-sum-num green">${above}</div>
       <div class="sc-sum-label">플립존 위 (롱감마)</div>
@@ -426,35 +468,29 @@ function renderSummary(data) {
       <div class="sc-sum-label">플립존 근접 (±3%)</div>
     </div>
     <div class="sc-sum-card">
-      <div class="sc-sum-num green">${gexUp}</div>
-      <div class="sc-sum-label">GEX 축적 중</div>
-    </div>
-    <div class="sc-sum-card">
-      <div class="sc-sum-num red">${gexDown}</div>
-      <div class="sc-sum-label">GEX 해소 중</div>
+      <div class="sc-sum-num green">${posGex}</div>
+      <div class="sc-sum-label">Net GEX 양수</div>
     </div>
     <div class="sc-sum-card">
       <div class="sc-sum-num muted">${data.length}</div>
-      <div class="sc-sum-label">모니터링 종목 (수동 ${manual})</div>
+      <div class="sc-sum-label">모니터링 종목</div>
     </div>
   `;
 }
 
 // ============================================
-// 테이블 렌더 — 수동 추가 / SPY 50개 분리
+// 테이블 렌더
 // ============================================
 function renderTable(filter = 'all') {
   const content = document.getElementById('sc-content');
   if (!content) return;
 
-  let rows = [...allResults];
-  if (filter === 'above')  rows = rows.filter(r => (r.distance_pct ?? 0) > 0);
-  if (filter === 'below')  rows = rows.filter(r => (r.distance_pct ?? 0) < 0);
-  if (filter === 'near')   rows = rows.filter(r => Math.abs(r.distance_pct ?? 999) <= 3);
-  if (filter === 'manual') rows = rows.filter(r => r.groups?.split(',').some(g => g.trim() !== 'SPY50'));
+  let rows = [...allSymbols];
 
-  const manualRows = rows.filter(r => r.groups?.split(',').some(g => g.trim() !== 'SPY50'));
-  const spyRows    = rows.filter(r => r.groups?.includes('SPY50'));
+  if (filter === 'callwall') rows = rows.filter(r => (r.concentration_count ?? 0) >= 4);
+  if (filter === 'above')    rows = rows.filter(r => (r.dist_pct ?? 0) > 0);
+  if (filter === 'below')    rows = rows.filter(r => (r.dist_pct ?? 0) < 0);
+  if (filter === 'near')     rows = rows.filter(r => Math.abs(r.dist_pct ?? 999) <= 3);
 
   const sortFn = (a, b) => {
     const av  = a[sortCol] ?? -Infinity;
@@ -462,8 +498,7 @@ function renderTable(filter = 'all') {
     const cmp = typeof av === 'string' ? av.localeCompare(bv) : av - bv;
     return sortDir === 'asc' ? cmp : -cmp;
   };
-  manualRows.sort(sortFn);
-  spyRows.sort(sortFn);
+  rows.sort(sortFn);
 
   const thead = `
     <thead>
@@ -471,14 +506,13 @@ function renderTable(filter = 'all') {
         <th class="sc-th sortable" data-col="symbol">종목</th>
         <th class="sc-th sortable" data-col="spot_price">현재가</th>
         <th class="sc-th sortable" data-col="flip_strike">플립존</th>
-        <th class="sc-th sortable" data-col="distance_pct">거리</th>
-        <th class="sc-th sortable" data-col="net_gex">Net GEX</th>
-        <th class="sc-th" style="min-width:110px">GEX 추세</th>
-        <th class="sc-th sortable" data-col="gex_1d">1일 변화</th>
-        <th class="sc-th sortable" data-col="gex_5d">5일 변화</th>
-        <th class="sc-th sortable" data-col="gex_10d">10일 변화</th>
-        <th class="sc-th">방향</th>
+        <th class="sc-th sortable" data-col="dist_pct">플립존 거리</th>
+        <th class="sc-th sortable" data-col="total_gex">Net GEX</th>
         <th class="sc-th sortable" data-col="atm_iv">ATM IV</th>
+        <th class="sc-th sortable" data-col="concentration_count">Call Wall</th>
+        <th class="sc-th sortable" data-col="target_strike">집중 스트라이크</th>
+        <th class="sc-th sortable" data-col="distance_pct">현재가 거리</th>
+        <th class="sc-th">만기 수</th>
         <th class="sc-th">분석</th>
       </tr>
     </thead>`;
@@ -486,18 +520,9 @@ function renderTable(filter = 'all') {
   const tableWrap = content.querySelector('.sc-table-wrap');
   if (tableWrap) {
     tableWrap.innerHTML = `
-      ${manualRows.length ? `
-        <div class="sc-tbl-section-title">⭐ 수동 추가 종목 (${manualRows.length})</div>
-        <table class="sc-tbl sc-tbl-manual">
-          ${thead}
-          <tbody>${manualRows.map(buildRow).join('')}</tbody>
-        </table>
-        <div style="margin-top:24px"></div>
-      ` : ''}
-      <div class="sc-tbl-section-title">SPY 상위 50 종목 (${spyRows.length})</div>
-      <table class="sc-tbl sc-tbl-spy">
+      <table class="sc-tbl">
         ${thead}
-        <tbody>${spyRows.map(buildRow).join('')}</tbody>
+        <tbody>${rows.map(buildRow).join('')}</tbody>
       </table>
     `;
 
@@ -516,97 +541,80 @@ function renderTable(filter = 'all') {
     tableWrap.querySelectorAll('.sc-row').forEach(row => {
       row.addEventListener('click', () => drillToStructure(row.dataset.sym));
     });
+
+    updateSortIndicators();
   }
 
-  document.getElementById('sc-footer').textContent =
-    `수동 ${manualRows.length}개 · SPY ${spyRows.length}개 표시`;
+  document.getElementById('sc-footer').textContent = `${rows.length}개 종목 표시`;
 }
 
-// ── 행 렌더 (공통)
+// ── 행 렌더
 function buildRow(r) {
-  const dist = r.distance_pct;
-  const gex  = r.net_gex;
+  const spot      = r.spot_price;
+  const flip      = r.flip_strike;
+  const distPct   = r.dist_pct;
+  const totalGex  = r.total_gex;
+  const callCount = r.concentration_count ?? 0;
+  const targetSt  = r.target_strike;
+  const callDist  = r.distance_pct;   // Call Wall 스트라이크 vs 현재가
 
-  const isNear    = dist != null && Math.abs(dist) <= 3;
-  const distColor = dist == null ? 'muted' : dist > 0 ? 'green' : 'red';
-  const distStr   = dist != null
+  // 플립존 거리
+  const isNear     = distPct != null && Math.abs(distPct) <= 3;
+  const distColor  = distPct == null ? 'muted' : distPct > 0 ? 'green' : 'red';
+  const distStr    = distPct != null
     ? isNear
-      ? `<span style="color:#eab308">${dist > 0 ? '+' : ''}${dist.toFixed(1)}% ⚡</span>`
-      : `<span class="${distColor}">${dist > 0 ? '+' : ''}${dist.toFixed(1)}%</span>`
-    : '-';
-
-  const gexColor = gex == null ? 'muted' : gex > 0 ? 'green' : 'red';
-  const gexStr   = gex != null
-    ? `<span class="${gexColor}">${gex > 0 ? '+' : ''}${gex.toFixed(1)}K</span>`
+      ? `<span style="color:#eab308">${distPct > 0 ? '+' : ''}${distPct.toFixed(1)}% ⚡</span>`
+      : `<span class="${distColor}">${distPct > 0 ? '+' : ''}${distPct.toFixed(1)}%</span>`
     : '<span class="muted">-</span>';
 
-  const changeCell = (val) => {
-    if (val == null) return '<span class="muted">-</span>';
-    const c    = val > 0 ? 'green' : val < 0 ? 'red' : 'muted';
-    const sign = val > 0 ? '+' : '';
-    return `<span class="${c}">${sign}${val.toFixed(1)}K</span>`;
-  };
+  // Net GEX
+  const gexColor = totalGex == null ? 'muted' : totalGex > 0 ? 'green' : 'red';
+  const gexStr   = totalGex != null
+    ? `<span class="${gexColor}">${totalGex > 0 ? '+' : ''}${totalGex.toFixed(2)}</span>`
+    : '<span class="muted">-</span>';
 
-  const dirBadge = r.direction === 'up'
-    ? '<span class="sc-dir-badge up">↑ 축적</span>'
-    : r.direction === 'down'
-    ? '<span class="sc-dir-badge down">↓ 해소</span>'
-    : '<span class="sc-dir-badge flat">→ 횡보</span>';
+  // ATM IV
+  const ivStr = r.atm_iv != null
+    ? `${(r.atm_iv * 100).toFixed(1)}%`
+    : '<span class="muted">-</span>';
 
-  const manualTag = r.groups?.split(',').some(g => g.trim() !== 'SPY50') ? '<span class="sc-manual-tag">★</span>' : '';
-  const flipStr   = r.flip_strike ? `$${r.flip_strike.toFixed(0)}` : '-';
-  const ivStr     = r.atm_iv != null ? `${(r.atm_iv * 100).toFixed(1)}%` : '-';
+  // Call Wall 배지
+  const callWallBadge = callCount >= 4
+    ? `<span class="sc-callwall-badge" title="${callCount}개 만기 집중">⭐ ${callCount}</span>`
+    : `<span class="muted">${callCount}</span>`;
+
+  // Call Wall 스트라이크
+  const targetStr = targetSt != null
+    ? `$${targetSt.toFixed(0)}`
+    : '<span class="muted">-</span>';
+
+  // 현재가 vs Call Wall 거리
+  const callDistColor = callDist == null ? 'muted' : callDist > 0 ? 'green' : 'red';
+  const callDistStr   = callDist != null
+    ? `<span class="${callDistColor}">${callDist > 0 ? '+' : ''}${callDist.toFixed(1)}%</span>`
+    : '<span class="muted">-</span>';
+
+  const flipStr = flip ? `$${flip.toFixed(0)}` : '<span class="muted">-</span>';
 
   return `
-    <tr class="sc-row" data-sym="${r.symbol}">
+    <tr class="sc-row${callCount >= 4 ? ' sc-row-callwall' : ''}" data-sym="${r.symbol}">
       <td class="sc-td-sym">
-        <span class="sc-sym">${r.symbol}${manualTag}</span>
-        <span class="sc-name">${r.name ?? ''}</span>
+        <span class="sc-sym">${r.symbol}</span>
       </td>
-      <td class="sc-td-price">${r.spot_price ? '$' + r.spot_price.toFixed(2) : '-'}</td>
+      <td class="sc-td-price">${spot ? '$' + spot.toFixed(2) : '-'}</td>
       <td class="sc-td-price">${flipStr}</td>
       <td class="sc-td-dist">${distStr}</td>
       <td class="sc-td-gex">${gexStr}</td>
-      <td class="sc-td-spark">${buildSparkline(r.history ?? [], r.direction)}</td>
-      <td class="sc-td-chg">${changeCell(r.gex_1d)}</td>
-      <td class="sc-td-chg">${changeCell(r.gex_5d)}</td>
-      <td class="sc-td-chg">${changeCell(r.gex_10d)}</td>
-      <td class="sc-td-dir">${dirBadge}</td>
       <td class="sc-td-iv">${ivStr}</td>
+      <td class="sc-td-cw">${callWallBadge}</td>
+      <td class="sc-td-price">${targetStr}</td>
+      <td class="sc-td-dist">${callDistStr}</td>
+      <td class="sc-td-num">${r.expiries?.length ?? '-'}</td>
       <td>
         <button class="sc-drill-btn" data-sym="${r.symbol}" title="Structure 탭에서 분석">▶</button>
       </td>
     </tr>
   `;
-}
-
-
-
-// ============================================
-// 스파크라인 SVG
-// ============================================
-function buildSparkline(vals, direction) {
-  const clean = (vals ?? []).filter(v => v != null);
-  if (clean.length < 2) return '<span class="sc-spark-empty">-</span>';
-
-  const w   = 100, h = 28, pad = 3;
-  const min = Math.min(...clean);
-  const max = Math.max(...clean);
-  const rng = max - min || 1;
-
-  const pts = clean.map((v, i) => {
-    const x = pad + (i / (clean.length - 1)) * (w - pad * 2);
-    const y = h - pad - ((v - min) / rng) * (h - pad * 2);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(' ');
-
-  const color  = direction === 'up' ? '#22c55e' : direction === 'down' ? '#ef4444' : '#94a3b8';
-  const lastPt = pts.split(' ').pop().split(',');
-
-  return `<svg width="${w}" height="${h}" viewBox="0 0 ${w} ${h}" style="display:block;overflow:visible">
-    <polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
-    <circle cx="${lastPt[0]}" cy="${lastPt[1]}" r="2.5" fill="${color}"/>
-  </svg>`;
 }
 
 // ============================================
