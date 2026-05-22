@@ -1,16 +1,25 @@
 // ============================================
-// screener-engine.js — Railway 전용 스크리너 엔진 v3
+// screener-engine.js — Railway 전용 스크리너 엔진 v4
 //
 // 설계 원칙:
-//   - 먼슬리 옵션 체인만 대상 (기관 헤지 포지션 집중 구간)
-//   - Net GEX 계산 (딜러 헤징 압력 절대값)
-//   - 플립존 계산 (DEX 부호 전환점 = 딜러 행동 역전 수준)
-//   - ATM IV 계산 (옵션 비용 상태)
-//   - 일별 스냅샷 D1 저장 (90일 보관)
-//
-// 데이터 소스: CBOE (15분 지연)
-// 저장 테이블: screener_gex_daily
+//   - vanna_analyzer.js의 검증된 파이프라인 재사용
+//     (filterOptionsScreener → aggregateByExpiry → calcGreeks BS 재계산)
+//   - 2개월 내 전체 만기(weekly + monthly) 약 8개 대상
+//   - Call Wall 감지: 만기별 최대 콜 DEX 스트라이크가 동일 스트라이크에
+//     4개 이상 집중 → target_strike / concentration_count / distance_pct 저장
+//   - 저장 방식: DELETE + INSERT (종목당 최신 만기 8~9행만 유지)
+//   - PRIMARY KEY: (symbol, expiry_date)
+//   - watchlist 주 1회 스캔: is_watchlist=FALSE 후보 → Call Wall 통과 시 승격
+//     CBOE 요청 간격을 랜덤하게 분산하여 IP 제한 방지
 // ============================================
+
+import {
+  parseOption,
+  filterOptionsScreener,
+  aggregateByExpiry,
+  classifyExpiry,
+  calcGreeks,
+} from './vanna_analyzer.js';
 
 const CBOE_BASE  = 'https://cdn.cboe.com/api/global/delayed_quotes/options';
 const YAHOO_BASE = 'https://query1.finance.yahoo.com/v8/finance/chart';
@@ -18,328 +27,157 @@ const YAHOO_BASE = 'https://query1.finance.yahoo.com/v8/finance/chart';
 // ============================================
 // 유틸리티
 // ============================================
-function getToday() {
-  return new Date().toISOString().split('T')[0];
+function getTodayET() {
+  const nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const y = nowET.getFullYear();
+  const m = String(nowET.getMonth() + 1).padStart(2, '0');
+  const d = String(nowET.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
+// 기본 딜레이 + 랜덤 지터 (CBOE IP 제한 방지)
 function sleep(ms) {
   return new Promise(r => setTimeout(r, ms));
 }
 
-// ── 옵션 심볼 파싱 (vanna_analyzer.js 동일 로직)
-// "JNJ260522C00125000" → { expiry: "2026-05-22", type: "C", strike: 125, dte }
-function parseOption(optionStr) {
-  const match = optionStr.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
-  if (!match) return null;
-  const [, , dateStr, type, strikeStr] = match;
-  const yy     = dateStr.slice(0, 2);
-  const mm     = dateStr.slice(2, 4);
-  const dd     = dateStr.slice(4, 6);
-  const expiry = `20${yy}-${mm}-${dd}`;
-  const strike = parseInt(strikeStr, 10) / 1000;
-  const expiryDate = new Date(`${expiry}T16:00:00-05:00`);
-  const dte    = Math.round((expiryDate - new Date()) / 86_400_000);
-  return { expiry, type, strike, dte };
-}
-
-// ── 3번째 금요일 계산 (vanna_analyzer.js 동일 로직)
-function getThirdFriday(year, month) {
-  let count = 0;
-  for (let d = 1; d <= 31; d++) {
-    const date = new Date(year, month, d);
-    if (date.getMonth() !== month) break;
-    if (date.getDay() === 5) {
-      count++;
-      if (count === 3) {
-        const m  = String(date.getMonth() + 1).padStart(2, '0');
-        const dd = String(date.getDate()).padStart(2, '0');
-        return `${date.getFullYear()}-${m}-${dd}`;
-      }
-    }
-  }
-  return null;
-}
-
-// ── 먼슬리 판별 (options-charts.js classifyExpiry와 동일 로직)
-function isMonthly(expiryDate, allExpiries) {
-  const d   = new Date(expiryDate);
-  const dow = d.getDay();
-
-  // 월/화/수 → 먼슬리 아님
-  if (dow <= 3) return false;
-
-  // 목요일 → 다음날 금요일이 allExpiries에 있으면 위클리
-  if (dow === 4) {
-    const friday = new Date(d);
-    friday.setDate(d.getDate() + 1);
-    const m  = String(friday.getMonth() + 1).padStart(2, '0');
-    const dd = String(friday.getDate()).padStart(2, '0');
-    const fridayStr = `${friday.getFullYear()}-${m}-${dd}`;
-    if (allExpiries.includes(fridayStr)) return false;
-  }
-
-  // 금요일 or 당겨진 목요일 → 3번째 금요일과 비교
-  const thirdFriday = getThirdFriday(d.getFullYear(), d.getMonth());
-  if (expiryDate === thirdFriday) return true;
-
-  // 3번째 금요일이 휴장 → 목요일로 당겨진 경우
-  if (thirdFriday) {
-    const tf = new Date(thirdFriday);
-    tf.setDate(tf.getDate() - 1);
-    const m  = String(tf.getMonth() + 1).padStart(2, '0');
-    const dd = String(tf.getDate()).padStart(2, '0');
-    const thirdThursdayStr = `${tf.getFullYear()}-${m}-${dd}`;
-    if (expiryDate === thirdThursdayStr && !allExpiries.includes(thirdFriday)) return true;
-  }
-
-  return false;
-}
-
-// DTE 계산
-function calcDte(expiryStr) {
-  const expiry = new Date(expiryStr + 'T16:00:00-05:00');
-  return Math.round((expiry - new Date()) / 86400000);
+function jitteredDelay(baseMs, jitterMs = 500) {
+  return sleep(baseMs + Math.random() * jitterMs);
 }
 
 // ============================================
-// 현재가 조회 (Yahoo Finance)
+// CBOE 옵션 체인 fetch
 // ============================================
-export async function fetchSpotPrice(symbol) {
-  try {
-    const url = `${YAHOO_BASE}/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      signal:  AbortSignal.timeout(8000),
-    });
-    if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
-    const json  = await res.json();
-    const meta  = json?.chart?.result?.[0]?.meta;
-    const price = meta?.regularMarketPrice ?? meta?.previousClose ?? null;
-    if (!price) throw new Error('price not found');
-    return price;
-  } catch (err) {
-    console.warn(`[${symbol}] spot price 조회 실패:`, err.message);
-    return null;
-  }
+async function fetchCBOEChain(symbol) {
+  const url = `${CBOE_BASE}/${encodeURIComponent(symbol)}.json`;
+  const res = await fetch(url, {
+    headers: { 'User-Agent': 'Mozilla/5.0' },
+    signal:  AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error(`CBOE HTTP ${res.status} for ${symbol}`);
+  return res.json();
 }
 
 // ============================================
-// CBOE 옵션 체인 수집 (먼슬리만)
-// vanna_analyzer.js와 동일한 파싱 방식 사용
+// Call Wall 계산
+//
+// aggregateByExpiry 결과(rows[])에서:
+//   1. 만기별로 콜 DEX가 가장 큰 스트라이크 1개 추출
+//   2. 동일 스트라이크가 몇 개 만기에서 등장하는지 카운팅
+//   3. 최다 등장 스트라이크 + 카운트 반환
+//   4. concentration_count >= 4 이면 Call Wall로 판정
 // ============================================
-export async function collectMonthlyChain(symbol) {
-  try {
-    const url = `${CBOE_BASE}/${encodeURIComponent(symbol)}.json`;
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      signal:  AbortSignal.timeout(15000),
-    });
-    if (!res.ok) throw new Error(`CBOE HTTP ${res.status}`);
+function calcCallWall(rows, spot) {
+  if (!rows?.length || !spot) return { target_strike: null, concentration_count: 0, distance_pct: null };
 
-    const json = await res.json();
-    const data = json?.data;
-    if (!data) throw new Error('CBOE: data 없음');
+  // 만기별 최대 콜 DEX 스트라이크 추출
+  // rows[].dex 는 해당 만기 전체 합산값이고,
+  // 스트라이크별 콜 DEX는 _strikeRows에 있음
+  const peakStrikes = [];
 
-    const spot    = data.current_price ?? data.close ?? null;
-    const options = data.options ?? [];
+  for (const row of rows) {
+    const strikeRows = row._strikeRows;
+    if (!strikeRows?.length) continue;
 
-    if (!spot || !options.length) throw new Error('CBOE: spot or options 없음');
+    // 콜 DEX = delta * callOI * 100 / 1e6 (양수가 클수록 딜러 롱헤지 압력)
+    let maxDex  = -Infinity;
+    let maxStrike = null;
 
-    // ── 1단계: 전체 옵션에서 만기 날짜만 추출 → 전체 만기 목록 확보
-    // OI/DTE 필터 없이 순수하게 만기 목록만 수집
-    const allExpiries = [...new Set(
-      options
-        .map(o => parseOption(o.option)?.expiry)
-        .filter(Boolean)
-    )];
-
-    if (!allExpiries.length) {
-      console.warn(`[${symbol}] 옵션 만기 파싱 실패`);
-      return { spot, chain: [] };
-    }
-
-    // ── 2단계: 전체 만기 목록 기준으로 먼슬리 만기 확정
-    const monthlyExpiries = allExpiries.filter(e => isMonthly(e, allExpiries));
-
-    if (!monthlyExpiries.length) {
-      console.warn(`[${symbol}] 먼슬리 만기 없음 (전체 만기: ${allExpiries.sort().join(', ')})`);
-      return { spot, chain: [] };
-    }
-
-    console.log(`[${symbol}] 먼슬리 만기: ${monthlyExpiries.join(', ')}`);
-
-    // ── 3단계: 확정된 먼슬리 만기에 해당하는 옵션만 추출
-    // OI 필터 없음 — OI 0이어도 포함 (GEX 기여분이 0으로 자연스럽게 처리됨)
-    const monthlySet = new Set(monthlyExpiries);
-    const strikeMap  = {};
-
-    for (const o of options) {
-      const parsed = parseOption(o.option);
-      if (!parsed) continue;
-
-      const { expiry, type, strike, dte } = parsed;
-      if (!monthlySet.has(expiry)) continue;
-
-      const key = `${expiry}_${strike}`;
-      if (!strikeMap[key]) {
-        strikeMap[key] = {
-          strike, dte, expiry,
-          call_oi: 0, call_iv: 0, call_gamma: 0,
-          put_oi:  0, put_iv:  0, put_gamma:  0,
-        };
-      }
-
-      const s = strikeMap[key];
-
-      if (type === 'C') {
-        s.call_oi    += o.open_interest ?? 0;
-        s.call_iv     = o.iv    ?? 0;
-        s.call_gamma  = o.gamma ?? 0;
-      } else {
-        s.put_oi     += o.open_interest ?? 0;
-        s.put_iv      = o.iv    ?? 0;
-        s.put_gamma   = o.gamma ?? 0;
+    for (const s of strikeRows) {
+      const callDex = s.dex != null ? s.dex : 0;
+      if (callDex > maxDex) {
+        maxDex    = callDex;
+        maxStrike = s.strike;
       }
     }
 
-    const chain = Object.values(strikeMap);
-    return { spot, chain };
-
-  } catch (err) {
-    console.error(`[${symbol}] 체인 수집 실패:`, err.message);
-    return null;
-  }
-}
-
-// ============================================
-// Net GEX 계산
-// GEX = gamma × OI × spot² × 0.01 (1계약 = 100주)
-// Call GEX: 딜러 숏 콜 → 상승 시 매수 (양수)
-// Put GEX:  딜러 숏 풋 → 하락 시 매도 (음수)
-// ============================================
-export function calcNetGex(chain, spot) {
-  if (!chain?.length || !spot) return null;
-
-  let totalGex = 0;
-
-  for (const row of chain) {
-    const callGex = row.call_gamma * row.call_oi * spot * spot * 0.01;
-    const putGex  = row.put_gamma  * row.put_oi  * spot * spot * 0.01 * -1;
-    totalGex += callGex + putGex;
+    if (maxStrike !== null) peakStrikes.push(maxStrike);
   }
 
-  // $K 단위로 반환 (개별 종목 규모에 맞게)
-  return Math.round(totalGex / 100) / 10;  // → $K, 소수 1자리
-}
+  if (!peakStrikes.length) return { target_strike: null, concentration_count: 0, distance_pct: null };
 
-// ============================================
-// 플립존 계산 (DEX 부호 전환점)
-// 스트라이크별 누적 GEX가 0을 교차하는 지점
-// ============================================
-export function calcFlipStrike(chain, spot) {
-  if (!chain?.length || !spot) return null;
-
-  // 스트라이크별 GEX 합산
-  const gexByStrike = {};
-  for (const row of chain) {
-    const s = row.strike;
-    if (!gexByStrike[s]) gexByStrike[s] = 0;
-    gexByStrike[s] += row.call_gamma * row.call_oi * spot * spot * 0.01;
-    gexByStrike[s] -= row.put_gamma  * row.put_oi  * spot * spot * 0.01;
+  // 스트라이크별 등장 횟수 카운팅
+  const counts = {};
+  for (const s of peakStrikes) {
+    counts[s] = (counts[s] ?? 0) + 1;
   }
 
-  const strikes = Object.keys(gexByStrike)
-    .map(Number)
-    .sort((a, b) => a - b);
-
-  if (strikes.length < 2) return null;
-
-  // spot 기준 ±15% 범위 내에서 부호 전환점 탐색
-  const range = spot * 0.15;
-  const near  = strikes.filter(s => Math.abs(s - spot) <= range);
-  if (near.length < 2) return null;
-
-  // 누적 GEX (하단 → 상단)
-  let cumGex = 0;
-  let flipStrike = null;
-
-  for (let i = 0; i < near.length; i++) {
-    const prevCum = cumGex;
-    cumGex += gexByStrike[near[i]];
-
-    if (i > 0 && prevCum < 0 && cumGex >= 0) {
-      flipStrike = near[i];
-      break;
-    }
-    if (i > 0 && prevCum >= 0 && cumGex < 0) {
-      flipStrike = near[i - 1];
-      break;
+  // 최다 등장 스트라이크
+  let targetStrike = null;
+  let maxCount     = 0;
+  for (const [strike, count] of Object.entries(counts)) {
+    if (count > maxCount) {
+      maxCount     = count;
+      targetStrike = Number(strike);
     }
   }
 
-  return flipStrike;
-}
-
-// ============================================
-// ATM IV 계산
-// spot에 가장 가까운 스트라이크의 call/put IV 평균
-// ============================================
-export function calcAtmIv(chain, spot) {
-  if (!chain?.length || !spot) return null;
-
-  // spot과 가장 가까운 스트라이크 찾기
-  const strikes = [...new Set(chain.map(r => r.strike))];
-  const atm = strikes.reduce((prev, curr) =>
-    Math.abs(curr - spot) < Math.abs(prev - spot) ? curr : prev
-  );
-
-  const atmRows = chain.filter(r => r.strike === atm);
-  if (!atmRows.length) return null;
-
-  const ivs = [];
-  for (const r of atmRows) {
-    if (r.call_iv > 0) ivs.push(r.call_iv);
-    if (r.put_iv  > 0) ivs.push(r.put_iv);
-  }
-
-  if (!ivs.length) return null;
-  return Math.round((ivs.reduce((a, b) => a + b, 0) / ivs.length) * 10000) / 10000;
-}
-
-// ============================================
-// 종목 전체 분석 (수집 + 계산 통합)
-// ============================================
-export async function analyzeSymbol(symbol) {
-  const result = await collectMonthlyChain(symbol);
-  if (!result) return null;
-
-  const { spot, chain } = result;
-  if (!chain.length) return null;
-
-  const netGex     = calcNetGex(chain, spot);
-  const flipStrike = calcFlipStrike(chain, spot);
-  const atmIv      = calcAtmIv(chain, spot);
-  const distPct    = flipStrike
-    ? Math.round(((spot - flipStrike) / flipStrike) * 10000) / 100
+  const distancePct = targetStrike
+    ? Math.round(((spot - targetStrike) / targetStrike) * 10000) / 100
     : null;
 
   return {
-    symbol,
-    spot_price:   Math.round(spot * 100) / 100,
-    net_gex:      netGex,
-    flip_strike:  flipStrike,
-    distance_pct: distPct,
-    atm_iv:       atmIv,
+    target_strike:       targetStrike,
+    concentration_count: maxCount,
+    distance_pct:        distancePct,
   };
 }
 
 // ============================================
-// D1 저장 (screener_gex_daily)
+// 단일 종목 분석
+// vanna_analyzer.js의 collectSymbol 로직을 직접 인라인
+// (Railway 환경에서 D1 저장은 별도로 처리)
 // ============================================
-export async function saveGexDaily(cfWorkerUrl, cronSecret, rows, date) {
-  if (!rows?.length) return { ok: false, error: 'no rows' };
+export async function analyzeSymbol(symbol) {
+  const raw = await fetchCBOEChain(symbol);
+  const all = raw?.data?.options ?? [];
+  if (!all.length) throw new Error(`CBOE: ${symbol} 옵션 데이터 없음`);
 
-  const payload = rows.map(r => ({ ...r, date: date ?? getToday() }));
+  const spot = raw?.data?.current_price ?? raw?.data?.close ?? null;
+  if (!spot) throw new Error(`CBOE: ${symbol} 현재가 없음`);
+
+  // filterOptionsScreener: DTE 3~60, OI > 0
+  // aggregateByExpiry: 만기별 집계, ivCount 방식, calcGreeks BS 재계산
+  const rows = aggregateByExpiry(all, spot);
+  if (!rows.length) throw new Error(`${symbol}: 유효한 만기 데이터 없음`);
+
+  // Call Wall 계산 (_strikeRows 사용 전에 먼저 계산)
+  const callWall = calcCallWall(rows, spot);
+
+  // D1 저장용 rows 구성 (_strikeRows 제거)
+  const dbRows = rows.map(r => {
+    const row = { ...r };
+    delete row._strikeRows;
+    return {
+      symbol,
+      spot_price:          Math.round(spot * 100) / 100,
+      expiry_date:         row.expiry_date,
+      dte:                 row.dte,
+      expiry_type:         row.expiry_type,
+      net_gex:             row.gex     != null ? +row.gex.toFixed(6)     : null,
+      flip_strike:         row.flip_strike ?? null,
+      atm_iv:              row.atm_iv  != null ? +row.atm_iv.toFixed(4)  : null,
+      call_oi:             row.call_oi  ?? null,
+      put_oi:              row.put_oi   ?? null,
+      pcr_oi:              row.pcr_oi   ?? null,
+      dex:                 row.dex     != null ? +row.dex.toFixed(6)     : null,
+      vanna:               row.vanna   != null ? +row.vanna.toFixed(6)   : null,
+      charm:               row.charm   != null ? +row.charm.toFixed(6)   : null,
+      // Call Wall — 모든 만기 행에 동일하게 저장 (종목 레벨 값)
+      target_strike:       callWall.target_strike,
+      concentration_count: callWall.concentration_count,
+      distance_pct:        callWall.distance_pct,
+    };
+  });
+
+  return { symbol, spot, rows: dbRows, callWall };
+}
+
+// ============================================
+// D1 저장 (DELETE + INSERT 방식)
+// 종목당 최신 만기 데이터만 유지
+// ============================================
+export async function saveSymbolRows(cfWorkerUrl, cronSecret, symbol, rows, updatedAt) {
+  if (!rows?.length) return { ok: false, error: 'no rows' };
 
   try {
     const res = await fetch(`${cfWorkerUrl}/d1/screener-gex-daily`, {
@@ -348,45 +186,20 @@ export async function saveGexDaily(cfWorkerUrl, cronSecret, rows, date) {
         'Content-Type':  'application/json',
         'x-cron-secret': cronSecret,
       },
-      body:   JSON.stringify({ rows: payload }),
+      body:   JSON.stringify({ symbol, rows, updated_at: updatedAt }),
       signal: AbortSignal.timeout(15000),
     });
-
     if (!res.ok) throw new Error(`D1 write failed: ${res.status}`);
-    return { ok: true, count: payload.length };
-
+    return { ok: true, count: rows.length };
   } catch (err) {
-    console.error('[screener] D1 저장 실패:', err.message);
+    console.error(`[${symbol}] D1 저장 실패:`, err.message);
     return { ok: false, error: err.message };
   }
 }
 
 // ============================================
-// 90일 이전 데이터 정리
-// ============================================
-export async function purgeOldGexData(cfWorkerUrl, cronSecret) {
-  try {
-    const res = await fetch(`${cfWorkerUrl}/d1/screener-gex-daily/purge`, {
-      method:  'POST',
-      headers: {
-        'Content-Type':  'application/json',
-        'x-cron-secret': cronSecret,
-      },
-      body:   JSON.stringify({ days: 90 }),
-      signal: AbortSignal.timeout(10000),
-    });
-    if (!res.ok) throw new Error(`purge failed: ${res.status}`);
-    const data = await res.json();
-    console.log(`[screener] 90일 초과 데이터 삭제: ${data.deleted ?? 0}건`);
-    return data;
-  } catch (err) {
-    console.warn('[screener] purge 실패:', err.message);
-    return null;
-  }
-}
-
-// ============================================
-// 스크리너 심볼 목록 조회 (D1 → screener_symbols)
+// 스크리너 심볼 목록 조회
+// watchlist.is_watchlist = TRUE 종목만 반환
 // ============================================
 export async function fetchScreenerSymbols(cfWorkerUrl, cronSecret) {
   try {
@@ -405,27 +218,33 @@ export async function fetchScreenerSymbols(cfWorkerUrl, cronSecret) {
 
 // ============================================
 // 메인 수집 루틴
-// Railway에서 호출 (수동 버튼 or cron)
+// watchlist.is_watchlist = TRUE 종목 대상
+// 종목당 1200ms + 0~500ms 지터
 // ============================================
 export async function runScreenerCollection(cfWorkerUrl, cronSecret, symbols, onProgress) {
-  const date    = getToday();
-  const results = [];
-  const errors  = [];
+  const updatedAt = new Date().toISOString();
+  const results   = [];
+  const errors    = [];
 
-  console.log(`[screener] 수집 시작 — ${symbols.length}개 종목 (${date})`);
+  console.log(`[screener] 수집 시작 — ${symbols.length}개 종목 (${updatedAt})`);
 
   for (let i = 0; i < symbols.length; i++) {
-    const sym = symbols[i];
+    const sym = typeof symbols[i] === 'string' ? symbols[i] : symbols[i].symbol ?? symbols[i];
 
     try {
-      const analyzed = await analyzeSymbol(sym);
+      const { rows, callWall } = await analyzeSymbol(sym);
+      const saveResult = await saveSymbolRows(cfWorkerUrl, cronSecret, sym, rows, updatedAt);
 
-      if (analyzed) {
-        results.push(analyzed);
-        console.log(`[${sym}] ✓ GEX=${analyzed.net_gex?.toFixed(2)} flip=${analyzed.flip_strike}`);
+      if (saveResult.ok) {
+        results.push({ symbol: sym, rows: rows.length, callWall });
+        console.log(
+          `[${sym}] ✓ ${rows.length}개 만기 저장` +
+          (callWall.concentration_count >= 4
+            ? ` | Call Wall $${callWall.target_strike} (${callWall.concentration_count}개 만기)`
+            : '')
+        );
       } else {
-        console.warn(`[${sym}] 분석 결과 없음`);
-        errors.push({ symbol: sym, error: 'no result' });
+        throw new Error(saveResult.error);
       }
 
     } catch (err) {
@@ -433,32 +252,139 @@ export async function runScreenerCollection(cfWorkerUrl, cronSecret, symbols, on
       errors.push({ symbol: sym, error: err.message });
     }
 
-    // 진행상황 콜백
     if (onProgress) {
       onProgress({ done: i + 1, total: symbols.length, errors: errors.length });
     }
 
-    // CBOE 부하 방지 (종목 간 딜레이)
-    if (i < symbols.length - 1) await sleep(1200);
+    // 마지막 종목 이후에는 딜레이 불필요
+    if (i < symbols.length - 1) {
+      await jitteredDelay(1200, 500);
+    }
   }
-
-  // D1 저장
-  let saveResult = { ok: false };
-  if (results.length) {
-    saveResult = await saveGexDaily(cfWorkerUrl, cronSecret, results, date);
-  }
-
-  // 90일 초과 데이터 정리
-  await purgeOldGexData(cfWorkerUrl, cronSecret);
 
   console.log(`[screener] 수집 완료 — 성공 ${results.length}개, 실패 ${errors.length}개`);
 
   return {
-    ok:      saveResult.ok,
-    date,
-    count:   results.length,
-    errors:  errors.length,
+    ok:        errors.length < results.length || results.length > 0,
+    updated_at: updatedAt,
+    count:     results.length,
+    errors:    errors.length,
     results,
     errorList: errors,
+  };
+}
+
+// ============================================
+// watchlist 후보 스캔 (주 1회)
+//
+// 전략:
+//   - is_watchlist = FALSE 종목만 순회
+//   - Call Wall 조건: concentration_count >= 4
+//   - 통과 시 → is_watchlist = TRUE로 승격 요청
+//   - CBOE 요청 분산:
+//       * 기본 간격: 2000ms (일반 스크리너보다 여유있게)
+//       * 지터: 0~1000ms 랜덤
+//       * 10종목마다 5초 추가 휴식 (버스트 방지)
+// ============================================
+export async function runWatchlistScan(cfWorkerUrl, cronSecret, onProgress) {
+  const errors    = [];
+  const promoted  = [];
+  const scanned   = [];
+
+  // is_watchlist = FALSE 후보 목록 조회
+  let candidates = [];
+  try {
+    const res = await fetch(`${cfWorkerUrl}/api/watchlist/candidates`, {
+      headers: { 'x-cron-secret': cronSecret },
+      signal:  AbortSignal.timeout(8000),
+    });
+    if (!res.ok) throw new Error(`candidates fetch failed: ${res.status}`);
+    const data = await res.json();
+    candidates = data.candidates ?? [];
+  } catch (err) {
+    console.error('[watchlist] 후보 목록 조회 실패:', err.message);
+    return { ok: false, error: err.message };
+  }
+
+  if (!candidates.length) {
+    console.log('[watchlist] 스캔할 후보 없음');
+    return { ok: true, scanned: 0, promoted: 0 };
+  }
+
+  console.log(`[watchlist] 스캔 시작 — ${candidates.length}개 후보`);
+
+  for (let i = 0; i < candidates.length; i++) {
+    const sym = typeof candidates[i] === 'string' ? candidates[i] : candidates[i].ticker;
+
+    try {
+      const { rows, callWall } = await analyzeSymbol(sym);
+      const isCallWall = callWall.concentration_count >= 4;
+
+      scanned.push({ symbol: sym, concentration_count: callWall.concentration_count });
+
+      // last_scan_date 업데이트 (통과 여부 무관)
+      await fetch(`${cfWorkerUrl}/api/watchlist/scan-result`, {
+        method:  'POST',
+        headers: {
+          'Content-Type':  'application/json',
+          'x-cron-secret': cronSecret,
+        },
+        body: JSON.stringify({
+          ticker:         sym,
+          last_scan_date: getTodayET(),
+          promote:        isCallWall,
+        }),
+        signal: AbortSignal.timeout(8000),
+      });
+
+      if (isCallWall) {
+        promoted.push({
+          symbol:              sym,
+          target_strike:       callWall.target_strike,
+          concentration_count: callWall.concentration_count,
+          distance_pct:        callWall.distance_pct,
+        });
+        console.log(
+          `[watchlist] ★ 승격: ${sym} | Call Wall $${callWall.target_strike} ` +
+          `(${callWall.concentration_count}개 만기 집중)`
+        );
+      } else {
+        console.log(
+          `[watchlist] — 미달: ${sym} | 집중 만기 ${callWall.concentration_count}개 (기준 4개 미만)`
+        );
+      }
+
+    } catch (err) {
+      console.error(`[watchlist] ${sym} 오류:`, err.message);
+      errors.push({ symbol: sym, error: err.message });
+    }
+
+    if (onProgress) {
+      onProgress({ done: i + 1, total: candidates.length, promoted: promoted.length, errors: errors.length });
+    }
+
+    // 요청 분산: 기본 2000ms + 랜덤 지터
+    if (i < candidates.length - 1) {
+      await jitteredDelay(2000, 1000);
+
+      // 10종목마다 5초 추가 휴식 (버스트 방지)
+      if ((i + 1) % 10 === 0) {
+        console.log(`[watchlist] 버스트 방지 대기 (${i + 1}/${candidates.length})...`);
+        await sleep(5000);
+      }
+    }
+  }
+
+  console.log(
+    `[watchlist] 스캔 완료 — 스캔 ${scanned.length}개, 승격 ${promoted.length}개, 오류 ${errors.length}개`
+  );
+
+  return {
+    ok:       true,
+    scanned:  scanned.length,
+    promoted: promoted.length,
+    errors:   errors.length,
+    promotedList: promoted,
+    errorList:    errors,
   };
 }
