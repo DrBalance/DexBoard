@@ -220,6 +220,7 @@ input[type=color]{width:32px;height:28px;border:1px solid var(--border);border-r
     <button class="tab-btn active" onclick="switchTab('groups')">🗂 그룹 관리</button>
     <button class="tab-btn" onclick="switchTab('symbols')">📋 심볼 목록</button>
     <button class="tab-btn" onclick="switchTab('bbmap')">📈 BB 위치 맵</button>
+    <button class="tab-btn" onclick="switchTab('watchlist')">⭐ Watchlist 스캔</button>
   </div>
 
   <!-- ══════════════════════════════════════ -->
@@ -343,6 +344,101 @@ input[type=color]{width:32px;height:28px;border:1px solid var(--border);border-r
 
   </div>
 
+  <!-- ══════════════════════════════════════ -->
+  <!-- 탭4: Watchlist 스캔 -->
+  <!-- ══════════════════════════════════════ -->
+  <div id="tab-watchlist" class="tab-panel">
+
+    <!-- 스캔 실행 패널 -->
+    <div class="section">
+      <div class="section-title">⭐ Watchlist Call Wall 스캔</div>
+      <div class="add-form">
+        <div style="font-size:13px;color:var(--text2);margin-bottom:16px;line-height:1.7">
+          <code style="background:var(--bg3);padding:2px 6px;border-radius:3px;font-size:12px">is_watchlist = FALSE</code> 후보 종목을 CBOE에서 조회하여<br>
+          동일 스트라이크에 콜 DEX가 <strong>4개 이상</strong> 만기에서 집중된 종목을 관심종목으로 승격합니다.<br>
+          <span style="color:var(--yellow)">⚠ 약 768개 종목 기준 40~50분 소요됩니다. 실행 후 페이지를 닫아도 됩니다.</span>
+        </div>
+
+        <!-- 상태 표시 -->
+        <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px">
+          <span id="wl-dot" style="width:8px;height:8px;border-radius:50%;background:var(--text3);display:inline-block;flex-shrink:0"></span>
+          <span id="wl-status-msg" style="font-size:13px;color:var(--text2)">대기 중</span>
+        </div>
+
+        <!-- 프로그레스 바 -->
+        <div id="wl-progress-wrap" style="display:none;margin-bottom:14px">
+          <div style="background:var(--bg3);border-radius:4px;height:6px;overflow:hidden;margin-bottom:6px">
+            <div id="wl-progress-fill" style="height:100%;background:var(--orange);width:0%;transition:width .3s"></div>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;color:var(--text3)">
+            <span id="wl-progress-label">0 / 0</span>
+            <span id="wl-promoted-label" style="color:var(--green)"></span>
+          </div>
+        </div>
+
+        <!-- 버튼 -->
+        <div style="display:flex;gap:10px;align-items:center">
+          <button class="btn btn-orange" id="wl-scan-btn" onclick="startWatchlistScan()">🔍 지금 스캔 실행</button>
+          <button class="btn btn-blue btn-sm" onclick="loadWatchlistScanStatus()">↻ 상태 새로고침</button>
+        </div>
+        <div class="form-msg" id="wl-msg" style="margin-top:10px"></div>
+      </div>
+    </div>
+
+    <!-- 마지막 스캔 결과 -->
+    <div class="section" id="wl-last-result-section" style="display:none">
+      <div class="section-title">📊 마지막 스캔 결과</div>
+      <div id="wl-last-result" class="add-form" style="font-size:13px;color:var(--text2);line-height:1.8"></div>
+    </div>
+
+    <!-- 현재 관심종목 -->
+    <div class="section">
+      <div class="section-title">
+        ✅ 현재 관심종목
+        <span class="badge" id="wl-active-count">-</span>
+        <button class="btn btn-blue btn-sm" onclick="loadWatchlistActive()" style="margin-left:auto">↻ 새로고침</button>
+      </div>
+      <div class="tbl-wrap">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>티커</th><th>회사명</th><th>섹터</th><th>시가총액</th>
+              <th>Short Float</th><th>Beta</th><th>최종 스캔일</th><th></th>
+            </tr>
+          </thead>
+          <tbody id="wl-active-tbody">
+            <tr><td colspan="8" class="loading">로딩 중...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- 후보 종목 현황 -->
+    <div class="section">
+      <div class="section-title">
+        📋 후보 종목 현황
+        <span class="badge" id="wl-candidate-count">-</span>
+      </div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:10px">
+        최종 스캔일 기준 오래된 순 표시 — 스캔 시 이 순서로 조회됩니다
+      </div>
+      <div class="tbl-wrap" style="max-height:400px;overflow-y:auto">
+        <table class="tbl">
+          <thead>
+            <tr>
+              <th>티커</th><th>회사명</th><th>섹터</th><th>시가총액</th>
+              <th>Short Float</th><th>Beta</th><th>최종 스캔일</th>
+            </tr>
+          </thead>
+          <tbody id="wl-candidate-tbody">
+            <tr><td colspan="7" class="loading">로딩 중...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+
 </div>
 
 <script>
@@ -401,12 +497,17 @@ async function reloadStats() {
 // 탭
 // ════════════════════════════════════════════
 function switchTab(name) {
+  const tabs = ['groups', 'symbols', 'bbmap', 'watchlist'];
   document.querySelectorAll('.tab-btn').forEach((b, i) => {
-    const tabs = ['groups', 'symbols', 'bbmap'];
     b.classList.toggle('active', tabs[i] === name);
   });
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.getElementById('tab-' + name).classList.add('active');
+  if (name === 'watchlist') {
+    loadWatchlistScanStatus();
+    loadWatchlistActive();
+    loadWatchlistCandidates();
+  }
 }
 
 // ════════════════════════════════════════════
@@ -954,6 +1055,246 @@ async function createGroupFromEtf() {
   await loadGroups();
   loadSymbols(); reloadStats();
   setTimeout(closeEtfGroupModal, 1500);
+}
+
+// ════════════════════════════════════════════
+// Watchlist 스캔
+// ════════════════════════════════════════════
+const RAILWAY_URL = (typeof RAILWAY !== 'undefined' ? RAILWAY : '') || '';
+let wlPollTimer = null;
+
+function fmtMarketCap(v) {
+  if (v == null) return '-';
+  if (v >= 1e12) return (v / 1e12).toFixed(2) + 'T';
+  if (v >= 1e9)  return (v / 1e9).toFixed(2) + 'B';
+  if (v >= 1e6)  return (v / 1e6).toFixed(0) + 'M';
+  return v.toString();
+}
+
+async function loadWatchlistScanStatus() {
+  try {
+    const res  = await fetch('/watchlist-scan-status');
+    const data = await res.json();
+    updateWatchlistScanUI(data);
+  } catch (err) {
+    document.getElementById('wl-status-msg').textContent = 'Railway 연결 실패';
+  }
+}
+
+function updateWatchlistScanUI(data) {
+  const { running, progress, last_run } = data;
+  const dot      = document.getElementById('wl-dot');
+  const msg      = document.getElementById('wl-status-msg');
+  const progWrap = document.getElementById('wl-progress-wrap');
+  const btn      = document.getElementById('wl-scan-btn');
+
+  if (running) {
+    dot.style.background = 'var(--orange)';
+    btn.disabled = true;
+    btn.textContent = '스캔 중...';
+    progWrap.style.display = 'block';
+
+    if (progress) {
+      const pct = progress.total > 0 ? Math.round((progress.done / progress.total) * 100) : 0;
+      document.getElementById('wl-progress-fill').style.width = pct + '%';
+      document.getElementById('wl-progress-label').textContent =
+        `${progress.done} / ${progress.total}  (오류: ${progress.errors})`;
+      document.getElementById('wl-promoted-label').textContent =
+        progress.promoted > 0 ? `⭐ ${progress.promoted}개 승격` : '';
+      msg.textContent = `스캔 진행 중... ${pct}%`;
+    }
+
+    // 5초마다 폴링
+    if (!wlPollTimer) {
+      wlPollTimer = setInterval(async () => {
+        const r = await fetch('/watchlist-scan-status').then(x => x.json()).catch(() => null);
+        if (!r) return;
+        updateWatchlistScanUI(r);
+        if (!r.running) {
+          clearInterval(wlPollTimer);
+          wlPollTimer = null;
+          loadWatchlistActive();
+          loadWatchlistCandidates();
+        }
+      }, 5000);
+    }
+
+  } else {
+    dot.style.background = 'var(--text3)';
+    btn.disabled = false;
+    btn.textContent = '🔍 지금 스캔 실행';
+    progWrap.style.display = 'none';
+
+    if (last_run) {
+      const section = document.getElementById('wl-last-result-section');
+      const result  = document.getElementById('wl-last-result');
+      section.style.display = 'block';
+
+      if (last_run.ok) {
+        msg.textContent = `마지막 스캔: ${last_run.date} — 스캔 ${last_run.scanned}개, 승격 ${last_run.promoted}개`;
+        dot.style.background = 'var(--green)';
+
+        let html = `스캔: ${last_run.scanned}개 &nbsp;|&nbsp; 승격: <strong style="color:var(--green)">${last_run.promoted}개</strong> &nbsp;|&nbsp; 오류: ${last_run.errors}개 &nbsp;|&nbsp; ${last_run.ts ? new Date(last_run.ts).toLocaleString('ko-KR') : ''}`;
+
+        if (last_run.promoted_list?.length) {
+          html += '<div style="margin-top:10px;font-size:12px;color:var(--text3)">승격 종목:</div>';
+          html += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-top:6px">';
+          html += last_run.promoted_list.map(p =>
+            `<span style="background:rgba(63,185,80,.12);color:var(--green);border:1px solid rgba(63,185,80,.3);border-radius:4px;padding:2px 8px;font-size:12px;font-family:var(--mono)">
+              ⭐ ${p.symbol} <span style="color:var(--text3)">(${p.concentration_count}개 만기)</span>
+            </span>`
+          ).join('');
+          html += '</div>';
+        }
+        result.innerHTML = html;
+      } else {
+        msg.textContent = `마지막 스캔 실패: ${last_run.error ?? '알 수 없는 오류'}`;
+        dot.style.background = 'var(--red)';
+        result.innerHTML = `<span style="color:var(--red)">❌ ${last_run.error ?? '오류'}</span>`;
+      }
+    } else {
+      msg.textContent = '스캔 이력 없음';
+    }
+  }
+}
+
+async function startWatchlistScan() {
+  const btn = document.getElementById('wl-scan-btn');
+  const msg = document.getElementById('wl-msg');
+  btn.disabled = true;
+  btn.textContent = '요청 중...';
+  msg.className = 'form-msg';
+  msg.textContent = '';
+
+  try {
+    const res  = await fetch('/scan-watchlist', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'x-cron-secret': SECRET },
+    });
+    const data = await res.json();
+
+    if (res.status === 202) {
+      msg.className = 'form-msg ok';
+      msg.textContent = '✅ 스캔 시작됨 — 자동으로 상태가 업데이트됩니다.';
+      document.getElementById('wl-dot').style.background = 'var(--orange)';
+      document.getElementById('wl-status-msg').textContent = '스캔 시작 중...';
+      document.getElementById('wl-progress-wrap').style.display = 'block';
+
+      // 폴링 시작
+      if (!wlPollTimer) {
+        wlPollTimer = setInterval(async () => {
+          const r = await fetch('/watchlist-scan-status').then(x => x.json()).catch(() => null);
+          if (!r) return;
+          updateWatchlistScanUI(r);
+          if (!r.running) {
+            clearInterval(wlPollTimer);
+            wlPollTimer = null;
+            loadWatchlistActive();
+            loadWatchlistCandidates();
+          }
+        }, 5000);
+      }
+    } else if (res.status === 409) {
+      msg.className = 'form-msg err';
+      msg.textContent = '⚠ 이미 스캔이 진행 중입니다.';
+      btn.disabled = false;
+      btn.textContent = '🔍 지금 스캔 실행';
+    } else {
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
+  } catch (err) {
+    msg.className = 'form-msg err';
+    msg.textContent = '❌ ' + err.message;
+    btn.disabled = false;
+    btn.textContent = '🔍 지금 스캔 실행';
+  }
+}
+
+async function loadWatchlistActive() {
+  try {
+    const res  = await fetch('/api/watchlist', { headers: { 'x-cron-secret': SECRET } });
+    const data = await res.json();
+    const rows = (data.watchlist ?? []).filter(r => r.is_watchlist === 1);
+
+    document.getElementById('wl-active-count').textContent = rows.length + '개';
+    const tbody = document.getElementById('wl-active-tbody');
+
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty">관심종목 없음</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td><span class="sym-bold">${escHtml(r.ticker)}</span></td>
+        <td style="color:var(--text2)">${escHtml(r.company ?? '-')}</td>
+        <td><span class="type-badge type-stock">${escHtml(r.sector ?? '-')}</span></td>
+        <td>${fmtMarketCap(r.market_cap)}</td>
+        <td>${r.short_float != null ? r.short_float.toFixed(2) + '%' : '-'}</td>
+        <td>${r.beta != null ? r.beta.toFixed(2) : '-'}</td>
+        <td style="color:var(--text3)">${r.last_scan_date ?? '-'}</td>
+        <td>
+          <button class="btn btn-red btn-sm" onclick="demoteWatchlist('${escHtml(r.ticker)}')">제외</button>
+        </td>
+      </tr>
+    `).join('');
+  } catch (err) {
+    document.getElementById('wl-active-tbody').innerHTML =
+      `<tr><td colspan="8" style="color:var(--red);padding:12px">로드 실패: ${err.message}</td></tr>`;
+  }
+}
+
+async function loadWatchlistCandidates() {
+  try {
+    const res  = await fetch('/api/watchlist/candidates', { headers: { 'x-cron-secret': SECRET } });
+    const data = await res.json();
+    const rows = data.candidates ?? [];
+
+    document.getElementById('wl-candidate-count').textContent = rows.length + '개';
+    const tbody = document.getElementById('wl-candidate-tbody');
+
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="7" class="empty">후보 종목 없음</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = rows.map(r => `
+      <tr>
+        <td><span class="sym-bold">${escHtml(r.ticker)}</span></td>
+        <td style="color:var(--text2)">${escHtml(r.company ?? '-')}</td>
+        <td><span style="font-size:11px;color:var(--text3)">${escHtml(r.sector ?? '-')}</span></td>
+        <td>${fmtMarketCap(r.market_cap)}</td>
+        <td>${r.short_float != null ? r.short_float.toFixed(2) + '%' : '-'}</td>
+        <td>${r.beta != null ? r.beta.toFixed(2) : '-'}</td>
+        <td style="color:${r.last_scan_date ? 'var(--text3)' : 'var(--yellow)'}">${r.last_scan_date ?? '미스캔'}</td>
+      </tr>
+    `).join('');
+  } catch (err) {
+    document.getElementById('wl-candidate-tbody').innerHTML =
+      `<tr><td colspan="7" style="color:var(--red);padding:12px">로드 실패: ${err.message}</td></tr>`;
+  }
+}
+
+async function demoteWatchlist(ticker) {
+  if (!confirm(`${ticker}을 관심종목에서 제외하고 후보로 되돌릴까요?`)) return;
+  try {
+    await fetch('/api/watchlist/scan-result', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'x-cron-secret': SECRET },
+      body:    JSON.stringify({ ticker, last_scan_date: null, promote: false }),
+    });
+    // is_watchlist = 0으로 되돌리기 위해 직접 쿼리 — worker에 별도 라우트 필요
+    // 임시: DELETE 후 재삽입 방식 대신 worker에 demote 라우트 추가 권장
+    await fetch(`/api/watchlist/demote`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'x-cron-secret': SECRET },
+      body:    JSON.stringify({ ticker }),
+    });
+    loadWatchlistActive();
+    loadWatchlistCandidates();
+  } catch (err) {
+    alert('제외 실패: ' + err.message);
+  }
 }
 </script>
 </body>
