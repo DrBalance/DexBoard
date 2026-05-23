@@ -369,21 +369,22 @@ function groupBySymbol(rows) {
       map[r.symbol] = {
         symbol:              r.symbol,
         spot_price:          r.spot_price,
-        // watchlist JOIN 필드
         company:             r.company    ?? null,
         sector:              r.sector     ?? null,
         market_cap:          r.market_cap ?? null,
         short_float:         r.short_float ?? null,
         beta:                r.beta       ?? null,
-        // Call Wall (종목 레벨 — 모든 만기 행에 동일값)
         target_strike:       r.target_strike,
         concentration_count: r.concentration_count ?? 0,
         distance_pct:        r.distance_pct,
         updated_at:          r.updated_at,
-        expiries:            [],   // 만기별 상세
-        // 집계용 임시
+        // 그룹 정보
+        is_watchlist_group:  r.is_watchlist_group === 1,
+        is_manual_group:     r.is_manual_group === 1,
+        // watchlist 그룹이면서 다른 그룹에도 속하면 겹침
+        is_overlap:          r.is_watchlist_group === 1 && r.is_manual_group === 1,
+        expiries:            [],
         _gexSum:   0,
-        _dexSum:   0,
         _flipList: [],
         _atmIvList: [],
       };
@@ -404,31 +405,22 @@ function groupBySymbol(rows) {
     });
 
     sym._gexSum += r.net_gex ?? 0;
-    sym._dexSum += r.dex     ?? 0;
     if (r.flip_strike) sym._flipList.push(r.flip_strike);
     if (r.atm_iv)      sym._atmIvList.push(r.atm_iv);
   }
 
   return Object.values(map).map(sym => {
-    // 전체 만기 합산 GEX
-    const totalGex = sym._gexSum;
-
-    // 가장 가까운 만기 flip_strike (최단 DTE 기준)
+    const totalGex      = sym._gexSum;
     const nearestExpiry = sym.expiries.reduce((a, b) => (a.dte ?? 999) < (b.dte ?? 999) ? a : b, sym.expiries[0]);
     const flipStrike    = nearestExpiry?.flip_strike ?? null;
-
-    // ATM IV 평균
-    const atmIv = sym._atmIvList.length
+    const atmIv         = sym._atmIvList.length
       ? sym._atmIvList.reduce((a, b) => a + b, 0) / sym._atmIvList.length
       : null;
-
-    // 현재가 vs 플립존 거리
     const distPct = (sym.spot_price && flipStrike)
       ? Math.round(((sym.spot_price - flipStrike) / flipStrike) * 10000) / 100
       : null;
 
     delete sym._gexSum;
-    delete sym._dexSum;
     delete sym._flipList;
     delete sym._atmIvList;
 
@@ -485,18 +477,21 @@ function renderSummary(data) {
 }
 
 // ============================================
-// 테이블 렌더
+// 테이블 렌더 — 그룹별 분리
 // ============================================
 function renderTable(filter = 'all') {
   const content = document.getElementById('sc-content');
   if (!content) return;
 
   let rows = [...allSymbols];
-
   if (filter === 'callwall') rows = rows.filter(r => (r.concentration_count ?? 0) >= 4);
   if (filter === 'above')    rows = rows.filter(r => (r.dist_pct ?? 0) > 0);
   if (filter === 'below')    rows = rows.filter(r => (r.dist_pct ?? 0) < 0);
   if (filter === 'near')     rows = rows.filter(r => Math.abs(r.dist_pct ?? 999) <= 3);
+
+  // 그룹 분리: watchlist 그룹 / 수동 지정 그룹
+  const watchlistRows = rows.filter(r => r.is_watchlist_group);
+  const manualRows    = rows.filter(r => !r.is_watchlist_group);
 
   const sortFn = (a, b) => {
     const av  = a[sortCol] ?? -Infinity;
@@ -504,9 +499,10 @@ function renderTable(filter = 'all') {
     const cmp = typeof av === 'string' ? av.localeCompare(bv) : av - bv;
     return sortDir === 'asc' ? cmp : -cmp;
   };
-  rows.sort(sortFn);
+  watchlistRows.sort(sortFn);
+  manualRows.sort(sortFn);
 
-  const thead = `
+  const theadHtml = `
     <thead>
       <tr>
         <th class="sc-th sortable" data-col="symbol">종목</th>
@@ -528,34 +524,53 @@ function renderTable(filter = 'all') {
       </tr>
     </thead>`;
 
+  const buildTable = (dataRows) => `
+    <table class="sc-tbl">
+      ${theadHtml}
+      <tbody>${dataRows.map(buildRow).join('')}</tbody>
+    </table>`;
+
   const tableWrap = content.querySelector('.sc-table-wrap');
-  if (tableWrap) {
-    tableWrap.innerHTML = `
-      <table class="sc-tbl">
-        ${thead}
-        <tbody>${rows.map(buildRow).join('')}</tbody>
-      </table>
-    `;
+  if (!tableWrap) return;
 
-    tableWrap.querySelectorAll('.sortable').forEach(th => {
-      th.addEventListener('click', () => {
-        const col = th.dataset.col;
-        sortDir = (sortCol === col && sortDir === 'desc') ? 'asc' : 'desc';
-        sortCol = col;
-        updateSortIndicators();
-        renderTable(getActiveFilter());
-      });
-    });
-    tableWrap.querySelectorAll('.sc-drill-btn').forEach(btn => {
-      btn.addEventListener('click', e => { e.stopPropagation(); drillToStructure(btn.dataset.sym); });
-    });
-    tableWrap.querySelectorAll('.sc-row').forEach(row => {
-      row.addEventListener('click', () => drillToStructure(row.dataset.sym));
-    });
+  let html = '';
 
-    updateSortIndicators();
+  // ── 수동 지정 그룹
+  if (manualRows.length) {
+    html += `<div class="sc-group-header">📌 관심 종목 <span class="sc-group-count">${manualRows.length}</span></div>`;
+    html += buildTable(manualRows);
   }
 
+  // ── Watchlist 그룹
+  if (watchlistRows.length) {
+    html += `<div class="sc-group-header" style="margin-top:24px">⭐ Watchlist <span class="sc-group-count">${watchlistRows.length}</span></div>`;
+    html += buildTable(watchlistRows);
+  }
+
+  if (!html) {
+    html = '<div class="sc-empty">조건에 맞는 종목이 없습니다.</div>';
+  }
+
+  tableWrap.innerHTML = html;
+
+  // 이벤트 바인딩
+  tableWrap.querySelectorAll('.sortable').forEach(th => {
+    th.addEventListener('click', () => {
+      const col = th.dataset.col;
+      sortDir = (sortCol === col && sortDir === 'desc') ? 'asc' : 'desc';
+      sortCol = col;
+      updateSortIndicators();
+      renderTable(getActiveFilter());
+    });
+  });
+  tableWrap.querySelectorAll('.sc-drill-btn').forEach(btn => {
+    btn.addEventListener('click', e => { e.stopPropagation(); drillToStructure(btn.dataset.sym); });
+  });
+  tableWrap.querySelectorAll('.sc-row').forEach(row => {
+    row.addEventListener('click', () => drillToStructure(row.dataset.sym));
+  });
+
+  updateSortIndicators();
   document.getElementById('sc-footer').textContent = `${rows.length}개 종목 표시`;
 }
 
@@ -630,7 +645,7 @@ function buildRow(r) {
   return `
     <tr class="sc-row${callCount >= 4 ? ' sc-row-callwall' : ''}" data-sym="${r.symbol}">
       <td class="sc-td-sym">
-        <span class="sc-sym">${r.symbol}</span>
+        <span class="sc-sym">${r.symbol}</span>${r.is_overlap ? ' <span class="sc-overlap-star" title="수동 지정 + Watchlist 겹침">⭐</span>' : ''}
       </td>
       <td class="sc-td-company">${companyStr}</td>
       <td class="sc-td-sector">${sectorStr}</td>
