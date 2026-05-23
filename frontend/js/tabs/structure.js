@@ -1489,15 +1489,15 @@ function _stRenderHeatmap(expirations, weighted, spot) {
   lctx.fillStyle = '#0d1117'; lctx.fillRect(0,0,LABEL_W,canvasH);
   enabledExpiries.forEach(([expiry,cfg], rowIdx) => {
     const y = HEADER_H + rowIdx * ROW_H;
-    lctx.fillStyle=cfg.color; lctx.font='13px monospace'; lctx.textAlign='right';
+    lctx.fillStyle=cfg.color; lctx.font='15px monospace'; lctx.textAlign='right';
     lctx.fillText(expiry.slice(5), LABEL_W-4, y+ROW_H/2+3);
-    lctx.fillStyle='#555'; lctx.font='11px monospace';
-    lctx.fillText(cfg.dte===0?'0DTE':`${cfg.dte}d`, LABEL_W-4, y+ROW_H/2+12);
+    lctx.fillStyle='#aaa'; lctx.font='13px monospace';
+    lctx.fillText(cfg.dte===0?'0DTE':`${cfg.dte}d`, LABEL_W-4, y+ROW_H/2+14);
   });
   const sumY = HEADER_H + rows * ROW_H + 4;
   lctx.strokeStyle='rgba(255,255,255,0.12)'; lctx.lineWidth=1; lctx.setLineDash([]);
   lctx.beginPath(); lctx.moveTo(0,sumY-4); lctx.lineTo(LABEL_W,sumY-4); lctx.stroke();
-  lctx.fillStyle='#c9d1d9'; lctx.font='13px monospace'; lctx.textAlign='right';
+  lctx.fillStyle='#fff'; lctx.font='15px monospace'; lctx.textAlign='right';
   lctx.fillText('합산', LABEL_W-4, sumY+SUM_H/2+4);
 
   // 데이터 캔버스
@@ -1508,12 +1508,12 @@ function _stRenderHeatmap(expirations, weighted, spot) {
   ctx.fillStyle='#0d1117'; ctx.fillRect(0,0,canvasW,canvasH);
 
   // 스트라이크 헤더
-  ctx.font='9px monospace'; ctx.textAlign='center';
+  ctx.font='13px monospace'; ctx.textAlign='center';
   allStrikes.forEach((strike, i) => {
     const x = i*CELL_W + CELL_W/2;
     const isSpot = i===spotCol;
-    ctx.fillStyle = isSpot ? _ST_C_SPOT : (strike%5===0?'#8b949e':'transparent');
-    if (isSpot||strike%5===0) ctx.fillText(`$${strike}`,x,HEADER_H-5);
+    ctx.fillStyle = isSpot ? _ST_C_SPOT : (strike%5===0?'#ffffff':'transparent');
+    if (isSpot||strike%5===0) ctx.fillText(`${strike}`,x,HEADER_H-5);
   });
 
   // 만기별 행
