@@ -300,56 +300,51 @@ export default {
     }
 
     // ── GET /api/options-dex/:symbol ───────────────────────────
-    // Structure 탭용: 종목의 만기별 options_dex 데이터 반환
-    const optDexMatch = path.match(/^\/api\/options-dex\/([a-zA-Z]+)$/);
+    // Structure 탭용: screener_gex_daily 기반으로 교체
+    const optDexMatch = path.match(/^\/api\/options-dex\/([a-zA-Z0-9.\-]+)$/i);
     if (request.method === "GET" && optDexMatch) {
-      const sym  = optDexMatch[1].toUpperCase();
-      const date = url.searchParams.get("date") || null;
+      const sym = optDexMatch[1].toUpperCase();
 
-      let query, params;
-      if (date) {
-        query  = `SELECT * FROM options_dex WHERE symbol=? AND date=? ORDER BY dte ASC`;
-        params = [sym, date];
-      } else {
-        query  = `SELECT * FROM options_dex WHERE symbol=? AND date=(SELECT MAX(date) FROM options_dex WHERE symbol=?) ORDER BY dte ASC`;
-        params = [sym, sym];
-      }
+      const rows = await env.DB.prepare(`
+        SELECT
+          updated_at as date, symbol, expiry_date, dte, expiry_type,
+          call_oi, put_oi, call_vol, put_vol,
+          pcr_oi, null as pcr_vol,
+          iv_skew, atm_iv, otm_call_iv, otm_put_iv,
+          null as atm_put_oi, null as atm_put_oi_ratio,
+          dex, net_gex as gex, vanna, charm,
+          flip_strike,
+          null as otm_call_oi_d, null as otm_put_oi_d, null as hedge_ratio
+        FROM screener_gex_daily
+        WHERE symbol = ?
+        ORDER BY dte ASC
+      `).bind(sym).all();
 
-      const rows = await env.DB.prepare(query).bind(...params).all();
       return json({ symbol: sym, rows: rows.results ?? [] }, 200, corsHeaders);
     }
 
     // ── GET /api/options-dex/:symbol/history ───────────────────
-    // Term Structure 전일 비교용: 최근 N일 데이터 반환
-    const optDexHistMatch = path.match(/^\/api\/options-dex\/([a-zA-Z]+)\/history$/);
+    // screener_gex_daily는 최신 데이터만 보관하므로 history는 현재 데이터 반환
+    const optDexHistMatch = path.match(/^\/api\/options-dex\/([a-zA-Z0-9.\-]+)\/history$/i);
     if (request.method === "GET" && optDexHistMatch) {
-      const sym  = optDexHistMatch[1].toUpperCase();
-      const days = parseInt(url.searchParams.get("days") || "3");
+      const sym = optDexHistMatch[1].toUpperCase();
 
-      // 최근 N개 날짜 조회
-      const datesRes = await env.DB.prepare(`
-        SELECT DISTINCT date FROM options_dex
-        WHERE symbol=?
-        ORDER BY date DESC
-        LIMIT ?
-      `).bind(sym, days).all();
+      const rows = await env.DB.prepare(`
+        SELECT
+          updated_at as date, symbol, expiry_date, dte, expiry_type,
+          call_oi, put_oi, call_vol, put_vol,
+          pcr_oi, null as pcr_vol,
+          iv_skew, atm_iv, otm_call_iv, otm_put_iv,
+          dex, net_gex as gex, vanna, charm, flip_strike
+        FROM screener_gex_daily
+        WHERE symbol = ?
+        ORDER BY dte ASC
+      `).bind(sym).all();
 
-      const dates = (datesRes.results ?? []).map(r => r.date);
-      if (!dates.length) return json({ symbol: sym, dates: [], rows: [] }, 200, corsHeaders);
+      const result = rows.results ?? [];
+      const dates  = result.length ? [result[0].date] : [];
 
-      // 해당 날짜들의 전체 데이터 조회
-      const placeholders = dates.map(() => '?').join(',');
-      const rowsRes = await env.DB.prepare(`
-        SELECT * FROM options_dex
-        WHERE symbol=? AND date IN (${placeholders})
-        ORDER BY date DESC, dte ASC
-      `).bind(sym, ...dates).all();
-
-      return json({
-        symbol: sym,
-        dates,
-        rows: rowsRes.results ?? [],
-      }, 200, corsHeaders);
+      return json({ symbol: sym, dates, rows: result }, 200, corsHeaders);
     }
 
     // ── GET /api/symbols (자동완성) ─────────────────────────────
@@ -473,6 +468,55 @@ export default {
       return json({ symbols: rows.results ?? [] }, 200, corsHeaders);
     }
 
+    // ── GET /api/screener/symbol/:sym ──────────────────────────
+    // structure 탭용: 특정 종목의 집계 데이터 반환 (만기별 rows 포함)
+    const screenerSymMatch = path.match(/^\/api\/screener\/symbol\/([A-Z0-9.\-]+)$/i);
+    if (request.method === "GET" && screenerSymMatch) {
+      const sym = screenerSymMatch[1].toUpperCase();
+      const rows = await env.DB.prepare(`
+        SELECT
+          g.symbol, g.spot_price, g.expiry_date, g.dte, g.expiry_type,
+          g.net_gex, g.flip_strike, g.atm_iv, g.call_oi, g.put_oi, g.pcr_oi,
+          g.dex, g.vanna, g.charm, g.iv_skew, g.otm_call_iv, g.otm_put_iv,
+          g.target_strike, g.concentration_count, g.distance_pct, g.updated_at,
+          w.company, w.sector, w.market_cap, w.short_float, w.beta
+        FROM screener_gex_daily g
+        LEFT JOIN watchlist w ON w.ticker = g.symbol
+        WHERE g.symbol = ?
+        ORDER BY g.dte ASC
+      `).bind(sym).all();
+
+      const all = rows.results ?? [];
+      if (!all.length) return json(null, 404, corsHeaders);
+
+      // 종목 단위 집계
+      const first    = all[0];
+      const totalGex = all.reduce((s, r) => s + (r.net_gex ?? 0), 0);
+      const nearestFlip = all.find(r => r.flip_strike)?.flip_strike ?? null;
+      const distPct = (first.spot_price && nearestFlip)
+        ? Math.round(((first.spot_price - nearestFlip) / nearestFlip) * 10000) / 100
+        : null;
+      const atmIvAvg = all.filter(r => r.atm_iv).reduce((s, r, _, a) => s + r.atm_iv / a.length, 0) || null;
+
+      return json({
+        symbol:              sym,
+        spot_price:          first.spot_price,
+        company:             first.company    ?? null,
+        sector:              first.sector     ?? null,
+        market_cap:          first.market_cap ?? null,
+        short_float:         first.short_float ?? null,
+        beta:                first.beta       ?? null,
+        total_gex:           totalGex,
+        flip_strike:         nearestFlip,
+        distance_pct:        distPct,
+        atm_iv:              atmIvAvg,
+        target_strike:       first.target_strike,
+        concentration_count: first.concentration_count ?? 0,
+        updated_at:          first.updated_at,
+        expiries:            all,
+      }, 200, corsHeaders);
+    }
+
     // ── GET /api/screener/latest ────────────────────────────────
     if (request.method === "GET" && path === "/api/screener/latest") {
       const rows = await env.DB.prepare(`
@@ -514,16 +558,20 @@ export default {
           INSERT INTO screener_gex_daily (
             symbol, spot_price, expiry_date, dte, expiry_type,
             net_gex, flip_strike, atm_iv, call_oi, put_oi, pcr_oi,
-            dex, vanna, charm, target_strike, concentration_count, distance_pct, updated_at
-          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            dex, vanna, charm,
+            call_vol, put_vol, iv_skew, otm_call_iv, otm_put_iv,
+            target_strike, concentration_count, distance_pct, updated_at
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         `).bind(
           symbol,
-          r.spot_price ?? null, r.expiry_date ?? null, r.dte ?? null, r.expiry_type ?? null,
-          r.net_gex ?? null, r.flip_strike ?? null, r.atm_iv ?? null,
-          r.call_oi ?? null, r.put_oi ?? null, r.pcr_oi ?? null,
-          r.dex ?? null, r.vanna ?? null, r.charm ?? null,
+          r.spot_price    ?? null, r.expiry_date ?? null, r.dte ?? null, r.expiry_type ?? null,
+          r.net_gex       ?? null, r.flip_strike ?? null, r.atm_iv      ?? null,
+          r.call_oi       ?? null, r.put_oi      ?? null, r.pcr_oi      ?? null,
+          r.dex           ?? null, r.vanna       ?? null, r.charm       ?? null,
+          r.call_vol      ?? null, r.put_vol     ?? null, r.iv_skew     ?? null,
+          r.otm_call_iv   ?? null, r.otm_put_iv  ?? null,
           r.target_strike ?? null, r.concentration_count ?? null, r.distance_pct ?? null,
-          updated_at ?? new Date().toISOString()
+          updated_at      ?? new Date().toISOString()
         ));
         await env.DB.batch([deleteStmt, ...insertStmts]);
         return json({ ok: true, inserted: rows.length }, 200, corsHeaders);
@@ -937,58 +985,43 @@ export default {
     if (request.method === "GET" && structMatch) {
       const symbol = structMatch[1].toUpperCase();
 
-      const latestRow = await env.DB.prepare(`
-        SELECT MAX(date) as latest FROM options_dex WHERE symbol = ?
-      `).bind(symbol).first();
-
-      if (!latestRow?.latest) {
-        return json({ monthly: [], weekly: null, context: null }, 200, corsHeaders);
-      }
-
       const rows = await env.DB.prepare(`
         SELECT
-          date, symbol, expiry_date, dte,
-          call_vol, put_vol, call_oi, put_oi,
-          pcr_vol, pcr_oi,
-          atm_iv, otm_call_iv, otm_put_iv,
-          atm_put_oi, atm_put_oi_ratio, iv_skew,
-          dex, gex, vanna, charm,
-          flip_strike, otm_call_oi_d, otm_put_oi_d
-        FROM options_dex
-        WHERE symbol = ? AND date = ? AND dte BETWEEN 0 AND 65
+          updated_at as date, symbol, expiry_date, dte, expiry_type,
+          call_oi, put_oi, call_vol, put_vol, pcr_oi,
+          iv_skew, atm_iv, otm_call_iv, otm_put_iv,
+          dex, net_gex as gex, vanna, charm, flip_strike,
+          spot_price
+        FROM screener_gex_daily
+        WHERE symbol = ? AND dte BETWEEN 0 AND 65
         ORDER BY dte ASC
-      `).bind(symbol, latestRow.latest).all();
+      `).bind(symbol).all();
 
       const all = rows.results ?? [];
 
-      // ── isMonthly: 매월 3번째 금요일 판별 ──────────────────────
-      function isMonthly(dateStr) {
-        const d = new Date(dateStr + 'T00:00:00Z');
-        if (d.getUTCDay() !== 5) return false;
-        const day = d.getUTCDate();
-        return day >= 15 && day <= 21;
+      if (!all.length) {
+        return json({ monthly: [], weekly: null, context: null }, 200, corsHeaders);
       }
 
-      // ── 각 행에 is_monthly + net_oi 추가 ──────────────────────
+      const latestDate = all[0]?.date ?? null;
+
+      // expiry_type 기반으로 monthly/weekly 분류
       const enriched = all.map(r => ({
         ...r,
-        is_monthly: isMonthly(r.expiry_date) ? 1 : 0,
+        is_monthly: r.expiry_type === 'monthly' ? 1 : 0,
         net_oi: (r.call_oi || 0) - (r.put_oi || 0),
       }));
 
-      // ── Monthly: 가장 가까운 2개 ───────────────────────────────
       const monthlyRows = enriched
         .filter(r => r.is_monthly === 1)
         .sort((a, b) => a.dte - b.dte)
         .slice(0, 2);
 
-      // ── Weekly 목록 (Monthly 제외) ─────────────────────────────
       const weeklyRows = enriched.filter(r => r.is_monthly === 0);
 
-      // ── Weekly 평균 net OI → 1.5배 초과만 표시 ────────────────
       let featuredWeekly = null;
       if (weeklyRows.length > 0) {
-        const avgNetOI = weeklyRows.reduce((s, r) => s + Math.abs(r.net_oi), 0) / weeklyRows.length;
+        const avgNetOI  = weeklyRows.reduce((s, r) => s + Math.abs(r.net_oi), 0) / weeklyRows.length;
         const threshold = avgNetOI * 1.5;
         const candidates = weeklyRows
           .filter(r => Math.abs(r.net_oi) > threshold)
@@ -996,38 +1029,32 @@ export default {
         if (candidates.length > 0) featuredWeekly = candidates[0];
       }
 
-      // ── OPEX까지 남은 일수 (가장 가까운 Monthly 기준) ──────────
-      const nextMonthly = monthlyRows[0] ?? null;
-      const opexDte = nextMonthly?.dte ?? null;
-
-      // ── 이번 주 위클리 만기 (DTE 0~6 중 가장 가까운 것) ────────
+      const nextMonthly   = monthlyRows[0] ?? null;
+      const opexDte       = nextMonthly?.dte ?? null;
       const thisWeekExpiry = weeklyRows
         .filter(r => r.dte >= 0 && r.dte <= 6)
         .sort((a, b) => a.dte - b.dte)[0] ?? null;
 
-      // ── Vanna/Charm 방향 판단 (Monthly 합산) ───────────────────
-      const vannaSum = monthlyRows.reduce((s, r) => s + (r.vanna || 0), 0);
-      const charmSum = monthlyRows.reduce((s, r) => s + (r.charm || 0), 0);
-
-      // ── Monthly IV스큐 방향 일치 여부 ──────────────────────────
+      const vannaSum  = monthlyRows.reduce((s, r) => s + (r.vanna || 0), 0);
+      const charmSum  = monthlyRows.reduce((s, r) => s + (r.charm || 0), 0);
       const monthlySkews = monthlyRows.map(r => r.iv_skew).filter(v => v != null);
-      const skewAligned = monthlySkews.length >= 2
+      const skewAligned  = monthlySkews.length >= 2
         ? (monthlySkews[0] > 0) === (monthlySkews[1] > 0)
         : false;
 
       return json({
-        date:    latestRow.latest,
+        date:    latestDate,
         symbol,
         monthly: monthlyRows,
         weekly:  featuredWeekly,
         context: {
-          opex_dte:          opexDte,
-          this_week_expiry:  thisWeekExpiry ? thisWeekExpiry.expiry_date : null,
-          this_week_dte:     thisWeekExpiry?.dte ?? null,
-          vanna_sum:         +vannaSum.toFixed(4),
-          charm_sum:         +charmSum.toFixed(4),
-          skew_aligned:      skewAligned,
-          weekly_featured:   featuredWeekly != null,
+          opex_dte:         opexDte,
+          this_week_expiry: thisWeekExpiry ? thisWeekExpiry.expiry_date : null,
+          this_week_dte:    thisWeekExpiry?.dte ?? null,
+          vanna_sum:        +vannaSum.toFixed(4),
+          charm_sum:        +charmSum.toFixed(4),
+          skew_aligned:     skewAligned,
+          weekly_featured:  featuredWeekly != null,
         },
       }, 200, corsHeaders);
     }
