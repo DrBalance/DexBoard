@@ -481,9 +481,17 @@ export default {
           g.net_gex, g.flip_strike, g.atm_iv,
           g.call_oi, g.put_oi, g.pcr_oi, g.dex, g.vanna, g.charm,
           g.target_strike, g.concentration_count, g.distance_pct, g.updated_at,
-          w.company, w.sector, w.market_cap, w.short_float, w.beta
+          w.company, w.sector, w.market_cap, w.short_float, w.beta,
+          GROUP_CONCAT(DISTINCT gr.code) as groups,
+          -- watchlist 그룹 소속 여부
+          MAX(CASE WHEN gr.code = 'watchlist' THEN 1 ELSE 0 END) as is_watchlist_group,
+          -- 다른 그룹(수동 지정)에도 속하는지 여부 → 겹침 표시용
+          MAX(CASE WHEN gr.code != 'watchlist' THEN 1 ELSE 0 END) as is_manual_group
         FROM screener_gex_daily g
         LEFT JOIN watchlist w ON w.ticker = g.symbol
+        LEFT JOIN symbol_groups sg ON sg.symbol = g.symbol
+        LEFT JOIN groups gr ON gr.id = sg.group_id
+        GROUP BY g.symbol, g.expiry_date
         ORDER BY g.symbol ASC, g.dte ASC
       `).all();
       return json(rows.results ?? [], 200, corsHeaders);
@@ -625,6 +633,48 @@ export default {
           `).bind(last_scan_date, ticker.toUpperCase()).run();
         }
         return json({ ok: true, ticker: ticker.toUpperCase(), promoted: promote ?? false }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
+    // ── POST /api/watchlist/enroll-group ───────────────────────
+    // 승격 종목을 symbols + symbol_groups(watchlist 그룹)에 자동 편입
+    if (request.method === "POST" && path === "/api/watchlist/enroll-group") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const { ticker } = await request.json();
+        if (!ticker) return json({ error: "ticker 필요" }, 400, corsHeaders);
+        const sym = ticker.toUpperCase();
+
+        // 1. watchlist 그룹 없으면 생성
+        let group = await env.DB.prepare(
+          "SELECT id FROM groups WHERE code = 'watchlist' LIMIT 1"
+        ).first();
+        if (!group) {
+          await env.DB.prepare(
+            "INSERT OR IGNORE INTO groups (code, name) VALUES ('watchlist', 'Watchlist')"
+          ).run();
+          group = await env.DB.prepare(
+            "SELECT id FROM groups WHERE code = 'watchlist' LIMIT 1"
+          ).first();
+        }
+        const groupId = group.id;
+
+        // 2. symbols 테이블에 추가
+        await env.DB.prepare(
+          "INSERT OR IGNORE INTO symbols (symbol) VALUES (?)"
+        ).bind(sym).run();
+
+        // 3. symbol_groups에 연결
+        await env.DB.prepare(
+          "INSERT OR IGNORE INTO symbol_groups (symbol, group_id) VALUES (?, ?)"
+        ).bind(sym, groupId).run();
+
+        return json({ ok: true, ticker: sym, group_id: groupId }, 200, corsHeaders);
       } catch (err) {
         return json({ ok: false, error: err.message }, 500, corsHeaders);
       }
