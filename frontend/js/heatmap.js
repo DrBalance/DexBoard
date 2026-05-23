@@ -263,7 +263,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
   if (!el) return;
 
   if (!strikes || strikes.length === 0) {
-    el.innerHTML = '<div style="color:var(--text3);font-size:15px;padding:8px">히트맵 데이터 없음</div>';
+    el.innerHTML = '<div style="color:var(--text3);font-size:13px;padding:8px">히트맵 데이터 없음</div>';
     return;
   }
 
@@ -295,8 +295,8 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     `<td style="
       position:sticky;left:0;z-index:2;
       min-width:${LBL_W}px;max-width:${LBL_W}px;height:${h}px;
-      padding:0 4px 0 2px;font-size:15px;font-weight:800;
-      color:#fff;background:var(--bg2,#181c24);
+      padding:0 4px 0 2px;font-size:10px;font-weight:800;
+      color:var(--text3);background:var(--bg2,#181c24);
       border-right:2px solid var(--border2,rgba(255,255,255,.12));
       white-space:nowrap;vertical-align:middle;text-align:right;
       ${extraStyle}
@@ -313,8 +313,8 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
 
   // ── Strike 행 ─────────────────────────────────────────
   const strikeRow = rows.map((s, i) => mkCell(i, 'strike', ROW_H_SM,
-    `font-size:15px;
-     color:'#fff';
+    `font-size:13px;
+     color:${i === spotIdx ? '#fff' : 'var(--text2)'};
      font-weight:${i === spotIdx ? '700' : '400'};
      background:${i === spotIdx ? 'rgba(255,255,255,.08)' : 'transparent'};
      border-right:1px solid var(--border);`,
@@ -327,7 +327,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
     const label = s.markerLabels.join('/');
     // 마커 텍스트 색: 배경과 대비되도록 흰색 고정
     return mkCell(i, 'marker', ROW_H_MK,
-      `font-size:15px;font-weight:700;letter-spacing:-.3px;
+      `font-size:10px;font-weight:700;letter-spacing:-.3px;
        color:rgba(255,255,255,.9);background:${bg};
        border-right:1px solid rgba(255,255,255,.04);
        line-height:1;`,
@@ -337,7 +337,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
 
   // ── D·Van 행 (Vanna Dom 전용, 항상 표시) ──────────────
   const dVannaRow = !isDexDom ? rows.map((s, i) => mkCell(i, 'dvanna', ROW_H_DG,
-    `font-size:15px;
+    `font-size:13px;
      color:rgba(167,139,250,1);
      background:${i === spotIdx ? 'rgba(255,255,255,.06)' : 'transparent'};
      border-right:1px solid var(--border);`,
@@ -346,7 +346,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
 
   // ── D·Chr 행 (Vanna Dom 전용, 항상 표시) ──────────────
   const dCharmRow = !isDexDom ? rows.map((s, i) => mkCell(i, 'dcharm', ROW_H_DG,
-    `font-size:15px;
+    `font-size:13px;
      color:${s.dCharm >= 0 ? 'rgba(45,212,191,1)' : 'rgba(239,68,68,0.85)'};
      background:${i === spotIdx ? 'rgba(255,255,255,.06)' : 'transparent'};
      border-right:1px solid var(--border);`,
@@ -357,7 +357,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
   const dDexRow = isDexDom ? rows.map((s, i) => {
     const c = s.dex > 0 ? 'rgba(34,197,94,1)' : s.dex < 0 ? 'rgba(239,68,68,1)' : 'var(--text2)';
     return mkCell(i, 'ddex', ROW_H_DG,
-      `font-size:15px;font-weight:700;color:${c};
+      `font-size:13px;font-weight:700;color:${c};
        background:${i === spotIdx ? 'rgba(255,255,255,.06)' : 'transparent'};
        border-right:1px solid var(--border);`,
       _fmtM(s.dex)
@@ -373,7 +373,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
       ? `rgba(34,197,94,${TEXT_OPACITY})`
       : s.dex < 0 ? `rgba(239,68,68,${TEXT_OPACITY})` : 'var(--text3)';
     return mkCell(i, 'dex', ROW_H_SM,
-      `font-size:15px;color:${c};
+      `font-size:13px;color:${c};
        background:${i === spotIdx ? 'rgba(255,255,255,.06)' : 'transparent'};
        border-right:1px solid var(--border);`,
       _fmtM(s.dex)
@@ -386,7 +386,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
       ? `rgba(34,197,94,${TEXT_OPACITY})`
       : s.gex < 0 ? `rgba(239,68,68,${TEXT_OPACITY})` : 'var(--text3)';
     return mkCell(i, 'gex', ROW_H_SM,
-      `font-size:15px;color:${c};
+      `font-size:13px;color:${c};
        background:${i === spotIdx ? 'rgba(255,255,255,.06)' : 'transparent'};
        border-right:1px solid var(--border);`,
       _fmtM(s.gex)
@@ -395,7 +395,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
 
   // ── Vanna 행 ──────────────────────────────────────────
   const vannaRow = rows.map((s, i) => mkCell(i, 'vanna', ROW_H_SM,
-    `font-size:15px;color:rgba(167,139,250,${TEXT_OPACITY});
+    `font-size:13px;color:rgba(167,139,250,${TEXT_OPACITY});
      background:${i === spotIdx ? 'rgba(255,255,255,.06)' : 'transparent'};
      border-right:1px solid var(--border);`,
     _fmtM(s.vanna)
@@ -403,7 +403,7 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
 
   // ── Charm 행 ──────────────────────────────────────────
   const charmRow = rows.map((s, i) => mkCell(i, 'charm', ROW_H_SM,
-    `font-size:15px;color:rgba(45,212,191,${TEXT_OPACITY});
+    `font-size:13px;color:rgba(45,212,191,${TEXT_OPACITY});
      background:${i === spotIdx ? 'rgba(255,255,255,.06)' : 'transparent'};
      border-right:1px solid var(--border);`,
     _fmtM(s.charm)
@@ -420,8 +420,8 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
   const sc = (v) => v > 0 ? '#ef4444' : v < 0 ? '#22c55e' : '#9ca3af';
   const vixBadge = hasVix
     ? `<span style="display:inline-flex;align-items:center;gap:5px;
-         padding:2px 7px;border-radius:3px;font-size:13px;
-         background:rgba(255,255,255,.05);color:#fff;">
+         padding:2px 7px;border-radius:3px;font-size:10px;
+         background:rgba(255,255,255,.05);color:var(--text2);">
         ${isDexDom
           ? '<span style="color:#f59e0b;font-weight:700">DEX Dom</span>'
           : '<span style="color:#a78bfa">Vanna Dom</span>'}
@@ -429,8 +429,8 @@ export function renderHeatmap(containerId, strikes, spotPrice) {
         15m<span style="color:${sc(slope15m)}">${slope15m >= 0 ? '+' : ''}${slope15m.toFixed(2)}</span>
       </span>`
     : `<span style="display:inline-flex;align-items:center;gap:5px;
-         padding:2px 7px;border-radius:3px;font-size:13px;
-         background:rgba(255,255,255,.05);color:#fff;">
+         padding:2px 7px;border-radius:3px;font-size:10px;
+         background:rgba(255,255,255,.05);color:var(--text3);">
         <span style="color:#a78bfa">Vanna Dom</span>
         <span>* 구조값 (VIX 미적용)</span>
       </span>`;
