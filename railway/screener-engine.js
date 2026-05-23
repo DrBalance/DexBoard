@@ -290,6 +290,7 @@ export async function runWatchlistScan(cfWorkerUrl, cronSecret, onProgress) {
   const errors    = [];
   const promoted  = [];
   const scanned   = [];
+  const updatedAt = new Date().toISOString();
 
   // is_watchlist = FALSE 후보 목록 조회
   let candidates = [];
@@ -348,6 +349,21 @@ export async function runWatchlistScan(cfWorkerUrl, cronSecret, onProgress) {
           `[watchlist] ★ 승격: ${sym} | Call Wall $${callWall.target_strike} ` +
           `(${callWall.concentration_count}개 만기 집중)`
         );
+
+        // 승격 즉시 screener_gex_daily에 저장 (CBOE 재조회 불필요)
+        await saveSymbolRows(cfWorkerUrl, cronSecret, sym, rows, updatedAt);
+
+        // symbols + symbol_groups에 watchlist 그룹으로 자동 편입
+        await fetch(`${cfWorkerUrl}/api/watchlist/enroll-group`, {
+          method:  'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'x-cron-secret': cronSecret,
+          },
+          body:    JSON.stringify({ ticker: sym }),
+          signal:  AbortSignal.timeout(8000),
+        }).catch(e => console.warn(`[watchlist] ${sym} 그룹 편입 실패:`, e.message));
+
       } else {
         console.log(
           `[watchlist] — 미달: ${sym} | 집중 만기 ${callWall.concentration_count}개 (기준 4개 미만)`
