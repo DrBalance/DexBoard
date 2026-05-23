@@ -242,28 +242,33 @@ export default {
     }
 
     // ── GET /api/options-strikes/:symbol ───────────────────────
-    // Structure 탭 Smile 곡선용: 스트라이크별 IV 데이터
-    const strikesMatch = path.match(/^\/api\/options-strikes\/([a-zA-Z]+)$/);
+    // Structure 탭 히트맵용: screener_gex_daily의 strike_data 파싱해서 반환
+    const strikesMatch = path.match(/^\/api\/options-strikes\/([a-zA-Z0-9.\-]+)$/i);
     if (request.method === "GET" && strikesMatch) {
-      const sym    = strikesMatch[1].toUpperCase();
-      const expiry = url.searchParams.get("expiry") || null;
-      const date   = url.searchParams.get("date")   || null;
+      const sym = strikesMatch[1].toUpperCase();
 
-      let query, params;
-      if (expiry && date) {
-        query  = `SELECT * FROM options_strikes WHERE symbol=? AND date=? AND expiry_date=? ORDER BY strike ASC`;
-        params = [sym, date, expiry];
-      } else if (expiry) {
-        query  = `SELECT * FROM options_strikes WHERE symbol=? AND expiry_date=? AND date=(SELECT MAX(date) FROM options_strikes WHERE symbol=? AND expiry_date=?) ORDER BY strike ASC`;
-        params = [sym, expiry, sym, expiry];
-      } else {
-        // expiry 없으면 가장 최신 날짜의 첫번째 만기
-        query  = `SELECT * FROM options_strikes WHERE symbol=? AND date=(SELECT MAX(date) FROM options_strikes WHERE symbol=?) ORDER BY dte ASC, strike ASC`;
-        params = [sym, sym];
+      const rows = await env.DB.prepare(`
+        SELECT expiry_date, dte, flip_strike, strike_data
+        FROM screener_gex_daily
+        WHERE symbol = ? AND strike_data IS NOT NULL
+        ORDER BY dte ASC
+      `).bind(sym).all();
+
+      const result = [];
+      for (const row of (rows.results ?? [])) {
+        let strikes = [];
+        try { strikes = JSON.parse(row.strike_data); } catch { strikes = []; }
+        for (const s of strikes) {
+          result.push({
+            expiry_date: row.expiry_date,
+            dte:         row.dte,
+            flip_strike: row.flip_strike,
+            ...s,
+          });
+        }
       }
 
-      const rows = await env.DB.prepare(query).bind(...params).all();
-      return json({ symbol: sym, rows: rows.results ?? [] }, 200, corsHeaders);
+      return json({ symbol: sym, rows: result }, 200, corsHeaders);
     }
 
     // ── POST /d1/options-strikes ────────────────────────────────
@@ -560,8 +565,9 @@ export default {
             net_gex, flip_strike, atm_iv, call_oi, put_oi, pcr_oi,
             dex, vanna, charm,
             call_vol, put_vol, iv_skew, otm_call_iv, otm_put_iv,
+            strike_data,
             target_strike, concentration_count, distance_pct, updated_at
-          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         `).bind(
           symbol,
           r.spot_price    ?? null, r.expiry_date ?? null, r.dte ?? null, r.expiry_type ?? null,
@@ -570,6 +576,7 @@ export default {
           r.dex           ?? null, r.vanna       ?? null, r.charm       ?? null,
           r.call_vol      ?? null, r.put_vol     ?? null, r.iv_skew     ?? null,
           r.otm_call_iv   ?? null, r.otm_put_iv  ?? null,
+          r.strike_data   ?? null,
           r.target_strike ?? null, r.concentration_count ?? null, r.distance_pct ?? null,
           updated_at      ?? new Date().toISOString()
         ));
