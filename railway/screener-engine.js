@@ -143,8 +143,23 @@ export async function analyzeSymbol(symbol) {
   // Call Wall 계산 (_strikeRows 사용 전에 먼저 계산)
   const callWall = calcCallWall(rows, spot);
 
-  // D1 저장용 rows 구성 (_strikeRows 제거)
   const dbRows = rows.map(r => {
+    const strikeData = r._strikeRows?.length
+      ? JSON.stringify(r._strikeRows.map(s => ({
+          strike:     s.strike,
+          call_iv:    s.call_iv    ?? null,
+          put_iv:     s.put_iv     ?? null,
+          avg_iv:     s.avg_iv     ?? null,
+          call_delta: s.call_delta ?? null,
+          call_oi:    s.call_oi    ?? null,
+          put_oi:     s.put_oi     ?? null,
+          dex:        s.dex        ?? null,
+          gex:        s.gex        ?? null,
+          vanna:      s.vanna      ?? null,
+          charm:      s.charm      ?? null,
+        })))
+      : null;
+
     const row = { ...r };
     delete row._strikeRows;
     return {
@@ -162,13 +177,12 @@ export async function analyzeSymbol(symbol) {
       dex:                 row.dex        != null ? +row.dex.toFixed(6)        : null,
       vanna:               row.vanna      != null ? +row.vanna.toFixed(6)      : null,
       charm:               row.charm      != null ? +row.charm.toFixed(6)      : null,
-      // 신규 추가 필드
       call_vol:            row.call_vol   ?? null,
       put_vol:             row.put_vol    ?? null,
       iv_skew:             row.iv_skew    != null ? +row.iv_skew.toFixed(4)   : null,
       otm_call_iv:         row.otm_call_iv != null ? +row.otm_call_iv.toFixed(4) : null,
       otm_put_iv:          row.otm_put_iv  != null ? +row.otm_put_iv.toFixed(4)  : null,
-      // Call Wall — 모든 만기 행에 동일하게 저장 (종목 레벨 값)
+      strike_data:         strikeData,
       target_strike:       callWall.target_strike,
       concentration_count: callWall.concentration_count,
       distance_pct:        callWall.distance_pct,
