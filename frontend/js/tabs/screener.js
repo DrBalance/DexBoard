@@ -1,12 +1,12 @@
 // ============================================
-// js/tabs/screener.js — Screener 탭 v4
+// js/tabs/screener.js — Screener 탭 v5
 //
-// 변경사항 (v3 대비):
-//   - SPY 50 그룹 구분 제거
-//   - 소형 라인차트(스파크라인) 제거
-//   - watchlist 기반 종목 관리
-//   - 만기별 rows를 종목 단위로 그룹핑하여 표시
-//   - Call Wall 정보 (target_strike / concentration_count / distance_pct) 표시
+// 변경사항 (v4 대비):
+//   - watchlist JOIN 필드 표시 (회사명, 섹터, 시가총액, Short Float, Beta)
+//   - 시가총액 B/M 단위 자동 변환 (fmtMarketCap)
+//   - Short Float ≥20% → red, ≥10% → amber 색상 구분
+//   - Beta ≥1.5 → red, ≤0.5 → green 색상 구분
+//   - 테이블 헤더 컬럼 순서 재정렬
 // ============================================
 
 import { state } from '../state.js';
@@ -369,6 +369,12 @@ function groupBySymbol(rows) {
       map[r.symbol] = {
         symbol:              r.symbol,
         spot_price:          r.spot_price,
+        // watchlist JOIN 필드
+        company:             r.company    ?? null,
+        sector:              r.sector     ?? null,
+        market_cap:          r.market_cap ?? null,
+        short_float:         r.short_float ?? null,
+        beta:                r.beta       ?? null,
         // Call Wall (종목 레벨 — 모든 만기 행에 동일값)
         target_strike:       r.target_strike,
         concentration_count: r.concentration_count ?? 0,
@@ -504,6 +510,11 @@ function renderTable(filter = 'all') {
     <thead>
       <tr>
         <th class="sc-th sortable" data-col="symbol">종목</th>
+        <th class="sc-th sortable" data-col="company">회사명</th>
+        <th class="sc-th sortable" data-col="sector">섹터</th>
+        <th class="sc-th sortable" data-col="market_cap">시가총액</th>
+        <th class="sc-th sortable" data-col="short_float">Short%</th>
+        <th class="sc-th sortable" data-col="beta">Beta</th>
         <th class="sc-th sortable" data-col="spot_price">현재가</th>
         <th class="sc-th sortable" data-col="flip_strike">플립존</th>
         <th class="sc-th sortable" data-col="dist_pct">플립존 거리</th>
@@ -511,7 +522,7 @@ function renderTable(filter = 'all') {
         <th class="sc-th sortable" data-col="atm_iv">ATM IV</th>
         <th class="sc-th sortable" data-col="concentration_count">Call Wall</th>
         <th class="sc-th sortable" data-col="target_strike">집중 스트라이크</th>
-        <th class="sc-th sortable" data-col="distance_pct">현재가 거리</th>
+        <th class="sc-th sortable" data-col="distance_pct">CW 거리</th>
         <th class="sc-th">만기 수</th>
         <th class="sc-th">분석</th>
       </tr>
@@ -548,6 +559,15 @@ function renderTable(filter = 'all') {
   document.getElementById('sc-footer').textContent = `${rows.length}개 종목 표시`;
 }
 
+// ── 시가총액 B/M 변환
+function fmtMarketCap(val) {
+  if (val == null) return '<span class="muted">-</span>';
+  const abs = Math.abs(val);
+  if (abs >= 1e9) return `$${(val / 1e9).toFixed(1)}B`;
+  if (abs >= 1e6) return `$${(val / 1e6).toFixed(0)}M`;
+  return `$${val.toLocaleString()}`;
+}
+
 // ── 행 렌더
 function buildRow(r) {
   const spot      = r.spot_price;
@@ -557,6 +577,17 @@ function buildRow(r) {
   const callCount = r.concentration_count ?? 0;
   const targetSt  = r.target_strike;
   const callDist  = r.distance_pct;   // Call Wall 스트라이크 vs 현재가
+
+  // ── watchlist 필드
+  const companyStr    = r.company    ? `<span class="sc-company" title="${r.company}">${r.company}</span>` : '<span class="muted">-</span>';
+  const sectorStr     = r.sector     ? `<span class="sc-sector-tag">${r.sector}</span>` : '<span class="muted">-</span>';
+  const mcapStr       = fmtMarketCap(r.market_cap);
+  const shortFloatStr = r.short_float != null
+    ? `<span class="${r.short_float >= 20 ? 'red' : r.short_float >= 10 ? 'amber' : 'muted'}">${r.short_float.toFixed(1)}%</span>`
+    : '<span class="muted">-</span>';
+  const betaStr = r.beta != null
+    ? `<span class="${r.beta >= 1.5 ? 'red' : r.beta <= 0.5 ? 'green' : ''}">${r.beta.toFixed(2)}</span>`
+    : '<span class="muted">-</span>';
 
   // 플립존 거리
   const isNear     = distPct != null && Math.abs(distPct) <= 3;
@@ -601,6 +632,11 @@ function buildRow(r) {
       <td class="sc-td-sym">
         <span class="sc-sym">${r.symbol}</span>
       </td>
+      <td class="sc-td-company">${companyStr}</td>
+      <td class="sc-td-sector">${sectorStr}</td>
+      <td class="sc-td-mcap">${mcapStr}</td>
+      <td class="sc-td-short">${shortFloatStr}</td>
+      <td class="sc-td-beta">${betaStr}</td>
       <td class="sc-td-price">${spot ? '$' + spot.toFixed(2) : '-'}</td>
       <td class="sc-td-price">${flipStr}</td>
       <td class="sc-td-dist">${distStr}</td>
@@ -706,20 +742,27 @@ function renderBbHeatmap(container, data) {
     const vals    = series[s.symbol] ?? [];
     const lastVal = [...vals].reverse().find(v => v != null);
     const lastPct = lastVal != null ? (lastVal * 100).toFixed(0) : '-';
+
+    // 30% 이하 = 주목 대상 (정상 표시), 초과 = 흐릿하게
+    const isLow      = lastVal == null || lastVal <= 0.3;
     const scoreColor = lastVal == null ? '#64748b' : lastVal >= 0.8 ? '#22c55e' : lastVal <= 0.2 ? '#ef4444' : '#f59e0b';
+
+    // 흐릿 처리: grayscale + opacity
+    const dimStyle = isLow ? '' : 'filter:grayscale(1);opacity:0.3;';
+
     const tooltipParts = vals.map((v, i) => {
       const [, m, day] = (dates[i] ?? '').split('-');
       return `${+m}/${+day}: ${v != null ? (v*100).toFixed(0)+'%' : '-'}`;
     }).join('\n');
     return `
-      <div class="bb-hm-row" data-sym="${s.symbol}">
+      <div class="bb-hm-row${isLow ? '' : ' bb-hm-row-dim'}" data-sym="${s.symbol}" style="${dimStyle}">
         <div class="bb-hm-sym">${s.symbol}</div>
         <div class="bb-hm-bar-wrap" title="${tooltipParts}">
           <div class="bb-hm-bar-track">
             <div class="bb-hm-bar-fill" style="width:100%;background:${buildGradientBar(vals, 10)}"></div>
           </div>
         </div>
-        <div class="bb-hm-score" style="color:${scoreColor}">${lastPct}%</div>
+        <div class="bb-hm-score" style="color:${isLow ? scoreColor : '#475569'}">${lastPct}%</div>
         <div class="bb-hm-actions">
           <button class="bb-holdings-btn" data-etf="${s.symbol}" type="button">종목 ▼</button>
         </div>
