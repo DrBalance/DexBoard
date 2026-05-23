@@ -380,12 +380,12 @@ function _renderHeatmap(expirations, weighted) {
   enabledExpiries.forEach(([expiry, cfg], rowIdx) => {
     const y = HEADER_H + rowIdx * ROW_H;
     lctx.fillStyle = cfg.color;
-    lctx.font = '13px monospace';
+    lctx.font = '15px monospace';
     lctx.textAlign = 'right';
     lctx.fillText(expiry.slice(5), LABEL_W - 4, y + ROW_H/2 + 3);
-    lctx.fillStyle = '#555';
-    lctx.font = '11px monospace';
-    lctx.fillText(cfg.dte === 0 ? '0DTE' : `${cfg.dte}d`, LABEL_W - 4, y + ROW_H/2 + 12);
+    lctx.fillStyle = '#aaa';
+    lctx.font = '12px monospace';
+    lctx.fillText(cfg.dte === 0 ? '0DTE' : `${cfg.dte}d`, LABEL_W - 4, y + ROW_H/2 + 16);
   });
 
   // 구분선
@@ -395,8 +395,8 @@ function _renderHeatmap(expirations, weighted) {
   lctx.beginPath(); lctx.moveTo(0, sumY-4); lctx.lineTo(LABEL_W, sumY-4); lctx.stroke();
 
   // 합산 라벨
-  lctx.fillStyle = '#c9d1d9';
-  lctx.font = '13px monospace';
+  lctx.fillStyle = '#fff';
+  lctx.font = '15px monospace';
   lctx.textAlign = 'right';
   lctx.fillText('합산', LABEL_W - 4, sumY + SUM_H/2 + 4);
 
@@ -411,11 +411,11 @@ function _renderHeatmap(expirations, weighted) {
   ctx.fillRect(0, 0, canvasW, canvasH);
 
   // 스트라이크 헤더
-  ctx.font = '9px monospace'; ctx.textAlign = 'center';
+  ctx.font = '13px monospace'; ctx.textAlign = 'center';
   allStrikes.forEach((strike, i) => {
     const x = i * CELL_W + CELL_W / 2;
     const isSpot = i === spotCol;
-    ctx.fillStyle = isSpot ? C_SPOT : (strike % 5 === 0 ? '#8b949e' : 'transparent');
+    ctx.fillStyle = isSpot ? C_SPOT : (strike % 5 === 0 ? '#ffffff' : 'transparent');
     if (isSpot || strike % 5 === 0) ctx.fillText(`$${strike}`, x, HEADER_H - 5);
   });
 
@@ -504,7 +504,7 @@ function _renderHeatmap(expirations, weighted) {
     ctx.beginPath();
     ctx.moveTo(mx, sumY-2); ctx.lineTo(mx-5, sumY-9); ctx.lineTo(mx+5, sumY-9);
     ctx.closePath(); ctx.fill();
-    ctx.font = '9px monospace'; ctx.textAlign = 'center';
+    ctx.font = '13px monospace'; ctx.textAlign = 'center';
     ctx.fillText(`$${spot.toFixed(0)}`, mx, sumY-11);
   }
 
