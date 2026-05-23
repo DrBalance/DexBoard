@@ -520,7 +520,7 @@ async function loadAndRenderCharts(symbol, scoreRow) {
       const strikeRows  = strikesData.rows ?? [];
       strikeRows.forEach(s => {
         if (!strikesExpirations[s.expiry_date]) {
-          strikesExpirations[s.expiry_date] = { strikes: [], flip_strike: null };
+          strikesExpirations[s.expiry_date] = { strikes: [], flip_strike: s.flip_strike ?? null };
         }
         strikesExpirations[s.expiry_date].strikes.push({
           strike: s.strike,
