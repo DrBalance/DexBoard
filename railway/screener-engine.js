@@ -1,5 +1,5 @@
 // ============================================
-// screener-engine.js — Railway 전용 스크리너 엔진 v4
+// screener-engine.js — Railway 전용 스크리너 엔진 v5
 //
 // 설계 원칙:
 //   - vanna_analyzer.js의 검증된 파이프라인 재사용
@@ -83,7 +83,9 @@ function calcCallWall(rows, spot) {
     let maxStrike = null;
 
     for (const s of strikeRows) {
-      const callDex = s.dex != null ? s.dex : 0;
+      // dex 양수 = 콜 DEX (structure.js와 동일 기준)
+      // 풋 DEX(음수)는 제외 — 기관 콜 매도 집중 스트라이크만 탐지
+      const callDex = (s.dex != null && s.dex > 0) ? s.dex : 0;
       if (callDex > maxDex) {
         maxDex    = callDex;
         maxStrike = s.strike;
