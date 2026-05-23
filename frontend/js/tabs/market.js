@@ -416,7 +416,7 @@ function _renderHeatmap(expirations, weighted) {
     const x = i * CELL_W + CELL_W / 2;
     const isSpot = i === spotCol;
     ctx.fillStyle = isSpot ? C_SPOT : (strike % 5 === 0 ? '#ffffff' : 'transparent');
-    if (isSpot || strike % 5 === 0) ctx.fillText(`$${strike}`, x, HEADER_H - 5);
+    if (isSpot || strike % 5 === 0) ctx.fillText(`${strike}`, x, HEADER_H - 5);
   });
 
   // 만기별 행
