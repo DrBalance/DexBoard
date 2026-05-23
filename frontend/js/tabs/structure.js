@@ -1571,7 +1571,7 @@ function _stRenderHeatmap(expirations, weighted, spot) {
     ctx.fillStyle=_ST_C_SPOT;
     ctx.beginPath(); ctx.moveTo(mx,sumY-2); ctx.lineTo(mx-5,sumY-9); ctx.lineTo(mx+5,sumY-9);
     ctx.closePath(); ctx.fill();
-    ctx.font='9px monospace'; ctx.textAlign='center';
+    ctx.font='13px monospace'; ctx.textAlign='center';
     ctx.fillText(`$${spot.toFixed(0)}`,mx,sumY-11);
   }
 
