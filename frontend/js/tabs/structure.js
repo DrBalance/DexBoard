@@ -254,16 +254,18 @@ async function loadStructure(symbol) {
 
   try {
     const [screenerRes, flowRes] = await Promise.all([
-      fetch(`${CF_API}/api/screener/symbol/${symbol}`),
+      fetch(`${CF_API}/api/screener/latest`),
       fetch(`${CF_API}/api/structure/${symbol}`),
     ]);
 
-    const screenerData = screenerRes.ok ? await screenerRes.json() : null;
-    const flowData     = flowRes.ok    ? await flowRes.json()    : null;
+    const screenerAll = await screenerRes.json();
+    const flowData    = flowRes.ok ? await flowRes.json() : null;
 
-    // screener/symbol/:sym は種目단위 집계 데이터 반환
-    const scoreRow = screenerData?.symbol ? screenerData : null;
+    const scoreRow = Array.isArray(screenerAll)
+      ? screenerAll.find(r => r.symbol === symbol)
+      : null;
 
+    // 새 API: { monthly, weekly, context } 구조
     const monthly = flowData?.monthly ?? [];
     const weekly  = flowData?.weekly  ?? null;
     const context = flowData?.context ?? null;
@@ -520,7 +522,7 @@ async function loadAndRenderCharts(symbol, scoreRow) {
       const strikeRows  = strikesData.rows ?? [];
       strikeRows.forEach(s => {
         if (!strikesExpirations[s.expiry_date]) {
-          strikesExpirations[s.expiry_date] = { strikes: [], flip_strike: s.flip_strike ?? null };
+          strikesExpirations[s.expiry_date] = { strikes: [], flip_strike: null };
         }
         strikesExpirations[s.expiry_date].strikes.push({
           strike: s.strike,
@@ -1491,8 +1493,8 @@ function _stRenderHeatmap(expirations, weighted, spot) {
     const y = HEADER_H + rowIdx * ROW_H;
     lctx.fillStyle=cfg.color; lctx.font='15px monospace'; lctx.textAlign='right';
     lctx.fillText(expiry.slice(5), LABEL_W-4, y+ROW_H/2+3);
-    lctx.fillStyle='#aaa'; lctx.font='13px monospace';
-    lctx.fillText(cfg.dte===0?'0DTE':`${cfg.dte}d`, LABEL_W-4, y+ROW_H/2+14);
+    lctx.fillStyle='#aaa'; lctx.font='12px monospace';
+    lctx.fillText(cfg.dte===0?'0DTE':`${cfg.dte}d`, LABEL_W-4, y+ROW_H/2+16);
   });
   const sumY = HEADER_H + rows * ROW_H + 4;
   lctx.strokeStyle='rgba(255,255,255,0.12)'; lctx.lineWidth=1; lctx.setLineDash([]);
