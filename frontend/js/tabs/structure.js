@@ -254,18 +254,16 @@ async function loadStructure(symbol) {
 
   try {
     const [screenerRes, flowRes] = await Promise.all([
-      fetch(`${CF_API}/api/screener/latest`),
+      fetch(`${CF_API}/api/screener/symbol/${symbol}`),
       fetch(`${CF_API}/api/structure/${symbol}`),
     ]);
 
-    const screenerAll = await screenerRes.json();
-    const flowData    = flowRes.ok ? await flowRes.json() : null;
+    const screenerData = screenerRes.ok ? await screenerRes.json() : null;
+    const flowData     = flowRes.ok    ? await flowRes.json()    : null;
 
-    const scoreRow = Array.isArray(screenerAll)
-      ? screenerAll.find(r => r.symbol === symbol)
-      : null;
+    // screener/symbol/:sym は種目단위 집계 데이터 반환
+    const scoreRow = screenerData?.symbol ? screenerData : null;
 
-    // 새 API: { monthly, weekly, context } 구조
     const monthly = flowData?.monthly ?? [];
     const weekly  = flowData?.weekly  ?? null;
     const context = flowData?.context ?? null;
