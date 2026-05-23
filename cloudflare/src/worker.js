@@ -705,18 +705,11 @@ export default {
         if (!ticker) return json({ error: "ticker 필요" }, 400, corsHeaders);
         const sym = ticker.toUpperCase();
 
-        // 1. watchlist 그룹 없으면 생성
-        let group = await env.DB.prepare(
-          "SELECT id FROM groups WHERE code = 'watchlist' LIMIT 1"
+        // 1. watchlist 그룹 조회 (대소문자 무관, 수동 생성된 그룹 사용)
+        const group = await env.DB.prepare(
+          "SELECT id FROM groups WHERE UPPER(code) = 'WATCHLIST' LIMIT 1"
         ).first();
-        if (!group) {
-          await env.DB.prepare(
-            "INSERT OR IGNORE INTO groups (code, name) VALUES ('watchlist', 'Watchlist')"
-          ).run();
-          group = await env.DB.prepare(
-            "SELECT id FROM groups WHERE code = 'watchlist' LIMIT 1"
-          ).first();
-        }
+        if (!group) return json({ ok: false, error: "WATCHLIST 그룹이 존재하지 않습니다. admin에서 먼저 생성해주세요." }, 400, corsHeaders);
         const groupId = group.id;
 
         // 2. symbols 테이블에 추가
