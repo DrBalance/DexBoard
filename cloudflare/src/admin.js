@@ -1378,10 +1378,19 @@ export async function handleAdmin(path, request, env) {
   if (path === '/api/admin/watchlist-scan' && request.method === 'GET') {
     const rows = await env.DB.prepare(`
       SELECT
-        w.ticker, w.name, w.sector, w.last_price, w.added_date,
-        CASE WHEN sg.symbol IS NOT NULL THEN 1 ELSE 0 END as is_watchlist
+        w.ticker,
+        w.company,
+        w.sector,
+        w.market_cap,
+        w.short_float,
+        w.beta,
+        w.last_scan_date,
+        w.is_watchlist,
+        w.added_date,
+        CASE WHEN sg.symbol IS NOT NULL THEN 1 ELSE 0 END as in_group
       FROM watchlist w
       LEFT JOIN symbol_groups sg ON sg.symbol = w.ticker
+      GROUP BY w.ticker
       ORDER BY w.ticker ASC
     `).all();
     return json({ symbols: rows.results ?? [] });
@@ -1389,12 +1398,19 @@ export async function handleAdmin(path, request, env) {
 
   // ── POST /api/admin/watchlist-scan (종목 추가)
   if (path === '/api/admin/watchlist-scan' && request.method === 'POST') {
-    const { ticker } = await request.json();
+    const { ticker, company, sector, market_cap, short_float, beta } = await request.json();
     if (!ticker) return json({ error: 'ticker 필요' }, 400);
     const sym = ticker.toUpperCase().trim();
-    await env.DB.prepare(
-      `INSERT OR IGNORE INTO watchlist (ticker, added_date) VALUES (?, date('now'))`
-    ).bind(sym).run();
+    await env.DB.prepare(`
+      INSERT INTO watchlist (ticker, company, sector, market_cap, short_float, beta, added_date)
+      VALUES (?, ?, ?, ?, ?, ?, date('now'))
+      ON CONFLICT(ticker) DO UPDATE SET
+        company     = COALESCE(excluded.company,     company),
+        sector      = COALESCE(excluded.sector,      sector),
+        market_cap  = COALESCE(excluded.market_cap,  market_cap),
+        short_float = COALESCE(excluded.short_float, short_float),
+        beta        = COALESCE(excluded.beta,        beta)
+    `).bind(sym, company ?? null, sector ?? null, market_cap ?? null, short_float ?? null, beta ?? null).run();
     return json({ ok: true, ticker: sym });
   }
 
@@ -1406,9 +1422,62 @@ export async function handleAdmin(path, request, env) {
     return json({ ok: true, ticker: sym });
   }
 
+  // ── POST /api/admin/prune-watchlist (기준 미달 종목 수동 정리)
+  if (path === '/api/admin/prune-watchlist' && request.method === 'POST') {
+    try {
+      const rows = await env.DB.prepare(`
+        SELECT
+          g.symbol,
+          g.concentration_count,
+          g.distance_pct,
+          GROUP_CONCAT(DISTINCT gr.code) as groups
+        FROM screener_gex_daily g
+        JOIN symbol_groups sg ON sg.symbol = g.symbol
+        JOIN groups gr ON gr.id = sg.group_id
+        WHERE gr.code = 'watchlist'
+          AND g.date = (SELECT MAX(date) FROM screener_gex_daily WHERE symbol = g.symbol)
+        GROUP BY g.symbol
+      `).all();
+
+      const watchlistGroup = await env.DB.prepare(
+        "SELECT id FROM groups WHERE UPPER(code) = 'WATCHLIST' LIMIT 1"
+      ).first();
+
+      const removed = [];
+      for (const row of (rows.results ?? [])) {
+        const groups = (row.groups ?? '').split(',').map(g => g.trim()).filter(Boolean);
+        const isManual = groups.some(g => g.toLowerCase() !== 'watchlist');
+        if (isManual) continue;
+
+        const count  = row.concentration_count ?? 0;
+        const upside = row.distance_pct != null ? -row.distance_pct : null;
+        const fail   = count <= 3 || (upside != null && upside < 3);
+        if (!fail) continue;
+
+        if (watchlistGroup) {
+          await env.DB.prepare(
+            'DELETE FROM symbol_groups WHERE group_id = ? AND symbol = ?'
+          ).bind(watchlistGroup.id, row.symbol).run();
+        }
+        await env.DB.prepare(
+          'UPDATE watchlist SET is_watchlist = 0 WHERE ticker = ?'
+        ).bind(row.symbol).run();
+
+        // screener_gex_daily 데이터 삭제
+        await env.DB.prepare(
+          'DELETE FROM screener_gex_daily WHERE symbol = ?'
+        ).bind(row.symbol).run();
+
+        removed.push({ symbol: row.symbol, count, upside: upside?.toFixed(1) });
+      }
+
+      return json({ ok: true, removed });
+    } catch (err) {
+      return json({ ok: false, error: err.message }, 500);
+    }
+  }
 
 
-  // ── GET  /api/admin/bb-map
   if (path === '/api/admin/bb-map' && request.method === 'GET') {
     return handleGetBBMap(env);
   }
@@ -1588,6 +1657,7 @@ async function handleRemoveGroupSymbol(id, symbol, env) {
       env.DB.prepare('DELETE FROM options_flow WHERE symbol=?').bind(symbol),
       env.DB.prepare('DELETE FROM price_indicators WHERE symbol=?').bind(symbol),
       env.DB.prepare('DELETE FROM screener_gex_daily WHERE symbol=?').bind(symbol),
+      env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(symbol),
     ]);
     return json({ ok: true, symbol, group_id: id, orphan_removed: true });
   }

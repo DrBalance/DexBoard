@@ -772,7 +772,46 @@ export default {
       }
     }
 
-    // ── POST /api/watchlist/demote ──────────────────────────────
+    // ── POST /api/watchlist/prune ───────────────────────────
+    // 기준 미달 종목을 watchlist 그룹에서 제거 + is_watchlist = 0
+    if (request.method === "POST" && path === "/api/watchlist/prune") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const { ticker } = await request.json();
+        if (!ticker) return json({ error: "ticker 필요" }, 400, corsHeaders);
+        const sym = ticker.toUpperCase();
+
+        // watchlist 그룹 ID 조회
+        const group = await env.DB.prepare(
+          "SELECT id FROM groups WHERE UPPER(code) = 'WATCHLIST' LIMIT 1"
+        ).first();
+
+        if (group) {
+          await env.DB.prepare(
+            "DELETE FROM symbol_groups WHERE group_id = ? AND symbol = ?"
+          ).bind(group.id, sym).run();
+        }
+
+        // watchlist 테이블 is_watchlist = 0 재설정
+        await env.DB.prepare(
+          "UPDATE watchlist SET is_watchlist = 0 WHERE ticker = ?"
+        ).bind(sym).run();
+
+        // screener_gex_daily 데이터 삭제
+        await env.DB.prepare(
+          "DELETE FROM screener_gex_daily WHERE symbol = ?"
+        ).bind(sym).run();
+
+        return json({ ok: true, ticker: sym }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
+
     if (request.method === "POST" && path === "/api/watchlist/demote") {
       try {
         const { ticker } = await request.json();
