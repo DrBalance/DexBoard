@@ -721,3 +721,9 @@
   .bb-hm-score { width: 34px; font-size: 10px; }
   .bb-hm-cell  { height: 22px; }
 }
+
+/* ── 유틸리티 색상 클래스 ───────────────────────────── */
+.red    { color: var(--red,   #ef4444); }
+.green  { color: var(--green, #22c55e); }
+.amber  { color: var(--yellow,#eab308); }
+.muted  { color: var(--text3, #6e7681); }
