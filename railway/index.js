@@ -1234,18 +1234,6 @@ async function runCollect(symbols, date) {
     // 심볼 배열 정규화 (문자열 또는 객체 모두 허용)
     const symList = symbols.map(s => (typeof s === 'string' ? s : s.symbol));
 
-    // 스캔 전 watchlist 그룹 초기화 (이전 스캔 결과 제거)
-    try {
-      await fetch(`${CF_WORKER_URL}/api/watchlist/group-reset`, {
-        method:  'POST',
-        headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
-        signal:  AbortSignal.timeout(10000),
-      });
-      console.log('[Screener] watchlist 그룹 초기화 완료');
-    } catch (e) {
-      console.warn('[Screener] watchlist 그룹 초기화 실패 (계속 진행):', e.message);
-    }
-
     const result = await runScreenerCollection(
       CF_WORKER_URL,
       CRON_SECRET,
@@ -1435,6 +1423,68 @@ if (session !== lastSession) {
 if (isWeekday() && h === 2 && new Date().getMinutes() === 0) {
   console.log('[scheduler] ET 02:00 prevClose 검증 크론');
   fetchAndSavePrevClose().catch(e => console.error('[prevClose] 크론 실패:', e.message));
+}
+
+// 평일 ET 18:00 — 전체 watchlist 스캔 자동 실행
+if (isWeekday() && h === 18 && new Date().getMinutes() === 0) {
+  if (!watchlistScanState.running) {
+    console.log('[scheduler] ET 18:00 — 전체 watchlist 스캔 시작');
+    watchlistScanState = {
+      running:   true,
+      startedAt: new Date().toISOString(),
+      progress:  { done: 0, total: 0, promoted: 0, errors: 0 },
+      lastRun:   watchlistScanState.lastRun,
+    };
+    (async () => {
+      try {
+        const result = await runWatchlistScan(
+          CF_WORKER_URL,
+          CRON_SECRET,
+          ({ done, total, promoted, errors }) => {
+            watchlistScanState.progress = { done, total, promoted, errors };
+          }
+        );
+        watchlistScanState = {
+          running:   false,
+          startedAt: null,
+          progress:  null,
+          lastRun: {
+            date:     getTodayET(),
+            ok:       result.ok,
+            scanned:  result.scanned,
+            promoted: result.promoted,
+            errors:   result.errors,
+            promoted_list: result.promotedList?.slice(0, 20) ?? [],
+            ts:       new Date().toISOString(),
+          },
+        };
+        console.log(`[scheduler] watchlist 스캔 완료 — 스캔 ${result.scanned}개, 승격 ${result.promoted}개`);
+
+        // 스캔 완료 후 기준 미달 종목 자동 정리
+        try {
+          const pruneResult = await pruneWatchlistGroup(CF_WORKER_URL, CRON_SECRET);
+          console.log(`[scheduler] prune 완료 — 제거 ${pruneResult.removed.length}개`);
+        } catch (e) {
+          console.warn('[scheduler] prune 실패 (계속 진행):', e.message);
+        }
+      } catch (err) {
+        console.error('[scheduler] watchlist 스캔 오류:', err.message);
+        watchlistScanState = {
+          running:   false,
+          startedAt: null,
+          progress:  null,
+          lastRun: {
+            date:  getTodayET(),
+            ok:    false,
+            error: err.message,
+            ts:    new Date().toISOString(),
+          },
+        };
+      }
+    })();
+  } else {
+    console.warn('[scheduler] ET 18:00 watchlist 스캔 — 이미 진행 중, 스킵');
+  }
 }
 
 // 평일 ET 09:00~16:59, 15분마다 DEX 계산

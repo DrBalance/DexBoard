@@ -402,14 +402,14 @@ export async function runWatchlistScan(cfWorkerUrl, cronSecret, onProgress) {
       onProgress({ done: i + 1, total: candidates.length, promoted: promoted.length, errors: errors.length });
     }
 
-    // 요청 분산: 기본 2000ms + 랜덤 지터
+    // 요청 분산: 기본 3000ms + 랜덤 지터 (IP 차단 방지)
     if (i < candidates.length - 1) {
-      await jitteredDelay(2000, 1000);
+      await jitteredDelay(3000, 1500);
 
-      // 10종목마다 5초 추가 휴식 (버스트 방지)
+      // 10종목마다 10초 추가 휴식 (버스트 방지)
       if ((i + 1) % 10 === 0) {
         console.log(`[watchlist] 버스트 방지 대기 (${i + 1}/${candidates.length})...`);
-        await sleep(5000);
+        await sleep(10000);
       }
     }
   }
