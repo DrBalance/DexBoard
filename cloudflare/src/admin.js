@@ -1428,33 +1428,47 @@ export async function handleAdmin(path, request, env) {
       const watchlistGroup = await env.DB.prepare(
         "SELECT id FROM groups WHERE UPPER(code) = 'WATCHLIST' LIMIT 1"
       ).first();
+      if (!watchlistGroup) return json({ ok: false, error: 'WATCHLIST 그룹 없음' }, 400);
 
-      // watchlist 그룹 종목 중 기준 미달 티커 조회
-      // 기준: concentration_count <= 3 OR 상승여력(-distance_pct) < 3%
-      const rows = await env.DB.prepare(`
-        SELECT DISTINCT g.symbol, g.concentration_count, g.distance_pct,
-          GROUP_CONCAT(DISTINCT gr.code) as groups
-        FROM screener_gex_daily g
-        JOIN symbol_groups sg ON sg.symbol = g.symbol
-        JOIN groups gr ON gr.id = sg.group_id
-        GROUP BY g.symbol
-        HAVING SUM(CASE WHEN gr.code = 'watchlist' THEN 1 ELSE 0 END) > 0
-          AND SUM(CASE WHEN gr.code != 'watchlist' THEN 1 ELSE 0 END) = 0
-          AND (g.concentration_count <= 3 OR -g.distance_pct < 3)
-      `).all();
+      // watchlist 그룹에만 속한 종목 목록
+      const candidates = await env.DB.prepare(`
+        SELECT sg.symbol
+        FROM symbol_groups sg
+        WHERE sg.group_id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM symbol_groups sg2
+            WHERE sg2.symbol = sg.symbol AND sg2.group_id != ?
+          )
+      `).bind(watchlistGroup.id, watchlistGroup.id).all();
 
       const removed = [];
-      for (const row of (rows.results ?? [])) {
-        const sym = row.symbol;
+      for (const { symbol } of (candidates.results ?? [])) {
+        // 해당 종목의 최신 concentration_count, distance_pct 조회
+        const row = await env.DB.prepare(`
+          SELECT concentration_count, distance_pct
+          FROM screener_gex_daily
+          WHERE symbol = ?
+          LIMIT 1
+        `).bind(symbol).first();
+
+        if (!row) continue;
+
+        const count  = row.concentration_count ?? 0;
+        const upside = row.distance_pct != null ? -row.distance_pct : null;
+
+        // 기준 미달 판정: 집중도 <= 3 OR 상승여력 < 3%
+        const isBelowCount  = count <= 3;
+        const isBelowUpside = upside != null && upside < 3;
+        if (!isBelowCount && !isBelowUpside) continue;
+
         await env.DB.batch([
-          watchlistGroup
-            ? env.DB.prepare('DELETE FROM symbol_groups WHERE group_id=? AND symbol=?').bind(watchlistGroup.id, sym)
-            : env.DB.prepare('SELECT 1'),
-          env.DB.prepare('DELETE FROM screener_gex_daily WHERE symbol=?').bind(sym),
-          env.DB.prepare('DELETE FROM symbols WHERE symbol=?').bind(sym),
-          env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(sym),
+          env.DB.prepare('DELETE FROM symbol_groups WHERE group_id=? AND symbol=?').bind(watchlistGroup.id, symbol),
+          env.DB.prepare('DELETE FROM screener_gex_daily WHERE symbol=?').bind(symbol),
+          env.DB.prepare('DELETE FROM symbols WHERE symbol=?').bind(symbol),
+          env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(symbol),
         ]);
-        removed.push({ symbol: sym, count: row.concentration_count, upside: row.distance_pct != null ? (-row.distance_pct).toFixed(1) : null });
+
+        removed.push({ symbol, count, upside: upside?.toFixed(1) });
       }
 
       return json({ ok: true, removed });
