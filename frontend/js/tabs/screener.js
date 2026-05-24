@@ -378,11 +378,8 @@ function groupBySymbol(rows) {
         concentration_count: r.concentration_count ?? 0,
         distance_pct:        r.distance_pct,
         updated_at:          r.updated_at,
-        // 그룹 정보
-        is_watchlist_group:  r.is_watchlist_group === 1,
-        is_manual_group:     r.is_manual_group === 1,
-        // watchlist 그룹이면서 다른 그룹에도 속하면 겹침
-        is_overlap:          r.is_watchlist_group === 1 && r.is_manual_group === 1,
+        // 그룹 정보 (groups = 'watchlist,관심종목' 형태의 콤마 문자열)
+        groups: (r.groups ?? '').split(',').map(g => g.trim()).filter(Boolean),
         expiries:            [],
         _gexSum:   0,
         _flipList: [],
@@ -489,9 +486,23 @@ function renderTable(filter = 'all') {
   if (filter === 'below')    rows = rows.filter(r => (r.dist_pct ?? 0) < 0);
   if (filter === 'near')     rows = rows.filter(r => Math.abs(r.dist_pct ?? 999) <= 3);
 
-  // 그룹 분리: watchlist 그룹 / 수동 지정 그룹
-  const watchlistRows = rows.filter(r => r.is_watchlist_group);
-  const manualRows    = rows.filter(r => !r.is_watchlist_group);
+  // 그룹별 동적 분리 (groups 문자열 기반)
+  // 그룹 우선순위: watchlist가 아닌 그룹 먼저, watchlist 마지막
+  const groupMap = {};
+  for (const r of rows) {
+    const grps = r.groups ?? [];
+    if (!grps.length) {
+      // 그룹 없는 종목은 watchlist로 처리
+      if (!groupMap['watchlist']) groupMap['watchlist'] = [];
+      groupMap['watchlist'].push(r);
+    } else {
+      for (const g of grps) {
+        if (!groupMap[g]) groupMap[g] = [];
+        // 중복 방지 (여러 그룹에 속한 종목)
+        if (!groupMap[g].find(x => x.symbol === r.symbol)) groupMap[g].push(r);
+      }
+    }
+  }
 
   const sortFn = (a, b) => {
     const av  = a[sortCol] ?? -Infinity;
@@ -499,8 +510,6 @@ function renderTable(filter = 'all') {
     const cmp = typeof av === 'string' ? av.localeCompare(bv) : av - bv;
     return sortDir === 'asc' ? cmp : -cmp;
   };
-  watchlistRows.sort(sortFn);
-  manualRows.sort(sortFn);
 
   const theadHtml = `
     <thead>
@@ -512,13 +521,13 @@ function renderTable(filter = 'all') {
         <th class="sc-th sortable" data-col="short_float">Short%</th>
         <th class="sc-th sortable" data-col="beta">Beta</th>
         <th class="sc-th sortable" data-col="spot_price">현재가</th>
+        <th class="sc-th sortable" data-col="target_strike">목표가</th>
+        <th class="sc-th sortable" data-col="distance_pct">상승여력</th>
+        <th class="sc-th sortable" data-col="concentration_count">집중도</th>
         <th class="sc-th sortable" data-col="flip_strike">플립존</th>
         <th class="sc-th sortable" data-col="dist_pct">플립존 거리</th>
         <th class="sc-th sortable" data-col="total_gex">Net GEX</th>
         <th class="sc-th sortable" data-col="atm_iv">ATM IV</th>
-        <th class="sc-th sortable" data-col="concentration_count">Call Wall</th>
-        <th class="sc-th sortable" data-col="target_strike">집중 스트라이크</th>
-        <th class="sc-th sortable" data-col="distance_pct">CW 거리</th>
         <th class="sc-th">만기 수</th>
         <th class="sc-th">분석</th>
       </tr>
@@ -535,16 +544,21 @@ function renderTable(filter = 'all') {
 
   let html = '';
 
-  // ── 수동 지정 그룹
-  if (manualRows.length) {
-    html += `<div class="sc-group-header">📌 관심 종목 <span class="sc-group-count">${manualRows.length}</span></div>`;
-    html += buildTable(manualRows);
-  }
+  // watchlist를 제외한 그룹 먼저, watchlist 마지막
+  const groupOrder = Object.keys(groupMap).filter(g => g !== 'watchlist');
+  groupOrder.push('watchlist');
 
-  // ── Watchlist 그룹
-  if (watchlistRows.length) {
-    html += `<div class="sc-group-header" style="margin-top:24px">⭐ Watchlist <span class="sc-group-count">${watchlistRows.length}</span></div>`;
-    html += buildTable(watchlistRows);
+  const groupLabels = {
+    watchlist: '⭐ Watchlist',
+  };
+
+  for (const g of groupOrder) {
+    if (!groupMap[g]?.length) continue;
+    const gRows = [...groupMap[g]].sort(sortFn);
+    const label = groupLabels[g] ?? `📌 ${g}`;
+    const marginTop = html ? 'margin-top:24px' : '';
+    html += `<div class="sc-group-header" style="${marginTop}">${label} <span class="sc-group-count">${gRows.length}</span></div>`;
+    html += buildTable(gRows);
   }
 
   if (!html) {
@@ -591,23 +605,36 @@ function buildRow(r) {
   const totalGex  = r.total_gex;
   const callCount = r.concentration_count ?? 0;
   const targetSt  = r.target_strike;
-  const callDist  = r.distance_pct;   // Call Wall 스트라이크 vs 현재가
+  // 상승여력: distance_pct 부호 반전 (목표가가 현재가보다 높으면 양수)
+  const upside    = r.distance_pct != null ? -r.distance_pct : null;
 
-  // ── watchlist 필드
-  const companyStr    = r.company    ? `<span class="sc-company" title="${r.company}">${r.company}</span>` : '<span class="muted">-</span>';
-  const sectorStr     = r.sector     ? `<span class="sc-sector-tag">${r.sector}</span>` : '<span class="muted">-</span>';
-  const mcapStr       = fmtMarketCap(r.market_cap);
-  const shortFloatStr = r.short_float != null
-    ? `<span class="${r.short_float >= 20 ? 'red' : r.short_float >= 10 ? 'amber' : 'muted'}">${r.short_float.toFixed(1)}%</span>`
+  // ── 기본 필드
+  const companyStr = r.company
+    ? `<span class="sc-company" title="${r.company}">${r.company}</span>`
     : '<span class="muted">-</span>';
+  const sectorStr  = r.sector
+    ? `<span class="sc-sector-tag">${r.sector}</span>`
+    : '<span class="muted">-</span>';
+  const mcapStr    = fmtMarketCap(r.market_cap);
+
+  // SHORT% — 15% 미만: 회색, 15% 이상: 빨간색 추가
+  const shortFloatStr = r.short_float != null
+    ? (() => {
+        const sf = r.short_float;
+        let cls = 'muted';
+        if (sf >= 15) cls = 'red';
+        return `<span class="${cls}">${sf.toFixed(1)}%</span>`;
+      })()
+    : '<span class="muted">-</span>';
+
   const betaStr = r.beta != null
     ? `<span class="${r.beta >= 1.5 ? 'red' : r.beta <= 0.5 ? 'green' : ''}">${r.beta.toFixed(2)}</span>`
     : '<span class="muted">-</span>';
 
   // 플립존 거리
-  const isNear     = distPct != null && Math.abs(distPct) <= 3;
-  const distColor  = distPct == null ? 'muted' : distPct > 0 ? 'green' : 'red';
-  const distStr    = distPct != null
+  const isNear    = distPct != null && Math.abs(distPct) <= 3;
+  const distColor = distPct == null ? 'muted' : distPct > 0 ? 'green' : 'red';
+  const distStr   = distPct != null
     ? isNear
       ? `<span style="color:#eab308">${distPct > 0 ? '+' : ''}${distPct.toFixed(1)}% ⚡</span>`
       : `<span class="${distColor}">${distPct > 0 ? '+' : ''}${distPct.toFixed(1)}%</span>`
@@ -624,28 +651,49 @@ function buildRow(r) {
     ? `${(r.atm_iv * 100).toFixed(1)}%`
     : '<span class="muted">-</span>';
 
-  // Call Wall 배지
-  const callWallBadge = callCount >= 4
-    ? `<span class="sc-callwall-badge" title="${callCount}개 만기 집중">⭐ ${callCount}</span>`
-    : `<span class="muted">${callCount}</span>`;
-
-  // Call Wall 스트라이크
+  // 목표가
   const targetStr = targetSt != null
     ? `$${targetSt.toFixed(0)}`
     : '<span class="muted">-</span>';
 
-  // 현재가 vs Call Wall 거리
-  const callDistColor = callDist == null ? 'muted' : callDist > 0 ? 'green' : 'red';
-  const callDistStr   = callDist != null
-    ? `<span class="${callDistColor}">${callDist > 0 ? '+' : ''}${callDist.toFixed(1)}%</span>`
+  // 상승여력 — 컬러바 + % (최대 +30% 기준)
+  const upsideStr = upside != null
+    ? (() => {
+        const pct     = Math.max(0, Math.min(upside, 30));
+        const barPct  = Math.round((pct / 30) * 100);
+        const color   = upside >= 15 ? '#22c55e' : upside >= 5 ? '#4ade80' : '#86efac';
+        return `
+          <span style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap">
+            <span style="
+              display:inline-block;width:48px;height:6px;
+              background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;
+              vertical-align:middle;
+            ">
+              <span style="
+                display:block;height:100%;width:${barPct}%;
+                background:${color};border-radius:3px;
+              "></span>
+            </span>
+            <span style="color:${color}">${upside > 0 ? '+' : ''}${upside.toFixed(1)}%</span>
+          </span>`;
+      })()
     : '<span class="muted">-</span>';
+
+  // 집중도 — 4: 회색, 5: 흰색, 6: 노란색, 7+: 노란색+⚡
+  const concentrationStr = (() => {
+    if (callCount <= 0) return '<span class="muted">-</span>';
+    if (callCount <= 4) return `<span class="muted">${callCount}</span>`;
+    if (callCount === 5) return `<span>${callCount}</span>`;
+    if (callCount === 6) return `<span style="color:#eab308">${callCount}</span>`;
+    return `<span style="color:#eab308">${callCount} ⚡</span>`;
+  })();
 
   const flipStr = flip ? `$${flip.toFixed(0)}` : '<span class="muted">-</span>';
 
   return `
     <tr class="sc-row${callCount >= 4 ? ' sc-row-callwall' : ''}" data-sym="${r.symbol}">
       <td class="sc-td-sym">
-        <span class="sc-sym">${r.symbol}</span>${r.is_overlap ? ' <span class="sc-overlap-star" title="수동 지정 + Watchlist 겹침">⭐</span>' : ''}
+        <span class="sc-sym">${r.symbol}</span>
       </td>
       <td class="sc-td-company">${companyStr}</td>
       <td class="sc-td-sector">${sectorStr}</td>
@@ -653,13 +701,13 @@ function buildRow(r) {
       <td class="sc-td-short">${shortFloatStr}</td>
       <td class="sc-td-beta">${betaStr}</td>
       <td class="sc-td-price">${spot ? '$' + spot.toFixed(2) : '-'}</td>
+      <td class="sc-td-price">${targetStr}</td>
+      <td class="sc-td-dist">${upsideStr}</td>
+      <td class="sc-td-cw">${concentrationStr}</td>
       <td class="sc-td-price">${flipStr}</td>
       <td class="sc-td-dist">${distStr}</td>
       <td class="sc-td-gex">${gexStr}</td>
       <td class="sc-td-iv">${ivStr}</td>
-      <td class="sc-td-cw">${callWallBadge}</td>
-      <td class="sc-td-price">${targetStr}</td>
-      <td class="sc-td-dist">${callDistStr}</td>
       <td class="sc-td-num">${r.expiries?.length ?? '-'}</td>
       <td>
         <button class="sc-drill-btn" data-sym="${r.symbol}" title="Structure 탭에서 분석">▶</button>
