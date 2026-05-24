@@ -531,11 +531,7 @@ export default {
           g.call_oi, g.put_oi, g.pcr_oi, g.dex, g.vanna, g.charm,
           g.target_strike, g.concentration_count, g.distance_pct, g.updated_at,
           w.company, w.sector, w.market_cap, w.short_float, w.beta,
-          GROUP_CONCAT(DISTINCT gr.code) as groups,
-          -- watchlist 그룹 소속 여부
-          MAX(CASE WHEN gr.code = 'watchlist' THEN 1 ELSE 0 END) as is_watchlist_group,
-          -- 다른 그룹(수동 지정)에도 속하는지 여부 → 겹침 표시용
-          MAX(CASE WHEN gr.code != 'watchlist' THEN 1 ELSE 0 END) as is_manual_group
+          GROUP_CONCAT(DISTINCT gr.code) as groups
         FROM screener_gex_daily g
         LEFT JOIN watchlist w ON w.ticker = g.symbol
         LEFT JOIN symbol_groups sg ON sg.symbol = g.symbol
@@ -688,6 +684,27 @@ export default {
           `).bind(last_scan_date, ticker.toUpperCase()).run();
         }
         return json({ ok: true, ticker: ticker.toUpperCase(), promoted: promote ?? false }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
+    // ── DELETE /api/watchlist/group-reset ──────────────────────
+    // 스캔 시작 전 watchlist 그룹 symbol_groups 전체 초기화
+    if (request.method === "POST" && path === "/api/watchlist/group-reset") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const group = await env.DB.prepare(
+          "SELECT id FROM groups WHERE UPPER(code) = 'WATCHLIST' LIMIT 1"
+        ).first();
+        if (!group) return json({ ok: false, error: "WATCHLIST 그룹이 존재하지 않습니다." }, 400, corsHeaders);
+        await env.DB.prepare(
+          "DELETE FROM symbol_groups WHERE group_id = ?"
+        ).bind(group.id).run();
+        return json({ ok: true, group_id: group.id }, 200, corsHeaders);
       } catch (err) {
         return json({ ok: false, error: err.message }, 500, corsHeaders);
       }
