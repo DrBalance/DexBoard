@@ -1425,50 +1425,36 @@ export async function handleAdmin(path, request, env) {
   // ── POST /api/admin/prune-watchlist (기준 미달 종목 수동 정리)
   if (path === '/api/admin/prune-watchlist' && request.method === 'POST') {
     try {
-      const rows = await env.DB.prepare(`
-        SELECT
-          g.symbol,
-          g.concentration_count,
-          g.distance_pct,
-          GROUP_CONCAT(DISTINCT gr.code) as groups
-        FROM screener_gex_daily g
-        JOIN symbol_groups sg ON sg.symbol = g.symbol
-        JOIN groups gr ON gr.id = sg.group_id
-        WHERE gr.code = 'watchlist'
-          AND g.date = (SELECT MAX(date) FROM screener_gex_daily WHERE symbol = g.symbol)
-        GROUP BY g.symbol
-      `).all();
-
       const watchlistGroup = await env.DB.prepare(
         "SELECT id FROM groups WHERE UPPER(code) = 'WATCHLIST' LIMIT 1"
       ).first();
 
+      // watchlist 그룹 종목 중 기준 미달 티커 조회
+      // 기준: concentration_count <= 3 OR 상승여력(-distance_pct) < 3%
+      const rows = await env.DB.prepare(`
+        SELECT DISTINCT g.symbol, g.concentration_count, g.distance_pct,
+          GROUP_CONCAT(DISTINCT gr.code) as groups
+        FROM screener_gex_daily g
+        JOIN symbol_groups sg ON sg.symbol = g.symbol
+        JOIN groups gr ON gr.id = sg.group_id
+        GROUP BY g.symbol
+        HAVING SUM(CASE WHEN gr.code = 'watchlist' THEN 1 ELSE 0 END) > 0
+          AND SUM(CASE WHEN gr.code != 'watchlist' THEN 1 ELSE 0 END) = 0
+          AND (g.concentration_count <= 3 OR -g.distance_pct < 3)
+      `).all();
+
       const removed = [];
       for (const row of (rows.results ?? [])) {
-        const groups = (row.groups ?? '').split(',').map(g => g.trim()).filter(Boolean);
-        const isManual = groups.some(g => g.toLowerCase() !== 'watchlist');
-        if (isManual) continue;
-
-        const count  = row.concentration_count ?? 0;
-        const upside = row.distance_pct != null ? -row.distance_pct : null;
-        const fail   = count <= 3 || (upside != null && upside < 3);
-        if (!fail) continue;
-
-        if (watchlistGroup) {
-          await env.DB.prepare(
-            'DELETE FROM symbol_groups WHERE group_id = ? AND symbol = ?'
-          ).bind(watchlistGroup.id, row.symbol).run();
-        }
-        await env.DB.prepare(
-          'UPDATE watchlist SET is_watchlist = 0 WHERE ticker = ?'
-        ).bind(row.symbol).run();
-
-        // screener_gex_daily 데이터 삭제
-        await env.DB.prepare(
-          'DELETE FROM screener_gex_daily WHERE symbol = ?'
-        ).bind(row.symbol).run();
-
-        removed.push({ symbol: row.symbol, count, upside: upside?.toFixed(1) });
+        const sym = row.symbol;
+        await env.DB.batch([
+          watchlistGroup
+            ? env.DB.prepare('DELETE FROM symbol_groups WHERE group_id=? AND symbol=?').bind(watchlistGroup.id, sym)
+            : env.DB.prepare('SELECT 1'),
+          env.DB.prepare('DELETE FROM screener_gex_daily WHERE symbol=?').bind(sym),
+          env.DB.prepare('DELETE FROM symbols WHERE symbol=?').bind(sym),
+          env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(sym),
+        ]);
+        removed.push({ symbol: sym, count: row.concentration_count, upside: row.distance_pct != null ? (-row.distance_pct).toFixed(1) : null });
       }
 
       return json({ ok: true, removed });
