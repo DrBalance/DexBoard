@@ -617,12 +617,11 @@ function buildRow(r) {
     : '<span class="muted">-</span>';
   const mcapStr    = fmtMarketCap(r.market_cap);
 
-  // SHORT% — 15% 미만: 회색, 15% 이상: 빨간색 추가
+  // SHORT% — 15% 미만: 회색, 15% 이상: 빨간색
   const shortFloatStr = r.short_float != null
     ? (() => {
         const sf = r.short_float;
-        let cls = 'muted';
-        if (sf >= 15) cls = 'red';
+        const cls = sf >= 15 ? 'red' : 'muted';
         return `<span class="${cls}">${sf.toFixed(1)}%</span>`;
       })()
     : '<span class="muted">-</span>';

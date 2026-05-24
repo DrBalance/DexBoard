@@ -24,6 +24,15 @@ import {
 
 // ── 내부 상태
 let currentSymbol = null;
+
+// ── LW 차트 전역 상태
+let _stLwChart        = null;
+let _stLwCandle       = null;
+let _stLwVolChart     = null;
+let _stLwVolSeries    = null;
+let _stLwBB           = { upper2:null, lower2:null, upper1:null, lower1:null, mid:null };
+let _stChartSymbol    = null;
+let _stChartRes       = '30';
 let currentData   = null;
 
 // ============================================
@@ -116,6 +125,26 @@ function renderShell() {
       <div id="st-expiry-em" style="padding:0 14px 14px"></div>
     </div>
 
+    <!-- 섹션 4-1: LW 캔들 차트 -->
+    <div class="struct-panel">
+      <div class="struct-panel-title">
+        <span class="panel-icon">📈</span> 가격 차트
+        <span class="panel-sub">캔들 + 볼린저밴드</span>
+        <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
+          <div class="toggle-group" id="struct-chart-itv">
+            <button class="chart-itv-btn active" data-res="30">30분</button>
+            <button class="chart-itv-btn" data-res="D">일봉</button>
+            <button class="chart-itv-btn" data-res="W">주봉</button>
+          </div>
+        </div>
+      </div>
+      <div id="struct-chart-empty" style="display:flex;align-items:center;justify-content:center;height:120px;color:var(--text3);font-size:13px">
+        종목을 선택하면 차트를 표시합니다
+      </div>
+      <div id="struct-lw-wrap" style="width:100%;height:420px;display:none"></div>
+      <div id="struct-vol-wrap" style="width:100%;height:100px;display:none"></div>
+    </div>
+
     <!-- 섹션 5: Term Structure 곡선 -->
     <div class="struct-panel">
       <div class="struct-panel-title">
@@ -203,6 +232,16 @@ function bindEvents() {
   // 새로고침
   document.getElementById('struct-refresh-btn')?.addEventListener('click', () => {
     if (currentSymbol) loadStructure(currentSymbol);
+  });
+
+  // LW 차트 interval 버튼
+  document.getElementById('struct-chart-itv')?.addEventListener('click', e => {
+    const btn = e.target.closest('.chart-itv-btn');
+    if (!btn) return;
+    document.querySelectorAll('#struct-chart-itv .chart-itv-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    _stChartRes = btn.dataset.res;
+    if (_stChartSymbol) _stLoadAndRenderLWChart(_stChartSymbol, _stChartRes);
   });
 }
 
@@ -421,6 +460,10 @@ function renderContent({ symbol, scoreRow, monthly, weekly, context }) {
     ? `기준일: ${scoreRow.date}` : '';
 
   loadAndRenderCharts(symbol, scoreRow);
+
+  // LW 차트 갱신
+  _stChartSymbol = symbol;
+  _stLoadAndRenderLWChart(symbol, _stChartRes);
 }
 
 
@@ -1689,4 +1732,134 @@ function _stRenderHeatmapSection(expirations, spot, symbol) {
       _stRenderExpiryPanel();
     });
   }
+}
+
+// ══════════════════════════════════════════════════════════
+// LW 캔들 차트 (EM 차트 아래, Term Structure 위)
+// ══════════════════════════════════════════════════════════
+async function _stLoadAndRenderLWChart(symbol, res) {
+  const empty  = document.getElementById('struct-chart-empty');
+  const lwWrap = document.getElementById('struct-lw-wrap');
+  const volWrap = document.getElementById('struct-vol-wrap');
+  if (!lwWrap) return;
+
+  if (empty) { empty.style.display = 'flex'; empty.textContent = `${symbol} 차트 로딩 중...`; }
+  lwWrap.style.display  = 'none';
+  volWrap.style.display = 'none';
+
+  try {
+    const url  = `${CF_API}/api/chart?symbol=${encodeURIComponent(symbol)}&resolution=${res}`;
+    const r    = await fetch(url, { signal: AbortSignal.timeout(15000) });
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    const data = await r.json();
+    if (!data.candles?.length) throw new Error('데이터 없음');
+
+    if (empty) empty.style.display = 'none';
+    lwWrap.style.display  = 'block';
+    volWrap.style.display = 'block';
+
+    _stRenderLWChart(data, lwWrap, volWrap);
+  } catch (e) {
+    if (empty) { empty.style.display = 'flex'; empty.textContent = `차트 로드 실패: ${e.message}`; }
+  }
+}
+
+function _stRenderLWChart(data, lwWrap, volWrap) {
+  const UP   = '#26a69a';
+  const DOWN = '#ef5350';
+  const BB2  = '#2196f3';
+  const BB1  = 'rgba(66,165,245,0.45)';
+  const BBMID = '#f5a623';
+
+  const _hex2rgba = (hex, a) => {
+    const r = parseInt(hex.slice(1,3),16);
+    const g = parseInt(hex.slice(3,5),16);
+    const b = parseInt(hex.slice(5,7),16);
+    return `rgba(${r},${g},${b},${a})`;
+  };
+
+  if (!_stLwChart) {
+    // 메인 캔들 차트
+    _stLwChart = LightweightCharts.createChart(lwWrap, {
+      width:  lwWrap.clientWidth,
+      height: 420,
+      layout:   { background:{ color:'#131722' }, textColor:'#b2b5be' },
+      grid:     { vertLines:{ color:'#1e222d' }, horzLines:{ color:'#1e222d' } },
+      crosshair:{ mode: LightweightCharts.CrosshairMode.Normal },
+      rightPriceScale: { borderColor:'#2a2e39', autoScale:true },
+      timeScale: { borderColor:'#2a2e39', timeVisible:true, secondsVisible:false },
+    });
+
+    _stLwCandle = _stLwChart.addCandlestickSeries({
+      upColor:UP, downColor:DOWN,
+      borderUpColor:UP, borderDownColor:DOWN,
+      wickUpColor:UP, wickDownColor:DOWN,
+    });
+
+    const bbLine = (color, lw, opts={}) => _stLwChart.addLineSeries({
+      color, lineWidth:lw,
+      priceLineVisible:false, lastValueVisible:false, crosshairMarkerVisible:false,
+      ...opts,
+    });
+    _stLwBB.upper2 = bbLine(BB2, 1);
+    _stLwBB.lower2 = bbLine(BB2, 1);
+    _stLwBB.upper1 = bbLine(BB1, 1, { lineStyle: 1 });
+    _stLwBB.lower1 = bbLine(BB1, 1, { lineStyle: 1 });
+    _stLwBB.mid    = bbLine(BBMID, 1.5);
+
+    // 거래량 차트
+    _stLwVolChart = LightweightCharts.createChart(volWrap, {
+      width:  volWrap.clientWidth || lwWrap.clientWidth,
+      height: 100,
+      layout:   { background:{ color:'#131722' }, textColor:'#6b7280' },
+      grid:     { vertLines:{ color:'#1e222d' }, horzLines:{ color:'#1e222d' } },
+      rightPriceScale: { borderColor:'#2a2e39', scaleMargins:{ top:0.1, bottom:0.02 }, autoScale:true },
+      timeScale: { borderColor:'#2a2e39', timeVisible:true, secondsVisible:false, visible:false },
+      handleScroll: false, handleScale: false,
+    });
+
+    _stLwVolSeries = _stLwVolChart.addHistogramSeries({
+      priceFormat: { type:'volume' }, priceScaleId:'right',
+    });
+
+    // 두 차트 타임스케일 동기화
+    let _sync = false;
+    _stLwChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+      if (_sync || !range || !_stLwVolChart) return;
+      _sync = true; _stLwVolChart.timeScale().setVisibleLogicalRange(range); _sync = false;
+    });
+    _stLwVolChart.timeScale().subscribeVisibleLogicalRangeChange(range => {
+      if (_sync || !range || !_stLwChart) return;
+      _sync = true; _stLwChart.timeScale().setVisibleLogicalRange(range); _sync = false;
+    });
+
+    // 리사이즈
+    new ResizeObserver(() => {
+      if (_stLwChart  && lwWrap.clientWidth > 0)  _stLwChart.applyOptions({ width: lwWrap.clientWidth });
+      if (_stLwVolChart && volWrap.clientWidth > 0) _stLwVolChart.applyOptions({ width: volWrap.clientWidth });
+    }).observe(lwWrap);
+
+  } else {
+    _stLwChart.applyOptions({ width: lwWrap.clientWidth });
+  }
+
+  const candles = data.candles;
+  _stLwCandle.setData(candles.map(c => ({ time:c.time, open:c.open, high:c.high, low:c.low, close:c.close })));
+  _stLwVolSeries.setData(candles.map(c => ({
+    time:c.time, value:c.volume||0,
+    color: c.close >= c.open ? _hex2rgba(UP, 0.4) : _hex2rgba(DOWN, 0.4),
+  })));
+
+  const bbF = key => candles.filter(c => c[key] != null).map(c => ({ time:c.time, value:c[key] }));
+  _stLwBB.upper2.setData(bbF('bbUpper2'));
+  _stLwBB.lower2.setData(bbF('bbLower2'));
+  _stLwBB.upper1.setData(bbF('bbUpper1'));
+  _stLwBB.lower1.setData(bbF('bbLower1'));
+  _stLwBB.mid.setData(bbF('bbMid'));
+
+  _stLwChart.timeScale().fitContent();
+  setTimeout(() => {
+    const range = _stLwChart.timeScale().getVisibleLogicalRange();
+    if (_stLwVolChart && range) _stLwVolChart.timeScale().setVisibleLogicalRange(range);
+  }, 50);
 }
