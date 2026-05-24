@@ -1371,8 +1371,42 @@ export async function handleAdmin(path, request, env) {
   }
 
   // ════════════════════════════════════════
-  // BB MAP SYMBOLS
+  // WATCHLIST SCAN 관리 (스캔 대상 종목)
   // ════════════════════════════════════════
+
+  // ── GET /api/admin/watchlist-scan
+  if (path === '/api/admin/watchlist-scan' && request.method === 'GET') {
+    const rows = await env.DB.prepare(`
+      SELECT
+        w.ticker, w.name, w.sector, w.last_price, w.added_date,
+        CASE WHEN sg.symbol IS NOT NULL THEN 1 ELSE 0 END as is_watchlist
+      FROM watchlist w
+      LEFT JOIN symbol_groups sg ON sg.symbol = w.ticker
+      ORDER BY w.ticker ASC
+    `).all();
+    return json({ symbols: rows.results ?? [] });
+  }
+
+  // ── POST /api/admin/watchlist-scan (종목 추가)
+  if (path === '/api/admin/watchlist-scan' && request.method === 'POST') {
+    const { ticker } = await request.json();
+    if (!ticker) return json({ error: 'ticker 필요' }, 400);
+    const sym = ticker.toUpperCase().trim();
+    await env.DB.prepare(
+      `INSERT OR IGNORE INTO watchlist (ticker, added_date) VALUES (?, date('now'))`
+    ).bind(sym).run();
+    return json({ ok: true, ticker: sym });
+  }
+
+  // ── DELETE /api/admin/watchlist-scan/:ticker (종목 삭제)
+  const wlScanDel = path.match(/^\/api\/admin\/watchlist-scan\/([A-Z0-9.\-]+)$/i);
+  if (wlScanDel && request.method === 'DELETE') {
+    const sym = wlScanDel[1].toUpperCase();
+    await env.DB.prepare('DELETE FROM watchlist WHERE ticker = ?').bind(sym).run();
+    return json({ ok: true, ticker: sym });
+  }
+
+
 
   // ── GET  /api/admin/bb-map
   if (path === '/api/admin/bb-map' && request.method === 'GET') {

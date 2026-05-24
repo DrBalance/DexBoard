@@ -467,8 +467,9 @@ export default {
     // ── GET /api/screener/symbols ───────────────────────────────
     if (request.method === "GET" && path === "/api/screener/symbols") {
       const rows = await env.DB.prepare(`
-        SELECT ticker AS symbol, last_scan_date
-        FROM watchlist WHERE is_watchlist = 1 ORDER BY ticker
+        SELECT DISTINCT sg.symbol
+        FROM symbol_groups sg
+        ORDER BY sg.symbol
       `).all();
       return json({ symbols: rows.results ?? [] }, 200, corsHeaders);
     }
@@ -733,6 +734,32 @@ export default {
         await env.DB.prepare(
           "INSERT OR IGNORE INTO symbols (symbol) VALUES (?)"
         ).bind(sym).run();
+
+        // 2-1. name/type 없으면 Yahoo Finance로 보완
+        const existing = await env.DB.prepare(
+          "SELECT name, type FROM symbols WHERE symbol = ?"
+        ).bind(sym).first();
+        if (!existing?.name || !existing?.type) {
+          try {
+            const yRes = await fetch(
+              `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=1d`,
+              { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) }
+            );
+            if (yRes.ok) {
+              const yData = await yRes.json();
+              const meta  = yData?.chart?.result?.[0]?.meta;
+              if (meta) {
+                const name = meta.longName || meta.shortName || sym;
+                const type = meta.instrumentType === 'ETF' ? 'etf' : 'stock';
+                await env.DB.prepare(
+                  "UPDATE symbols SET name=?, type=? WHERE symbol=?"
+                ).bind(name, type, sym).run();
+              }
+            }
+          } catch (e) {
+            console.warn(`[enroll-group] ${sym} name/type 갱신 실패:`, e.message);
+          }
+        }
 
         // 3. symbol_groups에 연결
         await env.DB.prepare(
