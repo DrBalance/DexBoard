@@ -427,3 +427,60 @@ export async function runWatchlistScan(cfWorkerUrl, cronSecret, onProgress) {
     errorList:    errors,
   };
 }
+
+// ══════════════════════════════════════════════════════════
+// 기준 미달 종목 정리
+// 조건: concentration_count <= 3 OR 상승여력 < 3%
+// 대상: symbol_groups의 watchlist 그룹 종목 중 수동 지정(CHECK 등) 제외
+// ══════════════════════════════════════════════════════════
+export async function pruneWatchlistGroup(cfWorkerUrl, cronSecret) {
+  const headers = {
+    'Content-Type':  'application/json',
+    'x-cron-secret': cronSecret,
+  };
+
+  // 1. watchlist 그룹의 최신 screener 데이터 조회
+  const res = await fetch(`${cfWorkerUrl}/api/screener/latest`, {
+    headers,
+    signal: AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error(`screener/latest HTTP ${res.status}`);
+  const rows = await res.json();
+
+  const removed = [];
+  const kept    = [];
+
+  for (const row of rows) {
+    // 수동 지정 그룹 종목은 건너뜀 (groups에 watchlist 외 다른 그룹 포함)
+    const groups = (row.groups ?? '').split(',').map(g => g.trim()).filter(Boolean);
+    const isManual = groups.some(g => g.toLowerCase() !== 'watchlist');
+    if (isManual) { kept.push(row.symbol); continue; }
+
+    // 기준 미달 판정
+    const count  = row.concentration_count ?? 0;
+    const upside = row.distance_pct != null ? -row.distance_pct : null;
+    const isBelowCount  = count <= 3;
+    const isBelowUpside = upside != null && upside < 3;
+
+    if (isBelowCount || isBelowUpside) {
+      try {
+        // symbol_groups에서 watchlist 그룹 제거 + watchlist.is_watchlist = 0 + 데이터 삭제
+        await fetch(`${cfWorkerUrl}/api/watchlist/prune`, {
+          method:  'POST',
+          headers,
+          body:    JSON.stringify({ ticker: row.symbol }),
+          signal:  AbortSignal.timeout(10000),
+        });
+        removed.push({ symbol: row.symbol, count, upside: upside?.toFixed(1) });
+        console.log(`[prune] 제거: ${row.symbol} (집중도:${count}, 상승여력:${upside?.toFixed(1)}%)`);
+      } catch (e) {
+        console.warn(`[prune] ${row.symbol} 제거 실패:`, e.message);
+      }
+    } else {
+      kept.push(row.symbol);
+    }
+  }
+
+  console.log(`[prune] 완료 — 제거 ${removed.length}개, 유지 ${kept.length}개`);
+  return { ok: true, removed, kept: kept.length };
+}

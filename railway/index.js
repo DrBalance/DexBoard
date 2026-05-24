@@ -7,7 +7,7 @@
 
 import http from "http";
 import { calculateAndStore, collectSymbol, getTodayET } from "./vanna_analyzer.js";
-import { runScreenerCollection, fetchScreenerSymbols, analyzeSymbol, runWatchlistScan } from "./screener-engine.js";
+import { runScreenerCollection, fetchScreenerSymbols, analyzeSymbol, runWatchlistScan, pruneWatchlistGroup } from "./screener-engine.js";
 
 const TWELVE_KEY = process.env.TWELVE_KEY || process.env.TWELVE_KEY_SPY || "";
 
@@ -646,6 +646,14 @@ if (req.method === "POST" && req.url === "/scan-watchlist") {
       console.log(
         `[watchlist scan] 완료 — 스캔 ${result.scanned}개, 승격 ${result.promoted}개, 오류 ${result.errors}개`
       );
+
+      // 트리거 1: 전체 스캔 완료 후 기준 미달 종목 자동 정리
+      try {
+        const pruneResult = await pruneWatchlistGroup(CF_WORKER_URL, CRON_SECRET);
+        console.log(`[watchlist scan] prune 완료 — 제거 ${pruneResult.removed.length}개`);
+      } catch (e) {
+        console.warn('[watchlist scan] prune 실패 (계속 진행):', e.message);
+      }
     } catch (err) {
       console.error("[watchlist scan] 치명적 오류:", err.message);
       watchlistScanState = {
@@ -1263,6 +1271,14 @@ async function runCollect(symbols, date) {
     };
 
     console.log(`[Screener] 완료 -- 성공: ${result.count}, 실패: ${result.errors}`);
+
+    // 트리거 2: 매일 수집 후 기준 미달 종목 자동 정리
+    try {
+      const pruneResult = await pruneWatchlistGroup(CF_WORKER_URL, CRON_SECRET);
+      console.log(`[Screener] prune 완료 — 제거 ${pruneResult.removed.length}개`);
+    } catch (e) {
+      console.warn('[Screener] prune 실패 (계속 진행):', e.message);
+    }
 
   } catch (err) {
     console.error("[Screener] 수집 중 치명적 오류:", err.message);
