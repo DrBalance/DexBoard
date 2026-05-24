@@ -291,6 +291,7 @@ function showOneTimePrompt(symbol) {
   document.getElementById('struct-content').style.display = 'none';
   const el = document.getElementById('struct-state');
   el.style.display = 'flex';
+  el.dataset.promptSymbol = symbol;  // 현재 심볼 저장 (클로저 버그 방지)
   el.innerHTML = `
     <div style="
       display:flex;flex-direction:column;align-items:center;gap:16px;
@@ -323,7 +324,8 @@ function showOneTimePrompt(symbol) {
   `;
 
   document.getElementById('st-onetime-btn').addEventListener('click', () => {
-    loadOneTime(symbol);
+    const sym = document.getElementById('struct-state').dataset.promptSymbol;
+    loadOneTime(sym);
   });
 }
 
@@ -425,10 +427,19 @@ function renderContent({ symbol, scoreRow, monthly, weekly, context }) {
 // ── 상태 표시 (loading / empty / error)
 function showState(type, msg) {
   document.getElementById('struct-content').style.display = 'none';
-  const box  = document.getElementById('struct-state');
+  const box = document.getElementById('struct-state');
+  box.style.display = 'flex';
+
+  // showOneTimePrompt가 innerHTML을 교체했을 수 있으므로 원래 구조 복원
+  if (!box.querySelector('.struct-state-icon')) {
+    box.innerHTML = `
+      <div class="struct-state-icon"></div>
+      <div class="struct-state-msg"></div>
+    `;
+  }
+
   const icon = box.querySelector('.struct-state-icon');
   const txt  = box.querySelector('.struct-state-msg');
-  box.style.display = 'flex';
 
   if (type === 'loading') {
     icon.textContent = '◌';
