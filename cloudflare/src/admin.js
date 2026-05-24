@@ -1430,45 +1430,24 @@ export async function handleAdmin(path, request, env) {
       ).first();
       if (!watchlistGroup) return json({ ok: false, error: 'WATCHLIST 그룹 없음' }, 400);
 
-      // watchlist 그룹에만 속한 종목 목록
-      const candidates = await env.DB.prepare(`
-        SELECT sg.symbol
-        FROM symbol_groups sg
-        WHERE sg.group_id = ?
-          AND NOT EXISTS (
-            SELECT 1 FROM symbol_groups sg2
-            WHERE sg2.symbol = sg.symbol AND sg2.group_id != ?
-          )
-      `).bind(watchlistGroup.id, watchlistGroup.id).all();
+      // screener_gex_daily에서 티커별 집중도/상승여력 집계 후 기준 미달 판정
+      const rows = await env.DB.prepare(`
+        SELECT symbol, MAX(concentration_count) as count, MAX(-distance_pct) as upside
+        FROM screener_gex_daily
+        GROUP BY symbol
+        HAVING count <= 3 OR upside < 3
+      `).all();
 
       const removed = [];
-      for (const { symbol } of (candidates.results ?? [])) {
-        // 해당 종목의 최신 concentration_count, distance_pct 조회
-        const row = await env.DB.prepare(`
-          SELECT concentration_count, distance_pct
-          FROM screener_gex_daily
-          WHERE symbol = ?
-          LIMIT 1
-        `).bind(symbol).first();
-
-        if (!row) continue;
-
-        const count  = row.concentration_count ?? 0;
-        const upside = row.distance_pct != null ? -row.distance_pct : null;
-
-        // 기준 미달 판정: 집중도 <= 3 OR 상승여력 < 3%
-        const isBelowCount  = count <= 3;
-        const isBelowUpside = upside != null && upside < 3;
-        if (!isBelowCount && !isBelowUpside) continue;
-
+      for (const row of (rows.results ?? [])) {
+        const sym = row.symbol;
         await env.DB.batch([
-          env.DB.prepare('DELETE FROM symbol_groups WHERE group_id=? AND symbol=?').bind(watchlistGroup.id, symbol),
-          env.DB.prepare('DELETE FROM screener_gex_daily WHERE symbol=?').bind(symbol),
-          env.DB.prepare('DELETE FROM symbols WHERE symbol=?').bind(symbol),
-          env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(symbol),
+          env.DB.prepare('DELETE FROM screener_gex_daily WHERE symbol=?').bind(sym),
+          env.DB.prepare('DELETE FROM symbol_groups WHERE group_id=? AND symbol=?').bind(watchlistGroup.id, sym),
+          env.DB.prepare('DELETE FROM symbols WHERE symbol=?').bind(sym),
+          env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(sym),
         ]);
-
-        removed.push({ symbol, count, upside: upside?.toFixed(1) });
+        removed.push({ symbol: sym, count: row.count, upside: Number(row.upside).toFixed(1) });
       }
 
       return json({ ok: true, removed });
