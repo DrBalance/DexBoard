@@ -85,9 +85,10 @@ function calcCallWall(rows, spot) {
     for (const s of strikeRows) {
       // dex 양수 = 콜 DEX (structure.js와 동일 기준)
       // 풋 DEX(음수)는 제외 — 기관 콜 매도 집중 스트라이크만 탐지
-      const callDex = (s.dex != null && s.dex > 0) ? s.dex : 0;
-      if (callDex > maxDex) {
-        maxDex    = callDex;
+      // 현재가 위 스트라이크만 대상 (히트맵 초록 박스 M 로직과 동일)
+      if (s.dex == null || s.dex <= 0 || s.strike <= spot) continue;
+      if (s.dex > maxDex) {
+        maxDex    = s.dex;
         maxStrike = s.strike;
       }
     }

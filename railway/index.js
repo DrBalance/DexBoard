@@ -1226,6 +1226,18 @@ async function runCollect(symbols, date) {
     // 심볼 배열 정규화 (문자열 또는 객체 모두 허용)
     const symList = symbols.map(s => (typeof s === 'string' ? s : s.symbol));
 
+    // 스캔 전 watchlist 그룹 초기화 (이전 스캔 결과 제거)
+    try {
+      await fetch(`${CF_WORKER_URL}/api/watchlist/group-reset`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
+        signal:  AbortSignal.timeout(10000),
+      });
+      console.log('[Screener] watchlist 그룹 초기화 완료');
+    } catch (e) {
+      console.warn('[Screener] watchlist 그룹 초기화 실패 (계속 진행):', e.message);
+    }
+
     const result = await runScreenerCollection(
       CF_WORKER_URL,
       CRON_SECRET,
