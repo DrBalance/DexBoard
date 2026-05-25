@@ -385,13 +385,13 @@ const server = http.createServer(async (req, res) => {
 // Health check
 // ── GET /api/chart ───────────────────────────────────────────────
 if (req.method === "GET" && req.url.startsWith("/api/chart")) {
-  const urlObj = new URL(req.url, `http://localhost`);
-  const symbol = urlObj.searchParams.get("symbol")?.toUpperCase();
-  const res_   = urlObj.searchParams.get("resolution") ?? "D";
+  const urlObj     = new URL(req.url, `http://localhost`);
+  const symbol     = urlObj.searchParams.get("symbol")?.toUpperCase();
+  const resolution = urlObj.searchParams.get("resolution") ?? "D";
   if (!symbol) return sendJSON(res, 400, { error: "symbol 필요" });
-  if (!VALID_RESOLUTIONS.includes(res_)) return sendJSON(res, 400, { error: "유효하지 않은 resolution" });
+  if (!VALID_RESOLUTIONS.includes(resolution)) return sendJSON(res, 400, { error: "유효하지 않은 resolution" });
   try {
-    const data = await fetchChartData(symbol, res_);
+    const data = await fetchChartData(symbol, resolution);
     return sendJSON(res, 200, data);
   } catch (e) {
     const status = e.message === "no_data" ? 404 : 502;
