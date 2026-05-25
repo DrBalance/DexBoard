@@ -8,6 +8,7 @@
 import http from "http";
 import { calculateAndStore, collectSymbol, getTodayET } from "./vanna_analyzer.js";
 import { runScreenerCollection, fetchScreenerSymbols, analyzeSymbol, runWatchlistScan, pruneWatchlistGroup } from "./screener-engine.js";
+import { fetchChartData, VALID_RESOLUTIONS } from "./chart-api.js";
 
 const TWELVE_KEY = process.env.TWELVE_KEY || process.env.TWELVE_KEY_SPY || "";
 
@@ -382,7 +383,23 @@ catch { resolve({}); }
 
 const server = http.createServer(async (req, res) => {
 // Health check
-if (req.method === "GET" && req.url === "/health") {
+// ── GET /api/chart ───────────────────────────────────────────────
+if (req.method === "GET" && req.url.startsWith("/api/chart")) {
+  const urlObj = new URL(req.url, `http://localhost`);
+  const symbol = urlObj.searchParams.get("symbol")?.toUpperCase();
+  const res_   = urlObj.searchParams.get("resolution") ?? "D";
+  if (!symbol) return sendJSON(res, 400, { error: "symbol 필요" });
+  if (!VALID_RESOLUTIONS.includes(res_)) return sendJSON(res, 400, { error: "유효하지 않은 resolution" });
+  try {
+    const data = await fetchChartData(symbol, res_);
+    return sendJSON(res, 200, data);
+  } catch (e) {
+    const status = e.message === "no_data" ? 404 : 502;
+    return sendJSON(res, status, { error: e.message });
+  }
+}
+
+// ── GET /health ──────────────────────────────────────────────────
 return sendJSON(res, 200, { status: "ok", ts: new Date().toISOString() });
 }
 
