@@ -129,14 +129,11 @@ function renderShell() {
     <div class="struct-panel">
       <div class="struct-panel-title">
         <span class="panel-icon">📈</span> 가격 차트
-        <span class="panel-sub">캔들 + 볼린저밴드</span>
-        <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
-          <div class="toggle-group" id="struct-chart-itv">
-            <button class="chart-itv-btn" data-res="5">5분</button>
-            <button class="chart-itv-btn active" data-res="30">30분</button>
-            <button class="chart-itv-btn" data-res="D">일봉</button>
-            <button class="chart-itv-btn" data-res="W">주봉</button>
-          </div>
+        <div id="struct-chart-itv" class="toggle-group" style="margin-left:auto">
+          <button class="chart-itv-btn" data-res="5">5분</button>
+          <button class="chart-itv-btn active" data-res="30">30분</button>
+          <button class="chart-itv-btn" data-res="D">일봉</button>
+          <button class="chart-itv-btn" data-res="W">주봉</button>
         </div>
       </div>
       <div id="struct-chart-empty" style="display:flex;align-items:center;justify-content:center;height:120px;color:var(--text3);font-size:13px">
