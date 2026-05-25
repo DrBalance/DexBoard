@@ -18,11 +18,20 @@ const chartCache = {
   },
 };
 
-// ET offset 계산 (서머타임 자동 감지)
-function getETOffsetMs(date) {
-  const utcStr = date.toLocaleString('en-US', { timeZone: 'UTC' });
-  const etStr  = date.toLocaleString('en-US', { timeZone: 'America/New_York' });
-  return new Date(utcStr).getTime() - new Date(etStr).getTime();
+// ET 문자열 → KST Unix timestamp
+// Twelve Data는 ET 기준 datetime 문자열을 반환 (예: '2026-05-23 15:30:00')
+function etStringToKstUnix(dtStr) {
+  // dtStr을 UTC로 파싱 후 ET 오프셋 적용
+  const [date, time] = dtStr.split(' ');
+  const [y, mo, d]   = date.split('-').map(Number);
+  const [h, mi, s]   = time.split(':').map(Number);
+  const utcDate = new Date(Date.UTC(y, mo - 1, d, h, mi, s));
+  // ET offset: utcDate 기준으로 ET가 UTC보다 얼마나 뒤인지
+  const etDate  = new Date(utcDate.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const etOffsetMs = utcDate.getTime() - etDate.getTime();
+  // ET → UTC → KST
+  const kstMs = utcDate.getTime() + etOffsetMs + 9 * 3600 * 1000;
+  return Math.floor(kstMs / 1000);
 }
 
 const TD_INTERVAL = {
@@ -84,6 +93,7 @@ export async function fetchChartData(symbol, resolution) {
 
   const interval   = TD_INTERVAL[resolution] ?? '1day';
   const outputsize = CHART_OUTPUTSIZE[resolution] ?? 300;
+  const isIntraday = resolution !== 'D' && resolution !== 'W';
 
   const url = `https://api.twelvedata.com/time_series`
     + `?symbol=${encodeURIComponent(symbol)}`
@@ -103,27 +113,14 @@ export async function fetchChartData(symbol, resolution) {
     throw new Error('no_data');
   }
 
-  const KST_OFFSET = 9 * 60 * 60 * 1000;
-  const isIntraday = resolution !== 'D' && resolution !== 'W';
-
-  const candles = j.values.map(v => {
-    let time;
-    if (isIntraday) {
-      const localDate = new Date(v.datetime.replace(' ', 'T'));
-      const etOffset  = getETOffsetMs(localDate);
-      time = Math.floor((localDate.getTime() - etOffset + KST_OFFSET) / 1000);
-    } else {
-      time = v.datetime.slice(0, 10);
-    }
-    return {
-      time,
-      open:   +parseFloat(v.open).toFixed(4),
-      high:   +parseFloat(v.high).toFixed(4),
-      low:    +parseFloat(v.low).toFixed(4),
-      close:  +parseFloat(v.close).toFixed(4),
-      volume: v.volume != null ? parseInt(v.volume) : 0,
-    };
-  });
+  const candles = j.values.map(v => ({
+    time:   isIntraday ? etStringToKstUnix(v.datetime) : v.datetime.slice(0, 10),
+    open:   +parseFloat(v.open).toFixed(4),
+    high:   +parseFloat(v.high).toFixed(4),
+    low:    +parseFloat(v.low).toFixed(4),
+    close:  +parseFloat(v.close).toFixed(4),
+    volume: v.volume != null ? parseInt(v.volume) : 0,
+  }));
 
   const bb = calcBollinger(candles.map(cd => cd.close));
   candles.forEach((cd, i) => {
