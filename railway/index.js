@@ -10,14 +10,12 @@ import { calculateAndStore, collectSymbol, getTodayET } from "./vanna_analyzer.j
 import { runScreenerCollection, fetchScreenerSymbols, analyzeSymbol, runWatchlistScan, pruneWatchlistGroup } from "./screener-engine.js";
 import { fetchChartData, VALID_RESOLUTIONS } from "./chart-api.js";
 
-const TWELVE_KEY = process.env.TWELVE_KEY || process.env.TWELVE_KEY_SPY || "";
-
+const TWELVE_KEY = process.env.TWELVE_KEY || "";
 const PORT        = process.env.PORT        || 8080;
 const CRON_SECRET = process.env.CRON_SECRET || "";
 const GEMINI_KEY  = process.env.GEMINI_KEY  || "";
 const CF_WORKER_URL = process.env.CF_WORKER_URL || "";
 const CF_KV_SECRET  = process.env.CF_KV_SECRET  || "";
-const TWELVE_KEY_SPY = process.env.TWELVE_KEY_SPY || "";
 
 // ─────────────────────────────────────────────────────────────────
 // 가격 수집 + BB 계산 → CF Worker D1 저장
@@ -459,13 +457,6 @@ return sendJSON(res, 429, { ok: false, error: "서버 요청 한도 초과 (IP �
   });
 }
 
-}
-
-// ── POST /trigger-prevclose ──────────────────────────────────────
-// live.js 초기 로드 시 prevClose KV가 비어있으면 호출
-if (req.method === "POST" && req.url === "/trigger-prevclose") {
-  fetchAndSavePrevClose().catch(e => console.error('[prevClose] 트리거 실패:', e.message));
-  return sendJSON(res, 200, { ok: true, message: 'prevClose 조회 시작' });
 }
 
 // ── POST /webhook/prevclose ───────────────────────────────────────
@@ -1011,29 +1002,6 @@ vold: null,           // TradingView 웹훅 수신값 (USI:VOLD)
 _lastWebhookTs: null, // 마지막 웹훅 수신 시각 (ISO)
 };
 
-// SPY 현재가 -- Twelve Data /quote (정규장 30초)
-async function fetchSpyTwelve() {
-try {
-if (!TWELVE_KEY_SPY) return;
-const url = `https://api.twelvedata.com/quote?symbol=SPY&apikey=${TWELVE_KEY_SPY}`;
-const res = await fetch(url, {
-headers: { 'User-Agent': 'Mozilla/5.0' },
-signal: AbortSignal.timeout(6000),
-});
-if (!res.ok) return;
-const td = await res.json();
-const price = parseFloat(td.close);
-if (isNaN(price) || price <= 0) return;
-const prevClose = parseFloat(td.previous_close);
-const change    = !isNaN(prevClose) ? Math.round((price - prevClose) * 100) / 100 : null;
-const changePct = !isNaN(prevClose) ? Math.round((price - prevClose) / prevClose * 10000) / 100 : null;
-_cache.spy = { ..._cache.spy, price, change, changePct, prevClose };
-console.log(`[spy] Twelve Data: $${price} (${changePct}%)`);
-} catch (e) {
-console.warn('[spy] Twelve Data 실패 (직전값 유지):', e.message);
-}
-}
-
 // VIX 현재가 -- Yahoo Finance (1분)
 async function fetchVixYahoo() {
 try {
@@ -1087,54 +1055,6 @@ try {
 }
 }
 
-// Twelve Data EOD → prevClose 조회 후 _cache에 적용 + KV 저장
-async function fetchAndSavePrevClose() {
-try {
-  // EOD 엔드포인트: 가장 최근 확정 거래일 종가 반환
-  const fetchEOD = async (symbol) => {
-    const url = `https://api.twelvedata.com/eod?symbol=${symbol}&apikey=${TWELVE_KEY_SPY}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!res.ok) throw new Error(`EOD ${symbol}: ${res.status}`);
-    const data = await res.json();
-    if (data.status === 'error') throw new Error(`EOD ${symbol}: ${data.message}`);
-    const close = parseFloat(data.close);
-    if (isNaN(close)) throw new Error(`EOD ${symbol}: invalid close`);
-    return { close: Math.round(close * 100) / 100, date: data.datetime };
-  };
-
-  // 4개 심볼 병렬 조회 (VIX는 Twelve Data에서 VIX 심볼 사용)
-  const [spy, qqq, iwm, vix] = await Promise.all([
-    fetchEOD('SPY'),
-    fetchEOD('QQQ'),
-    fetchEOD('IWM'),
-    fetchEOD('VIX'),
-  ]);
-
-  const data = {
-    spy:  spy.close,
-    qqq:  qqq.close,
-    iwm:  iwm.close,
-    vix:  vix.close,
-    date: spy.date,
-    ts:   new Date().toISOString(),
-  };
-
-  // _cache에 즉시 적용
-  _cache.spy.prevClose = data.spy;
-  _cache.qqq.prevClose = data.qqq;
-  _cache.iwm.prevClose = data.iwm;
-  _cache.vix.prevClose = data.vix;
-  console.log(`[prevClose] Twelve Data EOD: SPY=${data.spy} QQQ=${data.qqq} IWM=${data.iwm} VIX=${data.vix} (${data.date})`);
-
-  // KV 저장
-  await savePrevClose(data);
-  return data;
-} catch (e) {
-  console.warn('[prevClose] Twelve Data EOD 조회 실패 (기존값 유지):', e.message);
-  return null;
-}
-}
-
 // 초기화: KV 읽기 → 없으면 Yahoo 조회
 async function initPrevClose() {
 const kv = await loadPrevClose();
@@ -1144,11 +1064,8 @@ if (kv) {
   _cache.iwm.prevClose = kv.iwm;
   _cache.vix.prevClose = kv.vix;
   console.log(`[prevClose] KV 로드: SPY=${kv.spy} date=${kv.date}`);
-  // 백그라운드에서 Yahoo 검증 (블로킹 안 함)
-  fetchAndSavePrevClose().catch(() => {});
 } else {
-  console.log('[prevClose] KV 없음 → Yahoo 즉시 조회');
-  await fetchAndSavePrevClose();
+  console.log('[prevClose] KV 없음 — Google Sheets 웹훅 대기 중');
 }
 }
 
@@ -1435,12 +1352,6 @@ if (session !== lastSession) {
       }
     })();
   }
-}
-
-// 평일 ET 02:00 — prevClose 검증 (프리마켓 2시간 전)
-if (isWeekday() && h === 2 && new Date().getMinutes() === 0) {
-  console.log('[scheduler] ET 02:00 prevClose 검증 크론');
-  fetchAndSavePrevClose().catch(e => console.error('[prevClose] 크론 실패:', e.message));
 }
 
 // 평일 ET 18:00 — 전체 watchlist 스캔 자동 실행
