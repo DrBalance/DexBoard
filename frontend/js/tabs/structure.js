@@ -1787,7 +1787,7 @@ function _stRenderLWChart(data, lwWrap, volWrap) {
       grid:     { vertLines:{ color:'#1e222d' }, horzLines:{ color:'#1e222d' } },
       crosshair:{ mode: LightweightCharts.CrosshairMode.Normal },
       rightPriceScale: { borderColor:'#2a2e39', autoScale:true },
-      timeScale: { borderColor:'#2a2e39', timeVisible:true, secondsVisible:false },
+      timeScale: { borderColor:'#2a2e39', timeVisible:true, secondsVisible:false, timezone: 'Asia/Seoul' },
     });
 
     _stLwCandle = _stLwChart.addCandlestickSeries({
