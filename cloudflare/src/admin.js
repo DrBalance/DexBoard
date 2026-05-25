@@ -1659,7 +1659,7 @@ async function handleGetSymbols(env) {
   const rows = await env.DB.prepare(`
     SELECT
       ticker, company, sector, market_cap, short_float, beta,
-      last_scan_date, is_watchlist, added_date
+      last_scan_date, is_watchlist
     FROM watchlist
     ORDER BY ticker ASC
   `).all();
