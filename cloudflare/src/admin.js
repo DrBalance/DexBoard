@@ -1566,7 +1566,8 @@ async function handleUpdateGroup(id, request, env) {
 }
 
 async function handleDeleteGroup(id, env) {
-  // symbol_groups는 CASCADE로 자동 삭제됨
+  // symbol_groups 먼저 삭제 (CASCADE 미지원 대비 명시적 삭제)
+  await env.DB.prepare('DELETE FROM symbol_groups WHERE group_id=?').bind(id).run();
   await env.DB.prepare('DELETE FROM groups WHERE id=?').bind(id).run();
 
   // 고아 심볼 (어느 그룹에도 속하지 않은) 정리
