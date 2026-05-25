@@ -2,7 +2,7 @@
 // chart-api.js — 차트 데이터 (Twelve Data + 간단 캐시 + 볼린저밴드)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-const TWELVEDATA_KEY = process.env.TWELVEDATA_KEY;
+const TWELVEDATA_KEY = process.env.TWELVE_KEY;
 
 // 간단 TTL 캐시 (lru-cache 대체)
 const _cacheStore = new Map();
