@@ -400,6 +400,7 @@ if (req.method === "GET" && req.url.startsWith("/api/chart")) {
 }
 
 // ── GET /health ──────────────────────────────────────────────────
+if (req.method === "GET" && req.url === "/health") {
 return sendJSON(res, 200, { status: "ok", ts: new Date().toISOString() });
 }
 
