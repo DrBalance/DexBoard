@@ -55,8 +55,6 @@ const CHART_OUTPUTSIZE = {
 
 export const VALID_RESOLUTIONS = ['5', '30', '120', '240', 'D', 'W'];
 
-const chartCache = new LRUCache({ max: 200, ttlResolution: 1000 });
-
 // ── 볼린저밴드 계산 (SMA20 기준, 1σ + 2σ)
 export function calcBollinger(closes, period = 20) {
   const upper2 = [], lower2 = [], upper1 = [], lower1 = [], mid = [];
