@@ -108,10 +108,12 @@ export async function fetchChartData(symbol, resolution) {
     const isIntraday = resolution !== 'D' && resolution !== 'W';
     let time;
     if (isIntraday) {
+      // Twelve Data는 ET 기준 시간 반환 → KST(+9)로 변환
       const dtStr     = v.datetime.replace(' ', 'T');
       const localDate = new Date(dtStr);
-      const etOffset  = getETOffsetMs(localDate);
-      time = Math.floor((localDate.getTime() - etOffset) / 1000);
+      const etOffset  = getETOffsetMs(localDate);  // ET → UTC
+      const kstOffset = 9 * 60 * 60 * 1000;        // KST = UTC+9
+      time = Math.floor((localDate.getTime() - etOffset + kstOffset) / 1000);
     } else {
       time = v.datetime.slice(0, 10); // 'YYYY-MM-DD'
     }
@@ -124,6 +126,8 @@ export async function fetchChartData(symbol, resolution) {
       volume: v.volume != null ? parseInt(v.volume) : 0,
     };
   });
+
+  const bb = calcBollinger(candles.map(cd => cd.close));
 
   const bb = calcBollinger(candles.map(cd => cd.close));
   candles.forEach((cd, i) => {
