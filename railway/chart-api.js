@@ -1,12 +1,22 @@
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-// chart-api.js — 차트 데이터 (Twelve Data + LRU 캐시 + 볼린저밴드)
+// chart-api.js — 차트 데이터 (Twelve Data + 간단 캐시 + 볼린저밴드)
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-import { LRUCache } from 'lru-cache';
 
 const TWELVEDATA_KEY = process.env.TWELVEDATA_KEY;
 
-// ET offset 계산 (서머타임 자동 감지)
+// 간단 TTL 캐시 (lru-cache 대체)
+const _cacheStore = new Map();
+const chartCache = {
+  get(key) {
+    const entry = _cacheStore.get(key);
+    if (!entry) return undefined;
+    if (Date.now() > entry.expires) { _cacheStore.delete(key); return undefined; }
+    return entry.value;
+  },
+  set(key, value, { ttl } = {}) {
+    _cacheStore.set(key, { value, expires: Date.now() + (ttl ?? 60_000) });
+  },
+};
 function getETOffsetMs(date) {
   const utcStr = date.toLocaleString('en-US', { timeZone: 'UTC' });
   const etStr  = date.toLocaleString('en-US', { timeZone: 'America/New_York' });
