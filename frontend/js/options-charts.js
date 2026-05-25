@@ -1305,10 +1305,14 @@ export async function renderOIDistribution(symbol, expiryRows, spot, flipStrike,
 
     // X축 레이블
     const step = Math.ceil(strikes.length / 8);
-    const xLabels = strikes.filter((_, i) => i % step === 0).map(r => `
+    const xLabels = strikes.filter((_, i) => i % step === 0).map(r => {
+      const s = Number(r.strike);
+      const label = s >= 10 ? s.toFixed(0) : s.toFixed(2).replace(/\.?0+$/, '');
+      return `
       <text x="${xScale(r.strike).toFixed(1)}" y="${H - 6}"
-        text-anchor="middle" font-size="9" fill="var(--text3)">$${r.strike}</text>
-    `).join('');
+        text-anchor="middle" font-size="9" fill="var(--text3)">$${label}</text>
+    `;
+    }).join('');
 
     // Y축 레이블
     const yLabels = `
