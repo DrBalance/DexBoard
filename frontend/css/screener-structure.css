@@ -727,3 +727,22 @@
 .green  { color: var(--green, #22c55e); }
 .amber  { color: var(--yellow,#eab308); }
 .muted  { color: var(--text3, #6e7681); }
+
+/* ── LW 차트 interval 버튼 ─────────────────────────────────────── */
+.toggle-group { display:flex; gap:4px; }
+.chart-itv-btn {
+  padding: 3px 10px;
+  font-size: 12px;
+  border-radius: 4px;
+  border: 1px solid var(--border, rgba(255,255,255,.12));
+  background: transparent;
+  color: var(--text2, #8b949e);
+  cursor: pointer;
+  transition: all .15s;
+}
+.chart-itv-btn:hover { color: var(--text, #e6edf3); border-color: var(--text2, #8b949e); }
+.chart-itv-btn.active {
+  background: var(--blue, #2f81f7);
+  border-color: var(--blue, #2f81f7);
+  color: #fff;
+}
