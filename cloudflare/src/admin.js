@@ -1658,37 +1658,31 @@ async function handleRemoveGroupSymbol(id, symbol, env) {
 async function handleGetSymbols(env) {
   const rows = await env.DB.prepare(`
     SELECT
-      s.symbol, s.name, s.type, s.comment, s.added_date,
-      GROUP_CONCAT(g.code) as groups
-    FROM symbols s
-    LEFT JOIN symbol_groups sg ON s.symbol = sg.symbol
-    LEFT JOIN groups g ON sg.group_id = g.id
-    GROUP BY s.symbol
-    ORDER BY s.type DESC, s.symbol
+      ticker, company, sector, market_cap, short_float, beta,
+      last_scan_date, is_watchlist, added_date
+    FROM watchlist
+    ORDER BY ticker ASC
   `).all();
-  return json({ symbols: rows.results });
+  return json({ symbols: rows.results ?? [] });
 }
 
 async function handleAddSymbol(request, env) {
-  const { symbol, group_id } = await request.json();
-  if (!symbol) return json({ error: 'symbol 필수' }, 400);
-
-  const sym = symbol.toUpperCase().trim();
+  const { ticker, company, sector, market_cap, short_float, beta } = await request.json();
+  if (!ticker) return json({ error: 'ticker 필수' }, 400);
+  const sym = ticker.toUpperCase().trim();
 
   await env.DB.prepare(`
-    INSERT OR IGNORE INTO symbols (symbol, added_date)
-    VALUES (?, date('now'))
-  `).bind(sym).run();
+    INSERT INTO watchlist (ticker, company, sector, market_cap, short_float, beta, added_date)
+    VALUES (?, ?, ?, ?, ?, ?, date('now'))
+    ON CONFLICT(ticker) DO UPDATE SET
+      company     = COALESCE(excluded.company,     company),
+      sector      = COALESCE(excluded.sector,      sector),
+      market_cap  = COALESCE(excluded.market_cap,  market_cap),
+      short_float = COALESCE(excluded.short_float, short_float),
+      beta        = COALESCE(excluded.beta,        beta)
+  `).bind(sym, company ?? null, sector ?? null, market_cap ?? null, short_float ?? null, beta ?? null).run();
 
-  if (group_id) {
-    await env.DB.prepare(`
-      INSERT OR IGNORE INTO symbol_groups (symbol, group_id)
-      VALUES (?, ?)
-    `).bind(sym, group_id).run();
-  }
-
-  const info = await refreshOneSymbol(env.DB, sym);
-  return json({ ok: true, symbol: sym, name: info?.name, type: info?.type });
+  return json({ ok: true, ticker: sym });
 }
 
 async function handleUpdateSymbol(symbol, request, env) {
@@ -1700,13 +1694,7 @@ async function handleUpdateSymbol(symbol, request, env) {
 }
 
 async function handleDeleteSymbol(symbol, env) {
-  await env.DB.batch([
-    env.DB.prepare('DELETE FROM symbol_groups WHERE symbol=?').bind(symbol),
-    env.DB.prepare('DELETE FROM symbols WHERE symbol=?').bind(symbol),
-    env.DB.prepare('DELETE FROM options_flow WHERE symbol=?').bind(symbol),
-    env.DB.prepare('DELETE FROM price_indicators WHERE symbol=?').bind(symbol),
-    env.DB.prepare('DELETE FROM screener_gex_daily WHERE symbol=?').bind(symbol),
-  ]);
+  await env.DB.prepare('DELETE FROM watchlist WHERE ticker=?').bind(symbol).run();
   return json({ ok: true, symbol });
 }
 
