@@ -10,7 +10,8 @@
   },
   "dependencies": {
     "node-fetch": "^3.3.2",
-    "ws": "^8.18.0"
+    "ws": "^8.18.0",
+    "lru-cache": "^10.0.0"
   },
   "engines": {
     "node": ">=18"
