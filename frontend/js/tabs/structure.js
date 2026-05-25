@@ -1748,7 +1748,7 @@ async function _stLoadAndRenderLWChart(symbol, res) {
   volWrap.style.display = 'none';
 
   try {
-    const url  = `${CF_API}/api/chart?symbol=${encodeURIComponent(symbol)}&resolution=${res}`;
+    const url  = `${RAILWAY_URL}/api/chart?symbol=${encodeURIComponent(symbol)}&resolution=${res}`;
     const r    = await fetch(url, { signal: AbortSignal.timeout(15000) });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
