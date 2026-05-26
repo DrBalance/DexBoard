@@ -9,10 +9,11 @@
 //   GET  /api/spy-price       → SPY 현재가 프록시 (Twelve Data REST → CORS 우회)
 //   GET  /api/prevclose       → 전날 SPY/VIX 종가 (KV snapshot:prevclose)
 //   GET  /api/trading-date    → 현재 거래일 날짜 (Twelve Data 기준)
-// SCREENER v4 (watchlist 기반)
-//   GET  /api/screener/symbols        → is_watchlist=TRUE 심볼 목록
-//   GET  /api/screener/latest         → 최신 GEX 스냅샷 (만기별)
-//   POST /d1/screener-gex-daily       → Railway → D1 저장 (DELETE+INSERT)
+// SCREENER v5 (screened_tickers 기반)
+//   GET  /api/screener/symbols        → screened_tickers 심볼 목록
+//   GET  /api/screener/latest         → daily_screener + screened_tickers JOIN
+//   POST /d1/daily-screener           → Railway → D1 저장 (DELETE+INSERT)
+//   POST /d1/screened-tickers/update  → screened_tickers 집계값 업데이트
 //
 // WATCHLIST
 //   GET  /api/watchlist               → 전체 목록
@@ -242,15 +243,15 @@ export default {
     }
 
     // ── GET /api/options-strikes/:symbol ───────────────────────
-    // Structure 탭 히트맵용: screener_gex_daily의 strike_data 파싱해서 반환
+    // Structure 탭 히트맵용: daily_screener의 strike_data 파싱해서 반환
     const strikesMatch = path.match(/^\/api\/options-strikes\/([a-zA-Z0-9.\-]+)$/i);
     if (request.method === "GET" && strikesMatch) {
       const sym = strikesMatch[1].toUpperCase();
 
       const rows = await env.DB.prepare(`
         SELECT expiry_date, dte, flip_strike, strike_data
-        FROM screener_gex_daily
-        WHERE symbol = ? AND strike_data IS NOT NULL
+        FROM daily_screener
+        WHERE ticker = ? AND strike_data IS NOT NULL
         ORDER BY dte ASC
       `).bind(sym).all();
 
@@ -305,14 +306,14 @@ export default {
     }
 
     // ── GET /api/options-dex/:symbol ───────────────────────────
-    // Structure 탭용: screener_gex_daily 기반으로 교체
+    // Structure 탭용: daily_screener 기반
     const optDexMatch = path.match(/^\/api\/options-dex\/([a-zA-Z0-9.\-]+)$/i);
     if (request.method === "GET" && optDexMatch) {
       const sym = optDexMatch[1].toUpperCase();
 
       const rows = await env.DB.prepare(`
         SELECT
-          updated_at as date, symbol, expiry_date, dte, expiry_type,
+          updated_at as date, ticker as symbol, expiry_date, dte, expiry_type,
           call_oi, put_oi, call_vol, put_vol,
           pcr_oi, null as pcr_vol,
           iv_skew, atm_iv, otm_call_iv, otm_put_iv,
@@ -320,8 +321,8 @@ export default {
           dex, net_gex as gex, vanna, charm,
           flip_strike,
           null as otm_call_oi_d, null as otm_put_oi_d, null as hedge_ratio
-        FROM screener_gex_daily
-        WHERE symbol = ?
+        FROM daily_screener
+        WHERE ticker = ?
         ORDER BY dte ASC
       `).bind(sym).all();
 
@@ -329,20 +330,20 @@ export default {
     }
 
     // ── GET /api/options-dex/:symbol/history ───────────────────
-    // screener_gex_daily는 최신 데이터만 보관하므로 history는 현재 데이터 반환
+    // daily_screener는 최신 데이터만 보관하므로 history는 현재 데이터 반환
     const optDexHistMatch = path.match(/^\/api\/options-dex\/([a-zA-Z0-9.\-]+)\/history$/i);
     if (request.method === "GET" && optDexHistMatch) {
       const sym = optDexHistMatch[1].toUpperCase();
 
       const rows = await env.DB.prepare(`
         SELECT
-          updated_at as date, symbol, expiry_date, dte, expiry_type,
+          updated_at as date, ticker as symbol, expiry_date, dte, expiry_type,
           call_oi, put_oi, call_vol, put_vol,
           pcr_oi, null as pcr_vol,
           iv_skew, atm_iv, otm_call_iv, otm_put_iv,
           dex, net_gex as gex, vanna, charm, flip_strike
-        FROM screener_gex_daily
-        WHERE symbol = ?
+        FROM daily_screener
+        WHERE ticker = ?
         ORDER BY dte ASC
       `).bind(sym).all();
 
@@ -356,14 +357,13 @@ export default {
     if (request.method === "GET" && path === "/api/symbols") {
       const q    = url.searchParams.get("q")?.toUpperCase() || "";
       const rows = await env.DB.prepare(`
-        SELECT s.symbol, s.name, s.type,
-          GROUP_CONCAT(g.code) as groups
-        FROM symbols s
-        LEFT JOIN symbol_groups sg ON s.symbol = sg.symbol
-        LEFT JOIN groups g ON sg.group_id = g.id
-        WHERE (s.symbol LIKE ? OR s.name LIKE ?)
-        GROUP BY s.symbol
-        ORDER BY s.type DESC, s.symbol
+        SELECT w.ticker as symbol, w.company as name,
+          GROUP_CONCAT(DISTINCT st.group_code) as groups
+        FROM watchlist w
+        LEFT JOIN screened_tickers st ON w.ticker = st.ticker
+        WHERE (w.ticker LIKE ? OR w.company LIKE ?)
+        GROUP BY w.ticker
+        ORDER BY w.ticker
         LIMIT 20
       `).bind(q + "%", q + "%").all();
       return json({ symbols: rows.results }, 200, corsHeaders);
@@ -447,10 +447,10 @@ export default {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
       const rows = await env.DB.prepare(`
-        SELECT DISTINCT s.symbol, s.name, s.type
-        FROM symbols s
-        JOIN symbol_groups sg ON s.symbol = sg.symbol
-        ORDER BY s.type DESC, s.symbol
+        SELECT DISTINCT st.ticker as symbol, w.company as name
+        FROM screened_tickers st
+        LEFT JOIN watchlist w ON w.ticker = st.ticker
+        ORDER BY st.ticker
       `).all();
       return json({ symbols: rows.results ?? [] }, 200, corsHeaders);
     }
@@ -467,11 +467,50 @@ export default {
     // ── GET /api/screener/symbols ───────────────────────────────
     if (request.method === "GET" && path === "/api/screener/symbols") {
       const rows = await env.DB.prepare(`
-        SELECT DISTINCT sg.symbol
-        FROM symbol_groups sg
-        ORDER BY sg.symbol
+        SELECT DISTINCT ticker as symbol
+        FROM screened_tickers
+        ORDER BY ticker
       `).all();
       return json({ symbols: rows.results ?? [] }, 200, corsHeaders);
+    }
+
+    // ── GET /api/screener/prune-candidates ─────────────────────
+    // pruneWatchlistGroup에서 사용: WATCHLIST 그룹의 기준 미달 후보
+    if (request.method === "GET" && path === "/api/screener/prune-candidates") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      const rows = await env.DB.prepare(`
+        SELECT ticker, concentration_count, upside
+        FROM screened_tickers
+        WHERE group_code = 'WATCHLIST'
+        AND (concentration_count <= 3 OR upside < 3)
+      `).all();
+      return json({ candidates: rows.results ?? [] }, 200, corsHeaders);
+    }
+
+    // ── POST /api/watchlist/sync-is-watchlist ───────────────────
+    // screened_tickers 기준으로 is_watchlist 동기화
+    if (request.method === "POST" && path === "/api/watchlist/sync-is-watchlist") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        await env.DB.batch([
+          env.DB.prepare("UPDATE watchlist SET is_watchlist = 0"),
+          env.DB.prepare(`
+            UPDATE watchlist SET is_watchlist = 1
+            WHERE ticker IN (
+              SELECT ticker FROM screened_tickers WHERE group_code = 'WATCHLIST'
+            )
+          `),
+        ]);
+        return json({ ok: true }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
     }
 
     // ── GET /api/screener/symbol/:sym ──────────────────────────
@@ -481,21 +520,21 @@ export default {
       const sym = screenerSymMatch[1].toUpperCase();
       const rows = await env.DB.prepare(`
         SELECT
-          g.symbol, g.spot_price, g.expiry_date, g.dte, g.expiry_type,
-          g.net_gex, g.flip_strike, g.atm_iv, g.call_oi, g.put_oi, g.pcr_oi,
-          g.dex, g.vanna, g.charm, g.iv_skew, g.otm_call_iv, g.otm_put_iv,
-          g.target_strike, g.concentration_count, g.distance_pct, g.updated_at,
+          d.ticker as symbol, st.spot_price, d.expiry_date, d.dte, d.expiry_type,
+          d.net_gex, d.flip_strike, d.atm_iv, d.call_oi, d.put_oi, d.pcr_oi,
+          d.dex, d.vanna, d.charm, d.iv_skew, d.otm_call_iv, d.otm_put_iv,
+          st.target_strike, st.concentration_count, st.upside, d.updated_at,
           w.company, w.sector, w.market_cap, w.short_float, w.beta
-        FROM screener_gex_daily g
-        LEFT JOIN watchlist w ON w.ticker = g.symbol
-        WHERE g.symbol = ?
-        ORDER BY g.dte ASC
+        FROM daily_screener d
+        LEFT JOIN screened_tickers st ON st.ticker = d.ticker AND st.group_code = 'WATCHLIST'
+        LEFT JOIN watchlist w ON w.ticker = d.ticker
+        WHERE d.ticker = ?
+        ORDER BY d.dte ASC
       `).bind(sym).all();
 
       const all = rows.results ?? [];
       if (!all.length) return json(null, 404, corsHeaders);
 
-      // 종목 단위 집계
       const first    = all[0];
       const totalGex = all.reduce((s, r) => s + (r.net_gex ?? 0), 0);
       const nearestFlip = all.find(r => r.flip_strike)?.flip_strike ?? null;
@@ -518,6 +557,7 @@ export default {
         atm_iv:              atmIvAvg,
         target_strike:       first.target_strike,
         concentration_count: first.concentration_count ?? 0,
+        upside:              first.upside ?? null,
         updated_at:          first.updated_at,
         expiries:            all,
       }, 200, corsHeaders);
@@ -527,58 +567,82 @@ export default {
     if (request.method === "GET" && path === "/api/screener/latest") {
       const rows = await env.DB.prepare(`
         SELECT
-          g.symbol, g.spot_price, g.expiry_date, g.dte, g.expiry_type,
-          g.net_gex, g.flip_strike, g.atm_iv,
-          g.call_oi, g.put_oi, g.pcr_oi, g.dex, g.vanna, g.charm,
-          g.target_strike, g.concentration_count, g.distance_pct, g.updated_at,
+          d.ticker as symbol, st.spot_price, d.expiry_date, d.dte, d.expiry_type,
+          d.net_gex, d.flip_strike, d.atm_iv,
+          d.call_oi, d.put_oi, d.pcr_oi, d.dex, d.vanna, d.charm,
+          st.target_strike, st.concentration_count, st.upside, d.updated_at,
           w.company, w.sector, w.market_cap, w.short_float, w.beta,
-          GROUP_CONCAT(DISTINCT gr.code) as groups
-        FROM screener_gex_daily g
-        LEFT JOIN watchlist w ON w.ticker = g.symbol
-        LEFT JOIN symbol_groups sg ON sg.symbol = g.symbol
-        LEFT JOIN groups gr ON gr.id = sg.group_id
-        GROUP BY g.symbol, g.expiry_date
-        ORDER BY g.symbol ASC, g.dte ASC
+          GROUP_CONCAT(DISTINCT st2.group_code) as groups
+        FROM daily_screener d
+        LEFT JOIN screened_tickers st ON st.ticker = d.ticker AND st.group_code = 'WATCHLIST'
+        LEFT JOIN screened_tickers st2 ON st2.ticker = d.ticker
+        LEFT JOIN watchlist w ON w.ticker = d.ticker
+        GROUP BY d.ticker, d.expiry_date
+        ORDER BY d.ticker ASC, d.dte ASC
       `).all();
       return json(rows.results ?? [], 200, corsHeaders);
     }
 
-    // ── POST /d1/screener-gex-daily ────────────────────────────
-    // body: { symbol, rows: [...만기별 행], updated_at }
-    if (request.method === "POST" && path === "/d1/screener-gex-daily") {
+    // ── POST /d1/daily-screener ────────────────────────────────
+    // body: { ticker, rows: [...만기별 행], updated_at }
+    if (request.method === "POST" && path === "/d1/daily-screener") {
       const secret = request.headers.get("x-cron-secret");
       if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
       try {
-        const { symbol, rows, updated_at } = await request.json();
-        if (!symbol || !Array.isArray(rows) || !rows.length)
-          return json({ ok: false, error: "symbol, rows 필요" }, 400, corsHeaders);
+        const { ticker, rows, updated_at } = await request.json();
+        if (!ticker || !Array.isArray(rows) || !rows.length)
+          return json({ ok: false, error: "ticker, rows 필요" }, 400, corsHeaders);
 
-        const deleteStmt = env.DB.prepare("DELETE FROM screener_gex_daily WHERE symbol = ?").bind(symbol);
+        const deleteStmt = env.DB.prepare("DELETE FROM daily_screener WHERE ticker = ?").bind(ticker);
         const insertStmts = rows.map(r => env.DB.prepare(`
-          INSERT INTO screener_gex_daily (
-            symbol, spot_price, expiry_date, dte, expiry_type,
+          INSERT INTO daily_screener (
+            ticker, expiry_date, dte, expiry_type,
             net_gex, flip_strike, atm_iv, call_oi, put_oi, pcr_oi,
             dex, vanna, charm,
             call_vol, put_vol, iv_skew, otm_call_iv, otm_put_iv,
-            strike_data,
-            target_strike, concentration_count, distance_pct, updated_at
-          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            strike_data, updated_at
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         `).bind(
-          symbol,
-          r.spot_price    ?? null, r.expiry_date ?? null, r.dte ?? null, r.expiry_type ?? null,
+          ticker,
+          r.expiry_date ?? null, r.dte ?? null, r.expiry_type ?? null,
           r.net_gex       ?? null, r.flip_strike ?? null, r.atm_iv      ?? null,
           r.call_oi       ?? null, r.put_oi      ?? null, r.pcr_oi      ?? null,
           r.dex           ?? null, r.vanna       ?? null, r.charm       ?? null,
           r.call_vol      ?? null, r.put_vol     ?? null, r.iv_skew     ?? null,
           r.otm_call_iv   ?? null, r.otm_put_iv  ?? null,
           r.strike_data   ?? null,
-          r.target_strike ?? null, r.concentration_count ?? null, r.distance_pct ?? null,
           updated_at      ?? new Date().toISOString()
         ));
         await env.DB.batch([deleteStmt, ...insertStmts]);
         return json({ ok: true, inserted: rows.length }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
+    // ── POST /d1/screened-tickers/update ───────────────────────
+    // body: { ticker, spot_price, upside, concentration_count, target_strike, total_gex, atm_iv, flip_strike }
+    if (request.method === "POST" && path === "/d1/screened-tickers/update") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const { ticker, spot_price, upside, concentration_count, target_strike, total_gex, atm_iv, flip_strike } = await request.json();
+        if (!ticker) return json({ ok: false, error: "ticker 필요" }, 400, corsHeaders);
+        await env.DB.prepare(`
+          UPDATE screened_tickers
+          SET spot_price = ?, upside = ?, concentration_count = ?,
+              target_strike = ?, total_gex = ?, atm_iv = ?, flip_strike = ?
+          WHERE ticker = ?
+        `).bind(
+          spot_price ?? null, upside ?? null, concentration_count ?? null,
+          target_strike ?? null, total_gex ?? null, atm_iv ?? null, flip_strike ?? null,
+          ticker.toUpperCase()
+        ).run();
+        return json({ ok: true, ticker: ticker.toUpperCase() }, 200, corsHeaders);
       } catch (err) {
         return json({ ok: false, error: err.message }, 500, corsHeaders);
       }
@@ -646,7 +710,10 @@ export default {
     if (request.method === "GET" && path === "/api/watchlist/candidates") {
       const rows = await env.DB.prepare(`
         SELECT ticker, company, sector, market_cap, short_float, beta, last_scan_date
-        FROM watchlist WHERE is_watchlist = 0
+        FROM watchlist
+        WHERE ticker NOT IN (
+          SELECT ticker FROM screened_tickers WHERE group_code = 'WATCHLIST'
+        )
         ORDER BY last_scan_date ASC NULLS FIRST, ticker ASC
       `).all();
       return json({ candidates: rows.results ?? [] }, 200, corsHeaders);
@@ -690,29 +757,25 @@ export default {
       }
     }
 
-    // ── DELETE /api/watchlist/group-reset ──────────────────────
-    // 스캔 시작 전 watchlist 그룹 symbol_groups 전체 초기화
+    // ── POST /api/watchlist/group-reset ────────────────────────
+    // 스캔 시작 전 WATCHLIST 그룹 screened_tickers 전체 초기화
     if (request.method === "POST" && path === "/api/watchlist/group-reset") {
       const secret = request.headers.get("x-cron-secret");
       if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
       try {
-        const group = await env.DB.prepare(
-          "SELECT id FROM groups WHERE UPPER(code) = 'WATCHLIST' LIMIT 1"
-        ).first();
-        if (!group) return json({ ok: false, error: "WATCHLIST 그룹이 존재하지 않습니다." }, 400, corsHeaders);
         await env.DB.prepare(
-          "DELETE FROM symbol_groups WHERE group_id = ?"
-        ).bind(group.id).run();
-        return json({ ok: true, group_id: group.id }, 200, corsHeaders);
+          "DELETE FROM screened_tickers WHERE group_code = 'WATCHLIST'"
+        ).run();
+        return json({ ok: true }, 200, corsHeaders);
       } catch (err) {
         return json({ ok: false, error: err.message }, 500, corsHeaders);
       }
     }
 
     // ── POST /api/watchlist/enroll-group ───────────────────────
-    // 승격 종목을 symbols + symbol_groups(watchlist 그룹)에 자동 편입
+    // 승격 종목을 screened_tickers(WATCHLIST 그룹)에 자동 편입
     if (request.method === "POST" && path === "/api/watchlist/enroll-group") {
       const secret = request.headers.get("x-cron-secret");
       if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
@@ -723,57 +786,24 @@ export default {
         if (!ticker) return json({ error: "ticker 필요" }, 400, corsHeaders);
         const sym = ticker.toUpperCase();
 
-        // 1. watchlist 그룹 조회 (대소문자 무관, 수동 생성된 그룹 사용)
-        const group = await env.DB.prepare(
-          "SELECT id FROM groups WHERE UPPER(code) = 'WATCHLIST' LIMIT 1"
-        ).first();
-        if (!group) return json({ ok: false, error: "WATCHLIST 그룹이 존재하지 않습니다. admin에서 먼저 생성해주세요." }, 400, corsHeaders);
-        const groupId = group.id;
-
-        // 2. symbols 테이블에 추가
+        // screened_tickers에 WATCHLIST 그룹으로 추가
         await env.DB.prepare(
-          "INSERT OR IGNORE INTO symbols (symbol) VALUES (?)"
+          "INSERT OR IGNORE INTO screened_tickers (ticker, group_code) VALUES (?, 'WATCHLIST')"
         ).bind(sym).run();
 
-        // 2-1. name/type 없으면 Yahoo Finance로 보완
-        const existing = await env.DB.prepare(
-          "SELECT name, type FROM symbols WHERE symbol = ?"
-        ).bind(sym).first();
-        if (!existing?.name || !existing?.type) {
-          try {
-            const yRes = await fetch(
-              `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(sym)}?interval=1d&range=1d`,
-              { headers: { 'User-Agent': 'Mozilla/5.0' }, signal: AbortSignal.timeout(8000) }
-            );
-            if (yRes.ok) {
-              const yData = await yRes.json();
-              const meta  = yData?.chart?.result?.[0]?.meta;
-              if (meta) {
-                const name = meta.longName || meta.shortName || sym;
-                const type = meta.instrumentType === 'ETF' ? 'etf' : 'stock';
-                await env.DB.prepare(
-                  "UPDATE symbols SET name=?, type=? WHERE symbol=?"
-                ).bind(name, type, sym).run();
-              }
-            }
-          } catch (e) {
-            console.warn(`[enroll-group] ${sym} name/type 갱신 실패:`, e.message);
-          }
-        }
-
-        // 3. symbol_groups에 연결
+        // is_watchlist 동기화
         await env.DB.prepare(
-          "INSERT OR IGNORE INTO symbol_groups (symbol, group_id) VALUES (?, ?)"
-        ).bind(sym, groupId).run();
+          "UPDATE watchlist SET is_watchlist = 1 WHERE ticker = ?"
+        ).bind(sym).run();
 
-        return json({ ok: true, ticker: sym, group_id: groupId }, 200, corsHeaders);
+        return json({ ok: true, ticker: sym }, 200, corsHeaders);
       } catch (err) {
         return json({ ok: false, error: err.message }, 500, corsHeaders);
       }
     }
 
     // ── POST /api/watchlist/prune ───────────────────────────
-    // 기준 미달 종목을 watchlist 그룹에서 제거 + is_watchlist = 0
+    // 기준 미달 종목을 screened_tickers에서 제거 (6번 로직)
     if (request.method === "POST" && path === "/api/watchlist/prune") {
       const secret = request.headers.get("x-cron-secret");
       if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
@@ -784,26 +814,28 @@ export default {
         if (!ticker) return json({ error: "ticker 필요" }, 400, corsHeaders);
         const sym = ticker.toUpperCase();
 
-        // watchlist 그룹 ID 조회
-        const group = await env.DB.prepare(
-          "SELECT id FROM groups WHERE UPPER(code) = 'WATCHLIST' LIMIT 1"
-        ).first();
+        // 1. WATCHLIST 그룹에서 제거
+        await env.DB.prepare(
+          "DELETE FROM screened_tickers WHERE ticker = ? AND group_code = 'WATCHLIST'"
+        ).bind(sym).run();
 
-        if (group) {
+        // 2. 다른 그룹에 남아있는지 확인
+        const remaining = await env.DB.prepare(
+          "SELECT COUNT(*) as cnt FROM screened_tickers WHERE ticker = ?"
+        ).bind(sym).first();
+
+        if ((remaining?.cnt ?? 0) > 0) {
+          // 다른 그룹에 있음: is_watchlist = 0만
           await env.DB.prepare(
-            "DELETE FROM symbol_groups WHERE group_id = ? AND symbol = ?"
-          ).bind(group.id, sym).run();
+            "UPDATE watchlist SET is_watchlist = 0 WHERE ticker = ?"
+          ).bind(sym).run();
+        } else {
+          // 고아: is_watchlist = 0 + daily_screener 데이터 삭제
+          await env.DB.batch([
+            env.DB.prepare("UPDATE watchlist SET is_watchlist = 0 WHERE ticker = ?").bind(sym),
+            env.DB.prepare("DELETE FROM daily_screener WHERE ticker = ?").bind(sym),
+          ]);
         }
-
-        // watchlist 테이블 is_watchlist = 0 재설정
-        await env.DB.prepare(
-          "UPDATE watchlist SET is_watchlist = 0 WHERE ticker = ?"
-        ).bind(sym).run();
-
-        // screener_gex_daily 데이터 삭제
-        await env.DB.prepare(
-          "DELETE FROM screener_gex_daily WHERE symbol = ?"
-        ).bind(sym).run();
 
         return json({ ok: true, ticker: sym }, 200, corsHeaders);
       } catch (err) {
@@ -827,8 +859,12 @@ export default {
     const watchlistDelMatch = path.match(/^\/api\/watchlist\/([A-Z0-9.\-]+)$/i);
     if (request.method === "DELETE" && watchlistDelMatch) {
       const ticker = watchlistDelMatch[1].toUpperCase();
+      // screened_tickers에서 해당 ticker의 모든 그룹 제거
+      await env.DB.prepare("DELETE FROM screened_tickers WHERE ticker = ?").bind(ticker).run();
+      // daily_screener 데이터 삭제
+      await env.DB.prepare("DELETE FROM daily_screener WHERE ticker = ?").bind(ticker).run();
+      // watchlist에서 완전 삭제
       await env.DB.prepare("DELETE FROM watchlist WHERE ticker = ?").bind(ticker).run();
-      await env.DB.prepare("DELETE FROM screener_gex_daily WHERE symbol = ?").bind(ticker).run();
       return json({ ok: true, ticker }, 200, corsHeaders);
     }
 
@@ -1051,7 +1087,7 @@ export default {
       `).bind(piDate).all() : { results: [] };
 
       const metaRows = await env.DB.prepare(`
-        SELECT symbol, name, type FROM symbols
+        SELECT ticker as symbol, company as name FROM watchlist
       `).all();
 
       return json({
@@ -1070,13 +1106,13 @@ export default {
 
       const rows = await env.DB.prepare(`
         SELECT
-          updated_at as date, symbol, expiry_date, dte, expiry_type,
+          updated_at as date, ticker as symbol, expiry_date, dte, expiry_type,
           call_oi, put_oi, call_vol, put_vol, pcr_oi,
           iv_skew, atm_iv, otm_call_iv, otm_put_iv,
           dex, net_gex as gex, vanna, charm, flip_strike,
-          spot_price
-        FROM screener_gex_daily
-        WHERE symbol = ? AND dte BETWEEN 0 AND 65
+          (SELECT spot_price FROM screened_tickers WHERE ticker = d.ticker LIMIT 1) as spot_price
+        FROM daily_screener d
+        WHERE ticker = ? AND dte BETWEEN 0 AND 65
         ORDER BY dte ASC
       `).bind(symbol).all();
 

@@ -1,6 +1,6 @@
 // ============================================
-// admin.js — 관리자 API 핸들러 (v2)
-// 새 스키마: groups, symbol_groups, bb_map_symbols
+// admin.js — 관리자 API 핸들러 (v3)
+// 새 스키마: groups(code 기반), screened_tickers, daily_screener
 // worker.js에서 import해서 사용
 // ============================================
 
@@ -1309,38 +1309,38 @@ export async function handleAdmin(path, request, env) {
     return handleAddGroup(request, env);
   }
 
-  // ── PATCH /api/admin/groups/:id
-  const groupPatch = path.match(/^\/api\/admin\/groups\/(\d+)$/);
+  // ── PATCH /api/admin/groups/:code
+  const groupPatch = path.match(/^\/api\/admin\/groups\/([A-Z0-9_\-]+)$/i);
   if (groupPatch && request.method === 'PATCH') {
-    return handleUpdateGroup(Number(groupPatch[1]), request, env);
+    return handleUpdateGroup(groupPatch[1].toUpperCase(), request, env);
   }
 
-  // ── DELETE /api/admin/groups/:id
-  const groupDel = path.match(/^\/api\/admin\/groups\/(\d+)$/);
+  // ── DELETE /api/admin/groups/:code
+  const groupDel = path.match(/^\/api\/admin\/groups\/([A-Z0-9_\-]+)$/i);
   if (groupDel && request.method === 'DELETE') {
-    return handleDeleteGroup(Number(groupDel[1]), env);
+    return handleDeleteGroup(groupDel[1].toUpperCase(), env);
   }
 
-  // ── GET  /api/admin/groups/:id/symbols
-  const groupSymsGet = path.match(/^\/api\/admin\/groups\/(\d+)\/symbols$/);
+  // ── GET  /api/admin/groups/:code/symbols
+  const groupSymsGet = path.match(/^\/api\/admin\/groups\/([A-Z0-9_\-]+)\/symbols$/i);
   if (groupSymsGet && request.method === 'GET') {
-    return handleGetGroupSymbols(Number(groupSymsGet[1]), env);
+    return handleGetGroupSymbols(groupSymsGet[1].toUpperCase(), env);
   }
 
-  // ── POST /api/admin/groups/:id/symbols
-  const groupSymsPost = path.match(/^\/api\/admin\/groups\/(\d+)\/symbols$/);
+  // ── POST /api/admin/groups/:code/symbols
+  const groupSymsPost = path.match(/^\/api\/admin\/groups\/([A-Z0-9_\-]+)\/symbols$/i);
   if (groupSymsPost && request.method === 'POST') {
-    return handleAddGroupSymbol(Number(groupSymsPost[1]), request, env);
+    return handleAddGroupSymbol(groupSymsPost[1].toUpperCase(), request, env);
   }
 
-  // ── DELETE /api/admin/groups/:id/symbols/:symbol
-  const groupSymDel = path.match(/^\/api\/admin\/groups\/(\d+)\/symbols\/([A-Z0-9.\-]+)$/);
+  // ── DELETE /api/admin/groups/:code/symbols/:symbol
+  const groupSymDel = path.match(/^\/api\/admin\/groups\/([A-Z0-9_\-]+)\/symbols\/([A-Z0-9.\-]+)$/i);
   if (groupSymDel && request.method === 'DELETE') {
-    return handleRemoveGroupSymbol(Number(groupSymDel[1]), groupSymDel[2], env);
+    return handleRemoveGroupSymbol(groupSymDel[1].toUpperCase(), groupSymDel[2].toUpperCase(), env);
   }
 
   // ════════════════════════════════════════
-  // SYMBOLS
+  // SYMBOLS (watchlist 기반)
   // ════════════════════════════════════════
 
   // ── GET  /api/admin/symbols
@@ -1353,21 +1353,10 @@ export async function handleAdmin(path, request, env) {
     return handleAddSymbol(request, env);
   }
 
-  // ── PATCH /api/admin/symbols/:sym
-  const symPatch = path.match(/^\/api\/admin\/symbols\/([A-Z0-9.\-]+)$/);
-  if (symPatch && request.method === 'PATCH') {
-    return handleUpdateSymbol(symPatch[1], request, env);
-  }
-
   // ── DELETE /api/admin/symbols/:sym
   const symDel = path.match(/^\/api\/admin\/symbols\/([A-Z0-9.\-]+)$/);
   if (symDel && request.method === 'DELETE') {
     return handleDeleteSymbol(symDel[1], env);
-  }
-
-  // ── POST /api/admin/symbols/refresh
-  if (path === '/api/admin/symbols/refresh' && request.method === 'POST') {
-    return handleRefreshSymbols(env);
   }
 
   // ════════════════════════════════════════
@@ -1415,46 +1404,36 @@ export async function handleAdmin(path, request, env) {
   // ── POST /api/admin/prune-watchlist (기준 미달 종목 수동 정리)
   if (path === '/api/admin/prune-watchlist' && request.method === 'POST') {
     try {
-      const watchlistGroup = await env.DB.prepare(
-        "SELECT id FROM groups WHERE UPPER(code) = 'WATCHLIST' LIMIT 1"
-      ).first();
-      if (!watchlistGroup) return json({ ok: false, error: 'WATCHLIST 그룹 없음' }, 400);
-
-      // watchlist 그룹에 속한 종목 중 다른 그룹에도 속한 종목(수동 지정)은 제외
-      const manualSymbols = await env.DB.prepare(`
-        SELECT DISTINCT symbol FROM symbol_groups WHERE group_id != ?
-      `).bind(watchlistGroup.id).all();
-      const manualSet = new Set((manualSymbols.results ?? []).map(r => r.symbol));
-
-      // watchlist 그룹 종목만 대상
-      const watchlistSymbols = await env.DB.prepare(`
-        SELECT DISTINCT symbol FROM symbol_groups WHERE group_id = ?
-      `).bind(watchlistGroup.id).all();
+      // WATCHLIST 그룹의 기준 미달 종목 조회
+      const candidates = await env.DB.prepare(`
+        SELECT ticker, concentration_count, upside
+        FROM screened_tickers
+        WHERE group_code = 'WATCHLIST'
+        AND (concentration_count <= 3 OR upside < 3)
+      `).all();
 
       const removed = [];
-      for (const { symbol } of (watchlistSymbols.results ?? [])) {
-        // 수동 지정 종목은 건너뜀
-        if (manualSet.has(symbol)) continue;
+      for (const { ticker, concentration_count, upside } of (candidates.results ?? [])) {
+        // 1. WATCHLIST에서 제거
+        await env.DB.prepare(
+          "DELETE FROM screened_tickers WHERE ticker=? AND group_code='WATCHLIST'"
+        ).bind(ticker).run();
 
-        // 기준 판정
-        const row = await env.DB.prepare(`
-          SELECT MAX(concentration_count) as count, MAX(-distance_pct) as upside
-          FROM screener_gex_daily WHERE symbol = ?
-        `).bind(symbol).first();
+        // 2. 다른 그룹 확인
+        const remaining = await env.DB.prepare(
+          'SELECT COUNT(*) as cnt FROM screened_tickers WHERE ticker=?'
+        ).bind(ticker).first();
 
-        // screener 데이터 없거나 기준 미달이면 삭제
-        const noData       = !row || row.count == null;
-        const isBelowCount  = noData || (row.count ?? 0) <= 3;
-        const isBelowUpside = noData || (row.upside != null && row.upside < 3);
-        if (!noData && !isBelowCount && !isBelowUpside) continue;
+        if ((remaining?.cnt ?? 0) === 0) {
+          await env.DB.batch([
+            env.DB.prepare('DELETE FROM daily_screener WHERE ticker=?').bind(ticker),
+            env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(ticker),
+          ]);
+        } else {
+          await env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(ticker).run();
+        }
 
-        await env.DB.batch([
-          env.DB.prepare('DELETE FROM screener_gex_daily WHERE symbol=?').bind(symbol),
-          env.DB.prepare('DELETE FROM symbol_groups WHERE group_id=? AND symbol=?').bind(watchlistGroup.id, symbol),
-          env.DB.prepare('DELETE FROM symbols WHERE symbol=?').bind(symbol),
-          env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(symbol),
-        ]);
-        removed.push({ symbol, count: row.count, upside: row.upside?.toFixed(1) });
+        removed.push({ symbol: ticker, count: concentration_count, upside });
       }
 
       return json({ ok: true, removed });
@@ -1511,17 +1490,17 @@ export async function handleAdmin(path, request, env) {
 // STATS
 // ============================================
 async function handleStats(env) {
-  const [symbols, groups, bbmap, flow] = await Promise.all([
-    env.DB.prepare('SELECT COUNT(*) as n FROM symbols').first(),
+  const [screened, groups, bbmap, flow] = await Promise.all([
+    env.DB.prepare('SELECT COUNT(DISTINCT ticker) as n FROM screened_tickers').first(),
     env.DB.prepare('SELECT COUNT(*) as n FROM groups').first(),
     env.DB.prepare('SELECT COUNT(*) as n FROM bb_map_symbols WHERE is_active=1').first(),
     env.DB.prepare("SELECT COUNT(*) as n FROM options_flow WHERE date=date('now')").first(),
   ]);
   return json({
-    symbols:    symbols.n,
-    groups:     groups.n,
-    bb_map:     bbmap.n,
-    flow_today: flow.n,
+    screened_tickers: screened.n,
+    groups:           groups.n,
+    bb_map:           bbmap.n,
+    flow_today:       flow.n,
   });
 }
 
@@ -1530,10 +1509,10 @@ async function handleStats(env) {
 // ============================================
 async function handleGetGroups(env) {
   const rows = await env.DB.prepare(`
-    SELECT g.*, COUNT(sg.symbol) as symbol_count
+    SELECT g.*, COUNT(st.ticker) as symbol_count
     FROM groups g
-    LEFT JOIN symbol_groups sg ON g.id = sg.group_id
-    GROUP BY g.id
+    LEFT JOIN screened_tickers st ON g.code = st.group_code
+    GROUP BY g.code
     ORDER BY g.code
   `).all();
   return json({ groups: rows.results });
@@ -1545,111 +1524,123 @@ async function handleAddGroup(request, env) {
 
   const code_upper = code.toUpperCase().trim();
   const exists = await env.DB.prepare(
-    'SELECT id FROM groups WHERE code=?'
+    'SELECT code FROM groups WHERE code=?'
   ).bind(code_upper).first();
   if (exists) return json({ error: `${code_upper} 코드가 이미 존재합니다` }, 409);
 
-  const result = await env.DB.prepare(`
+  await env.DB.prepare(`
     INSERT INTO groups (code, name, color, comment)
     VALUES (?, ?, ?, ?)
   `).bind(code_upper, name.trim(), color || null, comment || null).run();
 
-  return json({ ok: true, id: result.meta.last_row_id, code: code_upper });
+  return json({ ok: true, code: code_upper });
 }
 
-async function handleUpdateGroup(id, request, env) {
+async function handleUpdateGroup(code, request, env) {
   const { name, color, comment } = await request.json();
   await env.DB.prepare(
-    'UPDATE groups SET name=?, color=?, comment=? WHERE id=?'
-  ).bind(name, color || null, comment || null, id).run();
-  return json({ ok: true, id });
+    'UPDATE groups SET name=?, color=?, comment=? WHERE code=?'
+  ).bind(name, color || null, comment || null, code).run();
+  return json({ ok: true, code });
 }
 
-async function handleDeleteGroup(id, env) {
-  // symbol_groups 먼저 삭제 (CASCADE 미지원 대비 명시적 삭제)
-  await env.DB.prepare('DELETE FROM symbol_groups WHERE group_id=?').bind(id).run();
-  await env.DB.prepare('DELETE FROM groups WHERE id=?').bind(id).run();
+async function handleDeleteGroup(code, env) {
+  // WATCHLIST 그룹은 삭제 불가
+  if (code === 'WATCHLIST') return json({ error: 'WATCHLIST 그룹은 삭제할 수 없습니다' }, 400);
 
-  // 고아 심볼 (어느 그룹에도 속하지 않은) 정리
-  const orphans = await env.DB.prepare(`
-    SELECT symbol FROM symbols
-    WHERE symbol NOT IN (SELECT DISTINCT symbol FROM symbol_groups)
-  `).all();
+  // 해당 그룹의 모든 종목에 대해 6번 로직 적용
+  const members = await env.DB.prepare(
+    'SELECT ticker FROM screened_tickers WHERE group_code=?'
+  ).bind(code).all();
 
-  if (orphans.results.length > 0) {
-    const syms = orphans.results.map(r => r.symbol);
-    const delStmts = syms.flatMap(sym => [
-      env.DB.prepare('DELETE FROM symbols WHERE symbol=?').bind(sym),
-      env.DB.prepare('DELETE FROM options_flow WHERE symbol=?').bind(sym),
-      env.DB.prepare('DELETE FROM price_indicators WHERE symbol=?').bind(sym),
-      env.DB.prepare('DELETE FROM screener_gex_daily WHERE symbol=?').bind(sym),
-    ]);
-    for (const chunk of chunkArray(delStmts, 100)) {
-      await env.DB.batch(chunk);
+  for (const { ticker } of (members.results ?? [])) {
+    // screened_tickers에서 이 그룹 레코드 삭제
+    await env.DB.prepare(
+      'DELETE FROM screened_tickers WHERE ticker=? AND group_code=?'
+    ).bind(ticker, code).run();
+
+    // 다른 그룹에 남아있는지 확인
+    const remaining = await env.DB.prepare(
+      'SELECT COUNT(*) as cnt FROM screened_tickers WHERE ticker=?'
+    ).bind(ticker).first();
+
+    if ((remaining?.cnt ?? 0) === 0) {
+      // 고아: daily_screener 삭제 + is_watchlist = 0
+      await env.DB.batch([
+        env.DB.prepare('DELETE FROM daily_screener WHERE ticker=?').bind(ticker),
+        env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(ticker),
+      ]);
+    } else {
+      // 다른 그룹 있음: is_watchlist만 동기화
+      await env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(ticker).run();
     }
-    return json({ ok: true, id, orphans_removed: syms });
   }
 
-  return json({ ok: true, id, orphans_removed: [] });
+  // 그룹 삭제
+  await env.DB.prepare('DELETE FROM groups WHERE code=?').bind(code).run();
+
+  return json({ ok: true, code, members_processed: members.results?.length ?? 0 });
 }
 
-async function handleGetGroupSymbols(id, env) {
+async function handleGetGroupSymbols(code, env) {
   const rows = await env.DB.prepare(`
-    SELECT s.symbol, s.name, s.type, s.comment
-    FROM symbol_groups sg
-    JOIN symbols s ON sg.symbol = s.symbol
-    WHERE sg.group_id = ?
-    ORDER BY s.type DESC, s.symbol
-  `).bind(id).all();
-  return json({ group_id: id, symbols: rows.results });
+    SELECT
+      st.ticker as symbol,
+      w.company as name,
+      st.spot_price, st.target_strike, st.concentration_count,
+      st.upside, st.total_gex, st.atm_iv, st.flip_strike
+    FROM screened_tickers st
+    LEFT JOIN watchlist w ON w.ticker = st.ticker
+    WHERE st.group_code = ?
+    ORDER BY st.ticker
+  `).bind(code).all();
+  return json({ group_code: code, symbols: rows.results });
 }
 
-async function handleAddGroupSymbol(id, request, env) {
+async function handleAddGroupSymbol(code, request, env) {
   const { symbol } = await request.json();
   if (!symbol) return json({ error: 'symbol 필수' }, 400);
 
   const sym = symbol.toUpperCase().trim();
 
-  // symbols에 없으면 자동 등록
-  await env.DB.prepare(`
-    INSERT OR IGNORE INTO symbols (symbol, added_date)
-    VALUES (?, date('now'))
-  `).bind(sym).run();
-
-  // 그룹에 추가
-  await env.DB.prepare(`
-    INSERT OR IGNORE INTO symbol_groups (symbol, group_id)
-    VALUES (?, ?)
-  `).bind(sym, id).run();
-
-  // Yahoo에서 name/type 자동수집
-  const info = await refreshOneSymbol(env.DB, sym);
-
-  return json({ ok: true, symbol: sym, group_id: id, name: info?.name, type: info?.type });
-}
-
-async function handleRemoveGroupSymbol(id, symbol, env) {
-  await env.DB.prepare(
-    'DELETE FROM symbol_groups WHERE group_id=? AND symbol=?'
-  ).bind(id, symbol).run();
-
-  // 고아가 되었으면 모든 데이터 삭제
-  const stillExists = await env.DB.prepare(
-    'SELECT 1 FROM symbol_groups WHERE symbol=? LIMIT 1'
-  ).bind(symbol).first();
-
-  if (!stillExists) {
-    await env.DB.batch([
-      env.DB.prepare('DELETE FROM symbols WHERE symbol=?').bind(symbol),
-      env.DB.prepare('DELETE FROM options_flow WHERE symbol=?').bind(symbol),
-      env.DB.prepare('DELETE FROM price_indicators WHERE symbol=?').bind(symbol),
-      env.DB.prepare('DELETE FROM screener_gex_daily WHERE symbol=?').bind(symbol),
-      env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(symbol),
-    ]);
-    return json({ ok: true, symbol, group_id: id, orphan_removed: true });
+  // WATCHLIST 그룹에는 수동 추가 불가 (스캔으로만 추가)
+  if (code === 'WATCHLIST') {
+    return json({ error: 'WATCHLIST 그룹은 스캔을 통해서만 종목이 추가됩니다' }, 400);
   }
 
-  return json({ ok: true, symbol, group_id: id, orphan_removed: false });
+  // screened_tickers에 추가
+  await env.DB.prepare(`
+    INSERT OR IGNORE INTO screened_tickers (ticker, group_code)
+    VALUES (?, ?)
+  `).bind(sym, code).run();
+
+  return json({ ok: true, symbol: sym, group_code: code });
+}
+
+async function handleRemoveGroupSymbol(code, symbol, env) {
+  // 1. 해당 그룹에서 제거
+  await env.DB.prepare(
+    'DELETE FROM screened_tickers WHERE group_code=? AND ticker=?'
+  ).bind(code, symbol).run();
+
+  // 2. 다른 그룹에 남아있는지 확인
+  const remaining = await env.DB.prepare(
+    'SELECT COUNT(*) as cnt FROM screened_tickers WHERE ticker=?'
+  ).bind(symbol).first();
+
+  if ((remaining?.cnt ?? 0) > 0) {
+    // 다른 그룹에 있음: is_watchlist = 0만
+    await env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(symbol).run();
+    return json({ ok: true, symbol, group_code: code, orphan_removed: false });
+  }
+
+  // 고아: daily_screener 삭제 + is_watchlist = 0
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM daily_screener WHERE ticker=?').bind(symbol),
+    env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(symbol),
+  ]);
+
+  return json({ ok: true, symbol, group_code: code, orphan_removed: true });
 }
 
 // ============================================
@@ -1685,58 +1676,9 @@ async function handleAddSymbol(request, env) {
   return json({ ok: true, ticker: sym });
 }
 
-async function handleUpdateSymbol(symbol, request, env) {
-  const { comment } = await request.json();
-  await env.DB.prepare(
-    'UPDATE symbols SET comment=? WHERE symbol=?'
-  ).bind(comment || null, symbol).run();
-  return json({ ok: true, symbol });
-}
-
 async function handleDeleteSymbol(symbol, env) {
   await env.DB.prepare('DELETE FROM watchlist WHERE ticker=?').bind(symbol).run();
   return json({ ok: true, symbol });
-}
-
-async function handleRefreshSymbols(env) {
-  const rows = await env.DB.prepare('SELECT symbol FROM symbols').all();
-  const results = { updated: [], failed: [] };
-
-  for (const { symbol } of rows.results) {
-    const info = await refreshOneSymbol(env.DB, symbol);
-    if (info) results.updated.push(symbol);
-    else results.failed.push(symbol);
-    await sleep(200);
-  }
-
-  return json({ ok: true, ...results });
-}
-
-// ── Yahoo Finance로 단일 심볼 name/type 수집
-async function refreshOneSymbol(db, symbol) {
-  try {
-    const url = `${YAHOO_BASE}/${encodeURIComponent(symbol)}?interval=1d&range=1d`;
-    const res = await fetch(url, {
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) return null;
-
-    const data   = await res.json();
-    const meta   = data?.chart?.result?.[0]?.meta;
-    if (!meta) return null;
-
-    const name = meta.longName || meta.shortName || symbol;
-    const type = (meta.instrumentType === 'ETF') ? 'etf' : 'stock';
-
-    await db.prepare(
-      'UPDATE symbols SET name=?, type=? WHERE symbol=?'
-    ).bind(name, type, symbol).run();
-
-    return { name, type };
-  } catch {
-    return null;
-  }
 }
 
 // ============================================
@@ -1875,10 +1817,10 @@ async function handleGetETFHoldings(symbol, env) {
 // ============================================
 async function handleGetCollectTargets(env) {
   const rows = await env.DB.prepare(`
-    SELECT DISTINCT s.symbol, s.name, s.type
-    FROM symbols s
-    JOIN symbol_groups sg ON s.symbol = sg.symbol
-    ORDER BY s.type DESC, s.symbol
+    SELECT DISTINCT st.ticker as symbol, w.company as name
+    FROM screened_tickers st
+    LEFT JOIN watchlist w ON w.ticker = st.ticker
+    ORDER BY st.ticker
   `).all();
   return json({ symbols: rows.results });
 }
