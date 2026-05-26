@@ -656,7 +656,18 @@ if (req.method === "POST" && req.url === "/scan-watchlist") {
         `[watchlist scan] 완료 — 스캔 ${result.scanned}개, 승격 ${result.promoted}개, 오류 ${result.errors}개`
       );
 
-      // 트리거 1: 전체 스캔 완료 후 기준 미달 종목 자동 정리
+      // 트리거 1: 스캔 완료 후 is_watchlist 동기화
+      try {
+        await fetch(`${CF_WORKER_URL}/api/watchlist/sync-is-watchlist`, {
+          method:  'POST',
+          headers: { 'x-cron-secret': CRON_SECRET },
+          signal:  AbortSignal.timeout(8000),
+        });
+      } catch (e) {
+        console.warn('[watchlist scan] is_watchlist 동기화 실패 (계속 진행):', e.message);
+      }
+
+      // 트리거 2: 전체 스캔 완료 후 기준 미달 종목 자동 정리
       try {
         const pruneResult = await pruneWatchlistGroup(CF_WORKER_URL, CRON_SECRET);
         console.log(`[watchlist scan] prune 완료 — 제거 ${pruneResult.removed.length}개`);
@@ -819,7 +830,7 @@ if (req.method === "POST" && req.url === "/analyze-symbol") {
       spot_price:   analyzed?.spot_price   ?? collected?.spot ?? null,
       net_gex:      analyzed?.net_gex      ?? null,
       flip_strike:  analyzed?.flip_strike  ?? null,
-      distance_pct: analyzed?.distance_pct ?? null,
+      upside:       analyzed?.upside       ?? null,
       atm_iv:       analyzed?.atm_iv       ?? null,
       // structure 탭용 (히트맵/텀스트럭처)
       rows:        collected?.rows        ?? [],
@@ -1195,6 +1206,18 @@ async function runCollect(symbols, date) {
 
     console.log(`[Screener] 완료 -- 성공: ${result.count}, 실패: ${result.errors}`);
 
+    // 트리거 1: 수집 완료 후 is_watchlist 동기화
+    try {
+      await fetch(`${CF_WORKER_URL}/api/watchlist/sync-is-watchlist`, {
+        method:  'POST',
+        headers: { 'x-cron-secret': CRON_SECRET },
+        signal:  AbortSignal.timeout(8000),
+      });
+      console.log('[Screener] is_watchlist 동기화 완료');
+    } catch (e) {
+      console.warn('[Screener] is_watchlist 동기화 실패 (계속 진행):', e.message);
+    }
+
     // 트리거 2: 매일 수집 후 기준 미달 종목 자동 정리
     try {
       const pruneResult = await pruneWatchlistGroup(CF_WORKER_URL, CRON_SECRET);
@@ -1388,6 +1411,17 @@ if (isWeekday() && h === 18 && new Date().getMinutes() === 0) {
           },
         };
         console.log(`[scheduler] watchlist 스캔 완료 — 스캔 ${result.scanned}개, 승격 ${result.promoted}개`);
+
+        // 스캔 완료 후 is_watchlist 동기화
+        try {
+          await fetch(`${CF_WORKER_URL}/api/watchlist/sync-is-watchlist`, {
+            method:  'POST',
+            headers: { 'x-cron-secret': CRON_SECRET },
+            signal:  AbortSignal.timeout(8000),
+          });
+        } catch (e) {
+          console.warn('[scheduler] is_watchlist 동기화 실패 (계속 진행):', e.message);
+        }
 
         // 스캔 완료 후 기준 미달 종목 자동 정리
         try {

@@ -166,8 +166,6 @@ export async function analyzeSymbol(symbol) {
     const row = { ...r };
     delete row._strikeRows;
     return {
-      symbol,
-      spot_price:          Math.round(spot * 100) / 100,
       expiry_date:         row.expiry_date,
       dte:                 row.dte,
       expiry_type:         row.expiry_type,
@@ -186,13 +184,13 @@ export async function analyzeSymbol(symbol) {
       otm_call_iv:         row.otm_call_iv != null ? +row.otm_call_iv.toFixed(4) : null,
       otm_put_iv:          row.otm_put_iv  != null ? +row.otm_put_iv.toFixed(4)  : null,
       strike_data:         strikeData,
-      target_strike:       callWall.target_strike,
-      concentration_count: callWall.concentration_count,
-      distance_pct:        callWall.distance_pct,
     };
   });
 
-  return { symbol, spot, rows: dbRows, callWall };
+  // upside: distance_pct 부호 반전 (목표가 > 현재가이면 양수)
+  const upside = callWall.distance_pct != null ? -callWall.distance_pct : null;
+
+  return { symbol, spot, rows: dbRows, callWall, upside };
 }
 
 // ============================================
@@ -203,13 +201,13 @@ export async function saveSymbolRows(cfWorkerUrl, cronSecret, symbol, rows, upda
   if (!rows?.length) return { ok: false, error: 'no rows' };
 
   try {
-    const res = await fetch(`${cfWorkerUrl}/d1/screener-gex-daily`, {
+    const res = await fetch(`${cfWorkerUrl}/d1/daily-screener`, {
       method:  'POST',
       headers: {
         'Content-Type':  'application/json',
         'x-cron-secret': cronSecret,
       },
-      body:   JSON.stringify({ symbol, rows, updated_at: updatedAt }),
+      body:   JSON.stringify({ ticker: symbol, rows, updated_at: updatedAt }),
       signal: AbortSignal.timeout(15000),
     });
     if (!res.ok) throw new Error(`D1 write failed: ${res.status}`);
@@ -221,9 +219,42 @@ export async function saveSymbolRows(cfWorkerUrl, cronSecret, symbol, rows, upda
 }
 
 // ============================================
-// 스크리너 심볼 목록 조회
-// watchlist.is_watchlist = TRUE 종목만 반환
+// screened_tickers 집계값 업데이트
 // ============================================
+export async function updateScreenedTicker(cfWorkerUrl, cronSecret, symbol, spot, callWall, upside, rows) {
+  const totalGex = rows.reduce((s, r) => s + (r.net_gex ?? 0), 0);
+  const firstRow = rows[0] ?? {};
+  const atmIv    = rows.filter(r => r.atm_iv).reduce((s, r, _, a) => s + r.atm_iv / a.length, 0) || null;
+  const nearestFlip = rows.find(r => r.flip_strike)?.flip_strike ?? null;
+
+  try {
+    const res = await fetch(`${cfWorkerUrl}/d1/screened-tickers/update`, {
+      method:  'POST',
+      headers: {
+        'Content-Type':  'application/json',
+        'x-cron-secret': cronSecret,
+      },
+      body: JSON.stringify({
+        ticker:              symbol,
+        spot_price:          spot != null ? Math.round(spot * 100) / 100 : null,
+        upside:              upside,
+        concentration_count: callWall.concentration_count,
+        target_strike:       callWall.target_strike,
+        total_gex:           totalGex,
+        atm_iv:              atmIv,
+        flip_strike:         nearestFlip,
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    if (!res.ok) throw new Error(`update failed: ${res.status}`);
+    return { ok: true };
+  } catch (err) {
+    console.error(`[${symbol}] screened_tickers 업데이트 실패:`, err.message);
+    return { ok: false, error: err.message };
+  }
+}
+
+
 export async function fetchScreenerSymbols(cfWorkerUrl, cronSecret) {
   try {
     const res = await fetch(`${cfWorkerUrl}/api/screener/symbols`, {
@@ -255,10 +286,13 @@ export async function runScreenerCollection(cfWorkerUrl, cronSecret, symbols, on
     const sym = typeof symbols[i] === 'string' ? symbols[i] : symbols[i].symbol ?? symbols[i];
 
     try {
-      const { rows, callWall } = await analyzeSymbol(sym);
+      const { rows, callWall, upside } = await analyzeSymbol(sym);
       const saveResult = await saveSymbolRows(cfWorkerUrl, cronSecret, sym, rows, updatedAt);
 
       if (saveResult.ok) {
+        // screened_tickers 집계값 업데이트
+        await updateScreenedTicker(cfWorkerUrl, cronSecret, sym, null, callWall, upside, rows);
+
         results.push({ symbol: sym, rows: rows.length, callWall });
         console.log(
           `[${sym}] ✓ ${rows.length}개 만기 저장` +
@@ -315,7 +349,18 @@ export async function runWatchlistScan(cfWorkerUrl, cronSecret, onProgress) {
   const scanned   = [];
   const updatedAt = new Date().toISOString();
 
-  // is_watchlist = FALSE 후보 목록 조회
+  // 스캔 시작 전 is_watchlist 동기화
+  try {
+    await fetch(`${cfWorkerUrl}/api/watchlist/sync-is-watchlist`, {
+      method:  'POST',
+      headers: { 'x-cron-secret': cronSecret },
+      signal:  AbortSignal.timeout(8000),
+    });
+  } catch (e) {
+    console.warn('[watchlist] is_watchlist 동기화 실패:', e.message);
+  }
+
+  // is_watchlist = FALSE 후보 목록 조회 (screened_tickers WATCHLIST 제외 기준)
   let candidates = [];
   try {
     const res = await fetch(`${cfWorkerUrl}/api/watchlist/candidates`, {
@@ -341,7 +386,7 @@ export async function runWatchlistScan(cfWorkerUrl, cronSecret, onProgress) {
     const sym = typeof candidates[i] === 'string' ? candidates[i] : candidates[i].ticker;
 
     try {
-      const { rows, callWall } = await analyzeSymbol(sym);
+      const { rows, callWall, upside } = await analyzeSymbol(sym);
       const isCallWall = callWall.concentration_count >= 4;
 
       scanned.push({ symbol: sym, concentration_count: callWall.concentration_count });
@@ -366,17 +411,17 @@ export async function runWatchlistScan(cfWorkerUrl, cronSecret, onProgress) {
           symbol:              sym,
           target_strike:       callWall.target_strike,
           concentration_count: callWall.concentration_count,
-          distance_pct:        callWall.distance_pct,
+          upside:              upside,
         });
         console.log(
           `[watchlist] ★ 승격: ${sym} | Call Wall $${callWall.target_strike} ` +
           `(${callWall.concentration_count}개 만기 집중)`
         );
 
-        // 승격 즉시 screener_gex_daily에 저장 (CBOE 재조회 불필요)
+        // 승격 즉시 daily_screener에 저장
         await saveSymbolRows(cfWorkerUrl, cronSecret, sym, rows, updatedAt);
 
-        // symbols + symbol_groups에 watchlist 그룹으로 자동 편입
+        // screened_tickers WATCHLIST 그룹으로 자동 편입 (enroll-group)
         await fetch(`${cfWorkerUrl}/api/watchlist/enroll-group`, {
           method:  'POST',
           headers: {
@@ -386,6 +431,10 @@ export async function runWatchlistScan(cfWorkerUrl, cronSecret, onProgress) {
           body:    JSON.stringify({ ticker: sym }),
           signal:  AbortSignal.timeout(8000),
         }).catch(e => console.warn(`[watchlist] ${sym} 그룹 편입 실패:`, e.message));
+
+        // screened_tickers 집계값 업데이트
+        await updateScreenedTicker(cfWorkerUrl, cronSecret, sym, null, callWall, upside, rows)
+          .catch(e => console.warn(`[watchlist] ${sym} screened_tickers 업데이트 실패:`, e.message));
 
       } else {
         console.log(
@@ -431,7 +480,7 @@ export async function runWatchlistScan(cfWorkerUrl, cronSecret, onProgress) {
 // ══════════════════════════════════════════════════════════
 // 기준 미달 종목 정리
 // 조건: concentration_count <= 3 OR 상승여력 < 3%
-// 대상: symbol_groups의 watchlist 그룹 종목 중 수동 지정(CHECK 등) 제외
+// 대상: screened_tickers의 WATCHLIST 그룹 종목
 // ══════════════════════════════════════════════════════════
 export async function pruneWatchlistGroup(cfWorkerUrl, cronSecret) {
   const headers = {
@@ -439,45 +488,39 @@ export async function pruneWatchlistGroup(cfWorkerUrl, cronSecret) {
     'x-cron-secret': cronSecret,
   };
 
-  // 1. watchlist 그룹의 최신 screener 데이터 조회
-  const res = await fetch(`${cfWorkerUrl}/api/screener/latest`, {
+  // 7번 로직: screened_tickers에서 WATCHLIST 기준 미달 종목 조회
+  const res = await fetch(`${cfWorkerUrl}/api/screener/prune-candidates`, {
     headers,
     signal: AbortSignal.timeout(15000),
   });
-  if (!res.ok) throw new Error(`screener/latest HTTP ${res.status}`);
-  const rows = await res.json();
+  if (!res.ok) throw new Error(`prune-candidates HTTP ${res.status}`);
+  const { candidates } = await res.json();
 
   const removed = [];
   const kept    = [];
 
-  for (const row of rows) {
-    // 수동 지정 그룹 종목은 건너뜀 (groups에 watchlist 외 다른 그룹 포함)
-    const groups = (row.groups ?? '').split(',').map(g => g.trim()).filter(Boolean);
-    const isManual = groups.some(g => g.toLowerCase() !== 'watchlist');
-    if (isManual) { kept.push(row.symbol); continue; }
-
-    // 기준 미달 판정
+  for (const row of (candidates ?? [])) {
     const count  = row.concentration_count ?? 0;
-    const upside = row.distance_pct != null ? -row.distance_pct : null;
+    const upside = row.upside ?? null;
     const isBelowCount  = count <= 3;
     const isBelowUpside = upside != null && upside < 3;
 
     if (isBelowCount || isBelowUpside) {
       try {
-        // symbol_groups에서 watchlist 그룹 제거 + watchlist.is_watchlist = 0 + 데이터 삭제
+        // 6번 로직 실행 (prune 엔드포인트)
         await fetch(`${cfWorkerUrl}/api/watchlist/prune`, {
           method:  'POST',
           headers,
-          body:    JSON.stringify({ ticker: row.symbol }),
+          body:    JSON.stringify({ ticker: row.ticker }),
           signal:  AbortSignal.timeout(10000),
         });
-        removed.push({ symbol: row.symbol, count, upside: upside?.toFixed(1) });
-        console.log(`[prune] 제거: ${row.symbol} (집중도:${count}, 상승여력:${upside?.toFixed(1)}%)`);
+        removed.push({ symbol: row.ticker, count, upside: upside?.toFixed(1) });
+        console.log(`[prune] 제거: ${row.ticker} (집중도:${count}, 상승여력:${upside?.toFixed(1)}%)`);
       } catch (e) {
-        console.warn(`[prune] ${row.symbol} 제거 실패:`, e.message);
+        console.warn(`[prune] ${row.ticker} 제거 실패:`, e.message);
       }
     } else {
-      kept.push(row.symbol);
+      kept.push(row.ticker);
     }
   }
 
