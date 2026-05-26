@@ -333,8 +333,8 @@ async function loadScreener() {
       return;
     }
 
-    // 만기별 rows를 종목 단위로 그룹핑
-    allSymbols = groupBySymbol(rows);
+    // 만기별 rows를 종목 단위로 집계 (screened_tickers 집계값 직접 사용)
+    allSymbols = aggregateBySymbol(rows);
 
     // 기준 시각 표시 (가장 최근 updated_at)
     const latestUpdated = rows.reduce((latest, r) =>
@@ -360,27 +360,29 @@ async function loadScreener() {
 
 // ============================================
 // 만기별 rows → 종목 단위 집계
+// screened_tickers의 집계값(upside, concentration_count 등) 직접 사용
 // ============================================
-function groupBySymbol(rows) {
+function aggregateBySymbol(rows) {
   const map = {};
 
   for (const r of rows) {
     if (!map[r.symbol]) {
+      // groups: GROUP_CONCAT 결과 (콤마 문자열) → 배열
+      const groups = (r.groups ?? '').split(',').map(g => g.trim()).filter(Boolean);
       map[r.symbol] = {
         symbol:              r.symbol,
         spot_price:          r.spot_price,
-        company:             r.company    ?? null,
-        sector:              r.sector     ?? null,
-        market_cap:          r.market_cap ?? null,
+        company:             r.company     ?? null,
+        sector:              r.sector      ?? null,
+        market_cap:          r.market_cap  ?? null,
         short_float:         r.short_float ?? null,
-        beta:                r.beta       ?? null,
+        beta:                r.beta        ?? null,
         target_strike:       r.target_strike,
         concentration_count: r.concentration_count ?? 0,
-        distance_pct:        r.distance_pct,
+        upside:              r.upside,          // screened_tickers에서 직접
         updated_at:          r.updated_at,
-        // 그룹 정보 (groups = 'watchlist,관심종목' 형태의 콤마 문자열)
-        groups: (r.groups ?? '').split(',').map(g => g.trim()).filter(Boolean),
-        expiries:            [],
+        groups,
+        expiries:  [],
         _gexSum:   0,
         _flipList: [],
         _atmIvList: [],
@@ -389,16 +391,16 @@ function groupBySymbol(rows) {
 
     const sym = map[r.symbol];
     sym.expiries.push({
-      expiry_date:  r.expiry_date,
-      dte:          r.dte,
-      expiry_type:  r.expiry_type,
-      net_gex:      r.net_gex,
-      flip_strike:  r.flip_strike,
-      atm_iv:       r.atm_iv,
-      call_oi:      r.call_oi,
-      put_oi:       r.put_oi,
-      pcr_oi:       r.pcr_oi,
-      dex:          r.dex,
+      expiry_date: r.expiry_date,
+      dte:         r.dte,
+      expiry_type: r.expiry_type,
+      net_gex:     r.net_gex,
+      flip_strike: r.flip_strike,
+      atm_iv:      r.atm_iv,
+      call_oi:     r.call_oi,
+      put_oi:      r.put_oi,
+      pcr_oi:      r.pcr_oi,
+      dex:         r.dex,
     });
 
     sym._gexSum += r.net_gex ?? 0;
@@ -413,6 +415,7 @@ function groupBySymbol(rows) {
     const atmIv         = sym._atmIvList.length
       ? sym._atmIvList.reduce((a, b) => a + b, 0) / sym._atmIvList.length
       : null;
+    // 플립존 거리 (현재가 vs 플립존)
     const distPct = (sym.spot_price && flipStrike)
       ? Math.round(((sym.spot_price - flipStrike) / flipStrike) * 10000) / 100
       : null;
@@ -522,7 +525,7 @@ function renderTable(filter = 'all') {
         <th class="sc-th sortable" data-col="beta">Beta</th>
         <th class="sc-th sortable" data-col="spot_price">현재가</th>
         <th class="sc-th sortable" data-col="target_strike">목표가</th>
-        <th class="sc-th sortable" data-col="distance_pct">상승여력</th>
+        <th class="sc-th sortable" data-col="upside">상승여력</th>
         <th class="sc-th sortable" data-col="concentration_count">집중도</th>
         <th class="sc-th sortable" data-col="flip_strike">플립존</th>
         <th class="sc-th sortable" data-col="dist_pct">플립존 거리</th>
@@ -605,8 +608,8 @@ function buildRow(r) {
   const totalGex  = r.total_gex;
   const callCount = r.concentration_count ?? 0;
   const targetSt  = r.target_strike;
-  // 상승여력: distance_pct 부호 반전 (목표가가 현재가보다 높으면 양수)
-  const upside    = r.distance_pct != null ? -r.distance_pct : null;
+  // 상승여력: screened_tickers.upside 직접 사용
+  const upside    = r.upside ?? null;
 
   // ── 기본 필드
   const companyStr = r.company
