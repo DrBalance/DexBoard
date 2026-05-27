@@ -881,19 +881,21 @@ async function showCallWallHeatmap(symbol, targetStrike, triggerEl) {
 
     const rows = expiries.map(exp => {
       const dex      = byExpiry[exp];
-      const hasDex   = dex != null && dex > 0;
+      const hasDex   = dex != null && dex > 0.001;
       const intensity = hasDex ? Math.min(dex / maxDex, 1) : 0;
-      // 흰색 배경 + 초록 농도 (최소 밝기 20% 보장)
       const green = hasDex
         ? `rgba(34,197,94,${(intensity * 0.8 + 0.2).toFixed(2)})`
-        : '#f0f0f0';
+        : 'transparent';
       const textColor = hasDex && intensity > 0.5 ? '#fff' : '#333';
-      const label     = exp.slice(5); // MM-DD
+      const border = hasDex ? '' : 'border:1.5px dashed #ccc;';
+      const label     = exp.slice(5);
+      const display   = hasDex ? Math.round(dex * 100) : '0';
+      const displayColor = hasDex ? textColor : 'transparent';
 
       return `<div class="sc-hm-row">
         <span class="sc-hm-label">${label}</span>
-        <div class="sc-hm-cell" style="background:${green};color:${textColor}">
-          ${hasDex ? dex.toFixed(2) : '—'}
+        <div class="sc-hm-cell" style="background:${green};color:${displayColor};${border}">
+          ${display}
         </div>
       </div>`;
     }).join('');
