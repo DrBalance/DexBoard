@@ -7,7 +7,7 @@
 
 import http from "http";
 import { calculateAndStore, collectSymbol, getTodayET } from "./vanna_analyzer.js";
-import { runScreenerCollection, fetchScreenerSymbols, analyzeSymbol, runWatchlistScan, pruneWatchlistGroup } from "./screener-engine.js";
+import { runScreenerCollection, fetchScreenerSymbols, analyzeSymbol, saveSymbolRows, updateScreenedTicker, runWatchlistScan, pruneWatchlistGroup } from "./screener-engine.js";
 import { fetchChartData, VALID_RESOLUTIONS } from "./chart-api.js";
 
 const TWELVE_KEY = process.env.TWELVE_KEY || "";
@@ -799,6 +799,7 @@ if (req.method === "POST" && req.url === "/analyze-symbol") {
   } catch { body = {}; }
 
   const symbol = body.symbol?.toUpperCase();
+  const save   = body.save === true;
   if (!symbol) {
     sendJSON(res, 400, { error: "symbol 필요" });
     return;
@@ -807,8 +808,6 @@ if (req.method === "POST" && req.url === "/analyze-symbol") {
   try {
     const date = getTodayET();
 
-    // collectSymbol: 만기별 DEX/GEX/Vanna/Charm + 스트라이크별 데이터
-    // analyzeSymbol: Net GEX / 플립존 / ATM IV (screener 카드용)
     const [collectResult, analyzeResult] = await Promise.allSettled([
       collectSymbol(symbol, date),
       analyzeSymbol(symbol),
@@ -820,6 +819,18 @@ if (req.method === "POST" && req.url === "/analyze-symbol") {
     if (!collected && !analyzed) {
       sendJSON(res, 404, { ok: false, error: `${symbol} 데이터를 가져올 수 없습니다` });
       return;
+    }
+
+    // save:true 면 DB에도 저장
+    if (save && analyzed) {
+      const { rows, callWall, upside, squeeze, spot } = analyzed;
+      const updatedAt = new Date().toISOString();
+      try {
+        await saveSymbolRows(CF_WORKER_URL, CRON_SECRET, symbol, rows, updatedAt);
+        await updateScreenedTicker(CF_WORKER_URL, CRON_SECRET, symbol, spot, callWall, upside, rows, squeeze);
+      } catch (e) {
+        console.warn(`[analyze-symbol] ${symbol} DB 저장 실패:`, e.message);
+      }
     }
 
     sendJSON(res, 200, {
@@ -1326,10 +1337,9 @@ if (session !== lastSession) {
     saveSnapshotOpen();
   }
 
-  // 평일 ET 17:30 — 스크리너 수집 자동 실행
+  // ET 17:30 — 스크리너 수집 자동 실행
   if (isWeekday() && h === 17 && new Date().getMinutes() === 30 && !screenerDone) {
     screenerDone = true;
-    // 당일 종가를 prevClose로 KV에 저장
     savePrevClose({
       spy:  _cache.spy.price,
       qqq:  _cache.qqq?.price ?? null,
@@ -1340,7 +1350,6 @@ if (session !== lastSession) {
     }).catch(e => console.error('[prevClose] 저장 실패:', e.message));
     console.log('[scheduler] ET 17:30 → 스크리너 수집 트리거');
 
-    // D1에서 수집 대상 심볼 조회 후 수집 트리거
     (async () => {
       try {
         const symRes = await fetch(`${CF_WORKER_URL}/api/screener/symbols`, {
@@ -1375,7 +1384,7 @@ if (session !== lastSession) {
     })();
   }
 
-  // 장 마감(AFTER 첫 진입) → prevClose 저장만 (수집은 ET 17:30에 처리)
+  // 장 마감(AFTER 첫 진입) → prevClose 저장만
   if (session === 'AFTER' && !screenerDone) {
     screenerDone = true;
     savePrevClose({
@@ -1388,7 +1397,6 @@ if (session !== lastSession) {
     }).catch(e => console.error('[prevClose] 장 마감 저장 실패:', e.message));
     console.log('[scheduler] 장 마감 → prevClose 저장 완료 (수집은 ET 17:30에 처리)');
   }
-}
 
 // 평일 ET 18:00 — 전체 watchlist 스캔 자동 실행
 if (isWeekday() && h === 18 && new Date().getMinutes() === 0) {
@@ -1463,7 +1471,7 @@ if (isWeekday() && h === 18 && new Date().getMinutes() === 0) {
   }
 }
 
-// 평일 ET 09:50 — 롤업 감지 (screened_tickers 대상 CBOE 재조회)
+// 평일 ET 09:50 — 롤업 감지
 if (isWeekday() && h === 9 && new Date().getMinutes() === 50) {
   console.log('[scheduler] ET 09:50 — 롤업 감지 시작');
   (async () => {
@@ -1476,15 +1484,11 @@ if (isWeekday() && h === 9 && new Date().getMinutes() === 50) {
       const symData = await symRes.json();
       const symbols = (symData.symbols ?? []).map(s => s.symbol ?? s);
 
-      if (!symbols.length) {
-        console.warn('[rollup] 대상 심볼 없음 — 스킵');
-        return;
-      }
+      if (!symbols.length) { console.warn('[rollup] 대상 심볼 없음 — 스킵'); return; }
 
       let rolled = 0;
       for (const sym of symbols) {
         try {
-          const { analyzeSymbol } = await import('./screener-engine.js');
           const result = await analyzeSymbol(sym);
           const newStrike = result.callWall?.target_strike;
           const newSpot   = result.spot;
@@ -1497,22 +1501,22 @@ if (isWeekday() && h === 9 && new Date().getMinutes() === 50) {
             signal:  AbortSignal.timeout(8000),
           });
           const data = await res.json();
-          if (data.rolled_up) {
+          if (data.changed) {
             rolled++;
-            console.log(`[rollup] ${sym}: ${data.old_strike} → ${data.new_strike}`);
+            console.log(`[rollup] ${sym}: ${data.old_strike} → ${data.new_strike} (${data.direction})`);
           }
         } catch (e) {
           console.warn(`[rollup] ${sym} 오류:`, e.message);
         }
       }
-      console.log(`[rollup] 감지 완료 — ${symbols.length}개 중 ${rolled}개 롤업`);
+      console.log(`[rollup] 감지 완료 — ${symbols.length}개 중 ${rolled}개 변경`);
     } catch (e) {
       console.error('[rollup] 스케줄러 오류:', e.message);
     }
   })();
 }
 
-
+// 평일 ET 09:00~16:59, 15분마다 DEX 계산
 if (isWeekday()) {
   const now = new Date();
   const min = now.getMinutes();
