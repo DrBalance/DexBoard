@@ -126,6 +126,111 @@ function calcCallWall(rows, spot) {
 }
 
 // ============================================
+// 다음 먼슬리 만기 탐지
+// expiry_type === 'monthly' 기준, DTE > 0인 것 중 가장 가까운 것
+// ============================================
+function findNextMonthly(rows) {
+  return rows
+    .filter(r => r.expiry_type === 'monthly' && r.dte > 0)
+    .sort((a, b) => a.dte - b.dte)[0] ?? null;
+}
+
+// ============================================
+// 스퀴즈 계산
+//
+// 조건 1: 가장 짧은 3개 만기 중 최단 만기 포함 + 2개 이상이
+//         target_strike와 일치하는 콜 DEX 고점 보유
+// 조건 2: 5DTE 이하 콜 DEX 합산 / 다음 먼슬리 콜 DEX >= 40%
+// 조건 3: 12DTE 이하 콜 DEX 합산 / 다음 먼슬리 콜 DEX >= 70%
+//
+// 각 조건 독립적으로 별표 1개씩 부여 (최대 ★★★)
+// ============================================
+function calcSqueeze(rows, targetStrike) {
+  const flags = [];
+
+  if (!rows?.length || !targetStrike) {
+    return { squeeze_stars: 0, squeeze_flags: null };
+  }
+
+  // 만기별 최대 콜 DEX 스트라이크 + DEX 값 추출 (DTE 오름차순)
+  const sorted = [...rows].sort((a, b) => a.dte - b.dte);
+  const expiryPeaks = [];
+
+  for (const row of sorted) {
+    const strikeRows = row._strikeRows;
+    if (!strikeRows?.length) continue;
+
+    let maxDex = -Infinity;
+    let maxStrike = null;
+    let maxDexValue = 0;
+
+    for (const s of strikeRows) {
+      if (s.dex == null || s.dex <= 0) continue;
+      if (s.dex > maxDex) {
+        maxDex      = s.dex;
+        maxStrike   = s.strike;
+        maxDexValue = s.dex;
+      }
+    }
+
+    if (maxStrike !== null) {
+      expiryPeaks.push({
+        expiry_date: row.expiry_date,
+        dte:         row.dte,
+        peak_strike: maxStrike,
+        peak_dex:    maxDexValue,
+      });
+    }
+  }
+
+  if (!expiryPeaks.length) return { squeeze_stars: 0, squeeze_flags: null };
+
+  // 가장 짧은 3개 만기
+  const shortest3 = expiryPeaks.slice(0, 3);
+  // target_strike와 일치하는 것
+  const matchInShortest3 = shortest3.filter(e => e.peak_strike === targetStrike);
+  // 최단 만기 포함 여부
+  const shortestIncluded = shortest3[0]?.peak_strike === targetStrike;
+
+  // 조건 1
+  if (shortestIncluded && matchInShortest3.length >= 2) {
+    flags.push(1);
+  }
+
+  // 다음 먼슬리 DEX (rows에서 직접 계산)
+  const nextMonthlyRow = findNextMonthly(rows);
+  if (nextMonthlyRow) {
+    const monthlyStrikeRows = nextMonthlyRow._strikeRows ?? [];
+    let monthlyPeakDex = 0;
+    for (const s of monthlyStrikeRows) {
+      if (s.dex != null && s.dex > monthlyPeakDex) monthlyPeakDex = s.dex;
+    }
+
+    if (monthlyPeakDex > 0) {
+      // 5DTE 이하 DEX 합산
+      const dex5 = expiryPeaks
+        .filter(e => e.dte <= 5)
+        .reduce((sum, e) => sum + e.peak_dex, 0);
+
+      // 12DTE 이하 DEX 합산
+      const dex12 = expiryPeaks
+        .filter(e => e.dte <= 12)
+        .reduce((sum, e) => sum + e.peak_dex, 0);
+
+      // 조건 2
+      if (dex5 / monthlyPeakDex >= 0.4) flags.push(2);
+      // 조건 3
+      if (dex12 / monthlyPeakDex >= 0.7) flags.push(3);
+    }
+  }
+
+  return {
+    squeeze_stars: flags.length,
+    squeeze_flags: flags.length ? flags.join(',') : null,
+  };
+}
+
+// ============================================
 // 단일 종목 분석
 // vanna_analyzer.js의 collectSymbol 로직을 직접 인라인
 // (Railway 환경에서 D1 저장은 별도로 처리)
@@ -145,6 +250,9 @@ export async function analyzeSymbol(symbol) {
 
   // Call Wall 계산 (_strikeRows 사용 전에 먼저 계산)
   const callWall = calcCallWall(rows, spot);
+
+  // 스퀴즈 계산 (_strikeRows 사용 전에 계산)
+  const squeeze = calcSqueeze(rows, callWall.target_strike);
 
   const dbRows = rows.map(r => {
     const strikeData = r._strikeRows?.length
@@ -190,7 +298,7 @@ export async function analyzeSymbol(symbol) {
   // upside: distance_pct 부호 반전 (목표가 > 현재가이면 양수)
   const upside = callWall.distance_pct != null ? -callWall.distance_pct : null;
 
-  return { symbol, spot, rows: dbRows, callWall, upside };
+  return { symbol, spot, rows: dbRows, callWall, upside, squeeze };
 }
 
 // ============================================
@@ -221,7 +329,7 @@ export async function saveSymbolRows(cfWorkerUrl, cronSecret, symbol, rows, upda
 // ============================================
 // screened_tickers 집계값 업데이트
 // ============================================
-export async function updateScreenedTicker(cfWorkerUrl, cronSecret, symbol, spot, callWall, upside, rows) {
+export async function updateScreenedTicker(cfWorkerUrl, cronSecret, symbol, spot, callWall, upside, rows, squeeze) {
   const totalGex = rows.reduce((s, r) => s + (r.net_gex ?? 0), 0);
   const firstRow = rows[0] ?? {};
   const atmIv    = rows.filter(r => r.atm_iv).reduce((s, r, _, a) => s + r.atm_iv / a.length, 0) || null;
@@ -243,6 +351,8 @@ export async function updateScreenedTicker(cfWorkerUrl, cronSecret, symbol, spot
         total_gex:           totalGex,
         atm_iv:              atmIv,
         flip_strike:         nearestFlip,
+        squeeze_stars:       squeeze?.squeeze_stars ?? 0,
+        squeeze_flags:       squeeze?.squeeze_flags ?? null,
       }),
       signal: AbortSignal.timeout(10000),
     });
@@ -286,12 +396,12 @@ export async function runScreenerCollection(cfWorkerUrl, cronSecret, symbols, on
     const sym = typeof symbols[i] === 'string' ? symbols[i] : symbols[i].symbol ?? symbols[i];
 
     try {
-      const { rows, callWall, upside } = await analyzeSymbol(sym);
+      const { rows, callWall, upside, squeeze } = await analyzeSymbol(sym);
       const saveResult = await saveSymbolRows(cfWorkerUrl, cronSecret, sym, rows, updatedAt);
 
       if (saveResult.ok) {
         // screened_tickers 집계값 업데이트
-        await updateScreenedTicker(cfWorkerUrl, cronSecret, sym, null, callWall, upside, rows);
+        await updateScreenedTicker(cfWorkerUrl, cronSecret, sym, null, callWall, upside, rows, squeeze);
 
         results.push({ symbol: sym, rows: rows.length, callWall });
         console.log(
@@ -386,7 +496,7 @@ export async function runWatchlistScan(cfWorkerUrl, cronSecret, onProgress) {
     const sym = typeof candidates[i] === 'string' ? candidates[i] : candidates[i].ticker;
 
     try {
-      const { rows, callWall, upside } = await analyzeSymbol(sym);
+      const { rows, callWall, upside, squeeze } = await analyzeSymbol(sym);
       const isCallWall = callWall.concentration_count >= 4;
 
       scanned.push({ symbol: sym, concentration_count: callWall.concentration_count });
@@ -433,7 +543,7 @@ export async function runWatchlistScan(cfWorkerUrl, cronSecret, onProgress) {
         }).catch(e => console.warn(`[watchlist] ${sym} 그룹 편입 실패:`, e.message));
 
         // screened_tickers 집계값 업데이트
-        await updateScreenedTicker(cfWorkerUrl, cronSecret, sym, null, callWall, upside, rows)
+        await updateScreenedTicker(cfWorkerUrl, cronSecret, sym, null, callWall, upside, rows, squeeze)
           .catch(e => console.warn(`[watchlist] ${sym} screened_tickers 업데이트 실패:`, e.message));
 
       } else {
@@ -505,19 +615,33 @@ export async function pruneWatchlistGroup(cfWorkerUrl, cronSecret) {
     const isBelowCount  = count <= 3;
     const isBelowUpside = upside != null && upside < 3;
 
-    if (isBelowCount || isBelowUpside) {
+    if (isBelowCount) {
+      // 집중도 미달 → 완전 제거
       try {
-        // 6번 로직 실행 (prune 엔드포인트)
         await fetch(`${cfWorkerUrl}/api/watchlist/prune`, {
           method:  'POST',
           headers,
           body:    JSON.stringify({ ticker: row.ticker }),
           signal:  AbortSignal.timeout(10000),
         });
-        removed.push({ symbol: row.ticker, count, upside: upside?.toFixed(1) });
-        console.log(`[prune] 제거: ${row.ticker} (집중도:${count}, 상승여력:${upside?.toFixed(1)}%)`);
+        removed.push({ symbol: row.ticker, count, upside: upside?.toFixed(1), reason: 'count' });
+        console.log(`[prune] 제거: ${row.ticker} (집중도:${count})`);
       } catch (e) {
         console.warn(`[prune] ${row.ticker} 제거 실패:`, e.message);
+      }
+    } else if (isBelowUpside) {
+      // upside < 3% → MONITOR 그룹으로 이동
+      try {
+        await fetch(`${cfWorkerUrl}/api/watchlist/move-to-monitor`, {
+          method:  'POST',
+          headers,
+          body:    JSON.stringify({ ticker: row.ticker }),
+          signal:  AbortSignal.timeout(10000),
+        });
+        removed.push({ symbol: row.ticker, count, upside: upside?.toFixed(1), reason: 'monitor' });
+        console.log(`[prune] MONITOR 이동: ${row.ticker} (상승여력:${upside?.toFixed(1)}%)`);
+      } catch (e) {
+        console.warn(`[prune] ${row.ticker} MONITOR 이동 실패:`, e.message);
       }
     } else {
       kept.push(row.ticker);

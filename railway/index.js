@@ -1326,8 +1326,8 @@ if (session !== lastSession) {
     saveSnapshotOpen();
   }
 
-  // 장 마감(AFTER 첫 진입) → prevClose 저장 + 스크리너 수집
-  if (session === 'AFTER' && !screenerDone) {
+  // 평일 ET 17:30 — 스크리너 수집 자동 실행
+  if (isWeekday() && h === 17 && new Date().getMinutes() === 30 && !screenerDone) {
     screenerDone = true;
     // 당일 종가를 prevClose로 KV에 저장
     savePrevClose({
@@ -1337,8 +1337,8 @@ if (session !== lastSession) {
       vix:  _cache.vix.price,
       date: getTodayET(),
       ts:   new Date().toISOString(),
-    }).catch(e => console.error('[prevClose] 장 마감 저장 실패:', e.message));
-    console.log('[scheduler] 장 마감 → 스크리너 수집 트리거');
+    }).catch(e => console.error('[prevClose] 저장 실패:', e.message));
+    console.log('[scheduler] ET 17:30 → 스크리너 수집 트리거');
 
     // D1에서 수집 대상 심볼 조회 후 수집 트리거
     (async () => {
@@ -1357,7 +1357,6 @@ if (session !== lastSession) {
         }
 
         console.log(`[scheduler] ${symbols.length}개 심볼 수집 시작`);
-        // 직접 백그라운드 수집 실행 (localhost HTTP 우회)
         if (collectState.running) {
           console.warn('[scheduler] 수집 이미 진행 중 -- 스킵');
           return;
@@ -1374,6 +1373,20 @@ if (session !== lastSession) {
         console.error('[scheduler] screener trigger error:', e.message);
       }
     })();
+  }
+
+  // 장 마감(AFTER 첫 진입) → prevClose 저장만 (수집은 ET 17:30에 처리)
+  if (session === 'AFTER' && !screenerDone) {
+    screenerDone = true;
+    savePrevClose({
+      spy:  _cache.spy.price,
+      qqq:  _cache.qqq?.price ?? null,
+      iwm:  _cache.iwm?.price ?? null,
+      vix:  _cache.vix.price,
+      date: getTodayET(),
+      ts:   new Date().toISOString(),
+    }).catch(e => console.error('[prevClose] 장 마감 저장 실패:', e.message));
+    console.log('[scheduler] 장 마감 → prevClose 저장 완료 (수집은 ET 17:30에 처리)');
   }
 }
 
@@ -1450,7 +1463,56 @@ if (isWeekday() && h === 18 && new Date().getMinutes() === 0) {
   }
 }
 
-// 평일 ET 09:00~16:59, 15분마다 DEX 계산
+// 평일 ET 09:50 — 롤업 감지 (screened_tickers 대상 CBOE 재조회)
+if (isWeekday() && h === 9 && new Date().getMinutes() === 50) {
+  console.log('[scheduler] ET 09:50 — 롤업 감지 시작');
+  (async () => {
+    try {
+      const symRes = await fetch(`${CF_WORKER_URL}/api/screener/symbols`, {
+        headers: { 'x-cron-secret': CRON_SECRET },
+        signal: AbortSignal.timeout(10000),
+      });
+      if (!symRes.ok) throw new Error(`screener/symbols: ${symRes.status}`);
+      const symData = await symRes.json();
+      const symbols = (symData.symbols ?? []).map(s => s.symbol ?? s);
+
+      if (!symbols.length) {
+        console.warn('[rollup] 대상 심볼 없음 — 스킵');
+        return;
+      }
+
+      let rolled = 0;
+      for (const sym of symbols) {
+        try {
+          const { analyzeSymbol } = await import('./screener-engine.js');
+          const result = await analyzeSymbol(sym);
+          const newStrike = result.callWall?.target_strike;
+          const newSpot   = result.spot;
+          if (!newStrike) continue;
+
+          const res = await fetch(`${CF_WORKER_URL}/api/screener/rollup-check`, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
+            body:    JSON.stringify({ ticker: sym, new_strike: newStrike, new_spot: newSpot }),
+            signal:  AbortSignal.timeout(8000),
+          });
+          const data = await res.json();
+          if (data.rolled_up) {
+            rolled++;
+            console.log(`[rollup] ${sym}: ${data.old_strike} → ${data.new_strike}`);
+          }
+        } catch (e) {
+          console.warn(`[rollup] ${sym} 오류:`, e.message);
+        }
+      }
+      console.log(`[rollup] 감지 완료 — ${symbols.length}개 중 ${rolled}개 롤업`);
+    } catch (e) {
+      console.error('[rollup] 스케줄러 오류:', e.message);
+    }
+  })();
+}
+
+
 if (isWeekday()) {
   const now = new Date();
   const min = now.getMinutes();
