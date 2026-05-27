@@ -76,6 +76,7 @@ function renderShell() {
       <div class="struct-sym-dd" id="struct-sym-dd"></div>
     </div>
     <button class="struct-refresh-btn" id="struct-refresh-btn" title="새로고침">↻</button>
+    <button class="struct-collect-btn" id="struct-collect-btn" title="옵션체인 새로 수집">⬇ 수집</button>
   </div>
 
   <!-- 로딩 / 에러 / 비어있음 상태 -->
@@ -232,6 +233,19 @@ function bindEvents() {
     if (currentSymbol) loadStructure(currentSymbol);
   });
 
+  document.getElementById('struct-collect-btn')?.addEventListener('click', async () => {
+    if (!currentSymbol) return;
+    const btn = document.getElementById('struct-collect-btn');
+    btn.disabled = true;
+    btn.textContent = '수집 중...';
+    try {
+      await collectAndReload(currentSymbol);
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '⬇ 수집';
+    }
+  });
+
   // LW 차트 interval 버튼
   document.getElementById('struct-chart-itv')?.addEventListener('click', e => {
     const btn = e.target.closest('.chart-itv-btn');
@@ -281,10 +295,32 @@ function hideDd() {
 }
 
 // ============================================
+// 단일 종목 옵션체인 수집 후 화면 갱신
+// ============================================
+async function collectAndReload(symbol) {
+  try {
+    const res = await fetch(`${RAILWAY_URL}/analyze-symbol`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
+      body:    JSON.stringify({ symbol, save: true }),
+      signal:  AbortSignal.timeout(30000),
+    });
+    if (!res.ok) throw new Error(`수집 실패: ${res.status}`);
+    await loadStructure(symbol);
+  } catch (err) {
+    console.error('[collect] error:', err);
+    alert(`${symbol} 수집 실패: ${err.message}`);
+  }
+}
+
+// ============================================
 // 데이터 로드
 // ============================================
+let _loadToken = 0;
+
 async function loadStructure(symbol) {
   symbol = symbol.toUpperCase();
+  const token = ++_loadToken;
   currentSymbol = symbol;
 
   showState('loading', `${symbol} 분석 중...`);
@@ -295,8 +331,12 @@ async function loadStructure(symbol) {
       fetch(`${CF_API}/api/structure/${symbol}`),
     ]);
 
+    if (token !== _loadToken) return;
+
     const screenerAll = await screenerRes.json();
     const flowData    = flowRes.ok ? await flowRes.json() : null;
+
+    if (token !== _loadToken) return;
 
     const scoreRow = Array.isArray(screenerAll)
       ? screenerAll.find(r => r.symbol === symbol)
