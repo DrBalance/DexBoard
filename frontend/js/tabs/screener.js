@@ -863,14 +863,14 @@ async function showCallWallHeatmap(symbol, targetStrike, triggerEl) {
     strikeRows.forEach(s => {
       if (!s.dex || s.dex <= 0) return;
       if (!maxStrikeByExpiry[s.expiry_date] || s.dex > maxStrikeByExpiry[s.expiry_date].dex) {
-        maxStrikeByExpiry[s.expiry_date] = { strike: s.strike, dex: s.dex };
+        maxStrikeByExpiry[s.expiry_date] = { strike: Number(s.strike), dex: s.dex };
       }
     });
 
     // target_strike 컬럼 DEX 값
     const byExpiry = {};
     strikeRows.forEach(s => {
-      if (s.strike === targetStrike) {
+      if (Number(s.strike) === Number(targetStrike)) {
         byExpiry[s.expiry_date] = s.dex ?? 0;
       }
     });
@@ -891,7 +891,7 @@ async function showCallWallHeatmap(symbol, targetStrike, triggerEl) {
     const maxDex = Math.max(...activeDex, 0.0001);
 
     const rows = expiries.map(exp => {
-      const isMax  = maxStrikeByExpiry[exp]?.strike === targetStrike;
+      const isMax  = Number(maxStrikeByExpiry[exp]?.strike) === Number(targetStrike);
       const dex    = byExpiry[exp] ?? 0;
       const label  = exp.slice(5);
 
