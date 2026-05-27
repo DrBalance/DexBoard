@@ -103,6 +103,18 @@ function renderShell() {
   <!-- ── 요약 카드 ── -->
   <div class="screener-summary" id="sc-summary"></div>
 
+  <!-- ── 롤업 이력 ── -->
+  <div id="sc-rollup-section" class="sc-rollup-section" style="display:none">
+    <div class="sc-rollup-header">
+      <span class="sc-rollup-title">📈 롤업 이력</span>
+      <div class="sc-rollup-toggle">
+        <button class="pill active" data-rollup="active">현재 종목만</button>
+        <button class="pill" data-rollup="all">전체 이력</button>
+      </div>
+    </div>
+    <div id="sc-rollup-body" class="sc-rollup-body"></div>
+  </div>
+
   <!-- ── 로딩 / 비어있음 ── -->
   <div id="sc-state" class="sc-state-box">
     <div class="sc-state-icon">◌</div>
@@ -142,6 +154,14 @@ function bindEvents() {
     document.querySelectorAll('#sc-filter-pills .pill').forEach(b => b.classList.remove('active'));
     btn.classList.add('active');
     renderTable(btn.dataset.f);
+  });
+
+  document.getElementById('sc-rollup-section')?.addEventListener('click', e => {
+    const btn = e.target.closest('[data-rollup]');
+    if (!btn) return;
+    document.querySelectorAll('[data-rollup]').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    loadRollupHistory(btn.dataset.rollup === 'active');
   });
 }
 
@@ -350,6 +370,13 @@ async function loadScreener() {
     showContent();
     renderTable(getActiveFilter());
 
+    // 롤업 이력 섹션 표시
+    const rollupSection = document.getElementById('sc-rollup-section');
+    if (rollupSection) {
+      rollupSection.style.display = 'block';
+      loadRollupHistory(true);
+    }
+
   } catch (err) {
     showState('error', '데이터 로드 실패: ' + err.message);
   } finally {
@@ -380,6 +407,8 @@ function aggregateBySymbol(rows) {
         target_strike:       r.target_strike,
         concentration_count: r.concentration_count ?? 0,
         upside:              r.upside,          // screened_tickers에서 직접
+        squeeze_stars:       r.squeeze_stars ?? 0,
+        squeeze_flags:       r.squeeze_flags ?? null,
         updated_at:          r.updated_at,
         groups,
         expiries:  [],
@@ -531,6 +560,7 @@ function renderTable(filter = 'all') {
         <th class="sc-th sortable" data-col="dist_pct">플립존 거리</th>
         <th class="sc-th sortable" data-col="total_gex">Net GEX</th>
         <th class="sc-th sortable" data-col="atm_iv">ATM IV</th>
+        <th class="sc-th sortable" data-col="squeeze_stars">스퀴즈</th>
         <th class="sc-th">만기 수</th>
         <th class="sc-th">분석</th>
       </tr>
@@ -710,12 +740,66 @@ function buildRow(r) {
       <td class="sc-td-dist">${distStr}</td>
       <td class="sc-td-gex">${gexStr}</td>
       <td class="sc-td-iv">${ivStr}</td>
+      <td class="sc-td-squeeze">${'★'.repeat(r.squeeze_stars ?? 0) || '-'}</td>
       <td class="sc-td-num">${r.expiries?.length ?? '-'}</td>
       <td>
         <button class="sc-drill-btn" data-sym="${r.symbol}" title="Structure 탭에서 분석">▶</button>
       </td>
     </tr>
   `;
+}
+
+// ============================================
+// 롤업 이력 로드
+// ============================================
+async function loadRollupHistory(activeOnly = true) {
+  const body = document.getElementById('sc-rollup-body');
+  if (!body) return;
+  body.innerHTML = '<div class="sc-rollup-loading">불러오는 중...</div>';
+
+  try {
+    const res  = await fetch(`${CF_API}/api/screener/rollup-history?active_only=${activeOnly}`);
+    const data = await res.json();
+    const rows = data.history ?? [];
+
+    if (!rows.length) {
+      body.innerHTML = '<div class="sc-rollup-empty">롤업 이력이 없습니다.</div>';
+      return;
+    }
+
+    const fmt = (dt) => {
+      const d = new Date(dt);
+      return d.toLocaleDateString('ko-KR', { month: '2-digit', day: '2-digit' })
+        + ' ' + d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false });
+    };
+
+    body.innerHTML = `
+      <table class="sc-rollup-tbl">
+        <thead>
+          <tr>
+            <th>종목</th>
+            <th>이전 목표가</th>
+            <th>새 목표가</th>
+            <th>현재가</th>
+            <th>감지 시각</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows.map(r => `
+            <tr>
+              <td class="sc-rollup-sym">${r.ticker}</td>
+              <td class="sc-rollup-old">$${r.old_strike}</td>
+              <td class="sc-rollup-new">$${r.new_strike} ↑</td>
+              <td>${r.spot_price ? '$' + r.spot_price.toFixed(2) : '-'}</td>
+              <td class="sc-rollup-time">${fmt(r.detected_at)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `;
+  } catch (e) {
+    body.innerHTML = `<div class="sc-rollup-error">이력 로드 실패: ${e.message}</div>`;
+  }
 }
 
 // ============================================
