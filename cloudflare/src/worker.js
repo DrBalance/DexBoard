@@ -464,6 +464,77 @@ export default {
     // SCREENER v4 — watchlist 기반, 만기별 저장
     // ════════════════════════════════════════════════════════════
 
+    // ── POST /api/screener/rollup-check ─────────────────────────
+    // ET 09:50 롤업 감지: 현재 target_strike vs 새 target_strike 비교
+    // 변경 시 rollup_history 테이블에 기록
+    if (request.method === "POST" && path === "/api/screener/rollup-check") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const { ticker, new_strike, new_spot } = await request.json();
+        if (!ticker || !new_strike) return json({ error: "ticker, new_strike 필요" }, 400, corsHeaders);
+        const sym = ticker.toUpperCase();
+
+        // 현재 저장된 target_strike 조회
+        const current = await env.DB.prepare(
+          "SELECT target_strike FROM screened_tickers WHERE ticker = ? LIMIT 1"
+        ).bind(sym).first();
+
+        if (!current) return json({ ok: false, reason: "not_found" }, 200, corsHeaders);
+
+        const oldStrike = current.target_strike;
+        const rolledUp  = new_strike > oldStrike;
+
+        if (rolledUp) {
+          // rollup_history 기록
+          await env.DB.prepare(`
+            INSERT INTO rollup_history (ticker, old_strike, new_strike, spot_price, detected_at)
+            VALUES (?, ?, ?, ?, ?)
+          `).bind(sym, oldStrike, new_strike, new_spot ?? null, new Date().toISOString()).run();
+
+          // screened_tickers target_strike 업데이트
+          await env.DB.prepare(
+            "UPDATE screened_tickers SET target_strike = ? WHERE ticker = ?"
+          ).bind(new_strike, sym).run();
+        }
+
+        return json({ ok: true, ticker: sym, rolled_up: rolledUp, old_strike: oldStrike, new_strike }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
+    // ── GET /api/screener/rollup-history ─────────────────────────
+    // 롤업 이력 조회 (active_only=true 시 현재 screened_tickers 종목만)
+    if (request.method === "GET" && path === "/api/screener/rollup-history") {
+      const activeOnly = url.searchParams.get("active_only") === "true";
+      try {
+        let query;
+        if (activeOnly) {
+          query = `
+            SELECT rh.id, rh.ticker, rh.old_strike, rh.new_strike, rh.spot_price, rh.detected_at
+            FROM rollup_history rh
+            INNER JOIN screened_tickers st ON st.ticker = rh.ticker
+            ORDER BY rh.detected_at DESC
+            LIMIT 200
+          `;
+        } else {
+          query = `
+            SELECT id, ticker, old_strike, new_strike, spot_price, detected_at
+            FROM rollup_history
+            ORDER BY detected_at DESC
+            LIMIT 200
+          `;
+        }
+        const rows = await env.DB.prepare(query).all();
+        return json({ history: rows.results ?? [] }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
     // ── GET /api/screener/symbols ───────────────────────────────
     if (request.method === "GET" && path === "/api/screener/symbols") {
       const rows = await env.DB.prepare(`
@@ -486,6 +557,9 @@ export default {
         FROM screened_tickers
         WHERE group_code = 'WATCHLIST'
         AND (concentration_count <= 3 OR upside < 3)
+        AND ticker NOT IN (
+          SELECT ticker FROM screened_tickers WHERE group_code = 'MONITOR'
+        )
       `).all();
       return json({ candidates: rows.results ?? [] }, 200, corsHeaders);
     }
@@ -570,7 +644,9 @@ export default {
           d.ticker as symbol, st.spot_price, d.expiry_date, d.dte, d.expiry_type,
           d.net_gex, d.flip_strike, d.atm_iv,
           d.call_oi, d.put_oi, d.pcr_oi, d.dex, d.vanna, d.charm,
-          st.target_strike, st.concentration_count, st.upside, d.updated_at,
+          st.target_strike, st.concentration_count, st.upside,
+          st.squeeze_stars, st.squeeze_flags,
+          d.updated_at,
           w.company, w.sector, w.market_cap, w.short_float, w.beta,
           GROUP_CONCAT(DISTINCT st2.group_code) as groups
         FROM daily_screener d
@@ -630,16 +706,18 @@ export default {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
       try {
-        const { ticker, spot_price, upside, concentration_count, target_strike, total_gex, atm_iv, flip_strike } = await request.json();
+        const { ticker, spot_price, upside, concentration_count, target_strike, total_gex, atm_iv, flip_strike, squeeze_stars, squeeze_flags } = await request.json();
         if (!ticker) return json({ ok: false, error: "ticker 필요" }, 400, corsHeaders);
         await env.DB.prepare(`
           UPDATE screened_tickers
           SET spot_price = ?, upside = ?, concentration_count = ?,
-              target_strike = ?, total_gex = ?, atm_iv = ?, flip_strike = ?
+              target_strike = ?, total_gex = ?, atm_iv = ?, flip_strike = ?,
+              squeeze_stars = ?, squeeze_flags = ?
           WHERE ticker = ?
         `).bind(
           spot_price ?? null, upside ?? null, concentration_count ?? null,
           target_strike ?? null, total_gex ?? null, atm_iv ?? null, flip_strike ?? null,
+          squeeze_stars ?? 0, squeeze_flags ?? null,
           ticker.toUpperCase()
         ).run();
         return json({ ok: true, ticker: ticker.toUpperCase() }, 200, corsHeaders);
@@ -712,7 +790,7 @@ export default {
         SELECT ticker, company, sector, market_cap, short_float, beta, last_scan_date
         FROM watchlist
         WHERE ticker NOT IN (
-          SELECT ticker FROM screened_tickers WHERE group_code = 'WATCHLIST'
+          SELECT ticker FROM screened_tickers WHERE group_code IN ('WATCHLIST', 'MONITOR')
         )
         ORDER BY last_scan_date ASC NULLS FIRST, ticker ASC
       `).all();
@@ -844,7 +922,72 @@ export default {
     }
 
 
-    if (request.method === "POST" && path === "/api/watchlist/demote") {
+    // ── POST /api/watchlist/move-to-monitor ─────────────────────
+    // upside < 3% 종목을 WATCHLIST → MONITOR 그룹으로 이동
+    // MONITOR 그룹은 스캔 제외, 수동 삭제 전까지 유지
+    if (request.method === "POST" && path === "/api/watchlist/move-to-monitor") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const { ticker } = await request.json();
+        if (!ticker) return json({ error: "ticker 필요" }, 400, corsHeaders);
+        const sym = ticker.toUpperCase();
+
+        // WATCHLIST → MONITOR: group_code 변경
+        await env.DB.prepare(`
+          UPDATE screened_tickers SET group_code = 'MONITOR'
+          WHERE ticker = ? AND group_code = 'WATCHLIST'
+        `).bind(sym).run();
+
+        // MONITOR에 없으면 새로 삽입 (혹시 WATCHLIST 행이 없었던 경우)
+        await env.DB.prepare(`
+          INSERT OR IGNORE INTO screened_tickers (ticker, group_code) VALUES (?, 'MONITOR')
+        `).bind(sym).run();
+
+        return json({ ok: true, ticker: sym, group: 'MONITOR' }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
+    // ── DELETE /api/watchlist/monitor/:ticker ────────────────────
+    // MONITOR 종목 수동 삭제 (완전 제거)
+    const monitorDelMatch = path.match(/^\/api\/watchlist\/monitor\/([A-Z0-9.\-]+)$/i);
+    if (request.method === "DELETE" && monitorDelMatch) {
+      const secret = request.headers.get("x-cron-secret") || request.headers.get("x-admin-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET && secret !== env.ADMIN_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      const sym = monitorDelMatch[1].toUpperCase();
+      try {
+        // MONITOR 그룹에서 제거
+        await env.DB.prepare(
+          "DELETE FROM screened_tickers WHERE ticker = ? AND group_code = 'MONITOR'"
+        ).bind(sym).run();
+
+        // 다른 그룹에 남아있는지 확인
+        const remaining = await env.DB.prepare(
+          "SELECT COUNT(*) as cnt FROM screened_tickers WHERE ticker = ?"
+        ).bind(sym).first();
+
+        if ((remaining?.cnt ?? 0) === 0) {
+          // 고아: daily_screener 삭제 + is_watchlist = 0
+          await env.DB.batch([
+            env.DB.prepare("UPDATE watchlist SET is_watchlist = 0 WHERE ticker = ?").bind(sym),
+            env.DB.prepare("DELETE FROM daily_screener WHERE ticker = ?").bind(sym),
+          ]);
+        }
+
+        return json({ ok: true, ticker: sym }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
+
+
       try {
         const { ticker } = await request.json();
         if (!ticker) return json({ error: "ticker 필요" }, 400, corsHeaders);

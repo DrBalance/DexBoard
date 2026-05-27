@@ -1414,26 +1414,35 @@ export async function handleAdmin(path, request, env) {
 
       const removed = [];
       for (const { ticker, concentration_count, upside } of (candidates.results ?? [])) {
-        // 1. WATCHLIST에서 제거
-        await env.DB.prepare(
-          "DELETE FROM screened_tickers WHERE ticker=? AND group_code='WATCHLIST'"
-        ).bind(ticker).run();
+        const isBelowCount  = concentration_count <= 3;
+        const isBelowUpside = upside < 3;
 
-        // 2. 다른 그룹 확인
-        const remaining = await env.DB.prepare(
-          'SELECT COUNT(*) as cnt FROM screened_tickers WHERE ticker=?'
-        ).bind(ticker).first();
-
-        if ((remaining?.cnt ?? 0) === 0) {
-          await env.DB.batch([
-            env.DB.prepare('DELETE FROM daily_screener WHERE ticker=?').bind(ticker),
-            env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(ticker),
-          ]);
+        if (isBelowUpside && !isBelowCount) {
+          // upside < 3% → MONITOR 이동 (집중도는 통과)
+          await env.DB.prepare(
+            "UPDATE screened_tickers SET group_code='MONITOR' WHERE ticker=? AND group_code='WATCHLIST'"
+          ).bind(ticker).run();
+          removed.push({ symbol: ticker, count: concentration_count, upside, reason: 'monitor' });
         } else {
-          await env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(ticker).run();
-        }
+          // 집중도 미달 (또는 둘 다) → 완전 제거
+          await env.DB.prepare(
+            "DELETE FROM screened_tickers WHERE ticker=? AND group_code='WATCHLIST'"
+          ).bind(ticker).run();
 
-        removed.push({ symbol: ticker, count: concentration_count, upside });
+          const remaining = await env.DB.prepare(
+            'SELECT COUNT(*) as cnt FROM screened_tickers WHERE ticker=?'
+          ).bind(ticker).first();
+
+          if ((remaining?.cnt ?? 0) === 0) {
+            await env.DB.batch([
+              env.DB.prepare('DELETE FROM daily_screener WHERE ticker=?').bind(ticker),
+              env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(ticker),
+            ]);
+          } else {
+            await env.DB.prepare('UPDATE watchlist SET is_watchlist=0 WHERE ticker=?').bind(ticker).run();
+          }
+          removed.push({ symbol: ticker, count: concentration_count, upside, reason: 'removed' });
+        }
       }
 
       return json({ ok: true, removed });
