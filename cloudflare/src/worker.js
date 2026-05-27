@@ -242,36 +242,6 @@ export default {
       return json(data, 200, corsHeaders);
     }
 
-    // ── GET /api/options-strikes/:symbol ───────────────────────
-    // Structure 탭 히트맵용: daily_screener의 strike_data 파싱해서 반환
-    const strikesMatch = path.match(/^\/api\/options-strikes\/([a-zA-Z0-9.\-]+)$/i);
-    if (request.method === "GET" && strikesMatch) {
-      const sym = strikesMatch[1].toUpperCase();
-
-      const rows = await env.DB.prepare(`
-        SELECT expiry_date, dte, flip_strike, strike_data
-        FROM daily_screener
-        WHERE ticker = ? AND strike_data IS NOT NULL
-        ORDER BY dte ASC
-      `).bind(sym).all();
-
-      const result = [];
-      for (const row of (rows.results ?? [])) {
-        let strikes = [];
-        try { strikes = JSON.parse(row.strike_data); } catch { strikes = []; }
-        for (const s of strikes) {
-          result.push({
-            expiry_date: row.expiry_date,
-            dte:         row.dte,
-            flip_strike: row.flip_strike,
-            ...s,
-          });
-        }
-      }
-
-      return json({ symbol: sym, rows: result }, 200, corsHeaders);
-    }
-
     // ── POST /d1/options-strikes ────────────────────────────────
     // Railway → D1 스트라이크별 IV 저장
     if (request.method === "POST" && path === "/d1/options-strikes") {
@@ -465,8 +435,8 @@ export default {
     // ════════════════════════════════════════════════════════════
 
     // ── POST /api/screener/rollup-check ─────────────────────────
-    // ET 09:50 롤업 감지: 현재 target_strike vs 새 target_strike 비교
-    // 변경 시 rollup_history 테이블에 기록
+    // ET 09:50 롤업/롤다운 감지: 현재 target_strike vs 새 target_strike 비교
+    // 변경 시 rollup_history 테이블에 기록 (롤업/롤다운 모두)
     if (request.method === "POST" && path === "/api/screener/rollup-check") {
       const secret = request.headers.get("x-cron-secret");
       if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
@@ -485,22 +455,23 @@ export default {
         if (!current) return json({ ok: false, reason: "not_found" }, 200, corsHeaders);
 
         const oldStrike = current.target_strike;
-        const rolledUp  = new_strike > oldStrike;
+        const changed   = new_strike !== oldStrike;
+        const direction = new_strike > oldStrike ? "rollup" : "rolldown";
 
-        if (rolledUp) {
-          // rollup_history 기록
+        if (changed) {
+          // rollup_history 기록 (롤업 + 롤다운 모두)
           await env.DB.prepare(`
-            INSERT INTO rollup_history (ticker, old_strike, new_strike, spot_price, detected_at)
-            VALUES (?, ?, ?, ?, ?)
-          `).bind(sym, oldStrike, new_strike, new_spot ?? null, new Date().toISOString()).run();
+            INSERT INTO rollup_history (ticker, old_strike, new_strike, spot_price, direction, detected_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+          `).bind(sym, oldStrike, new_strike, new_spot ?? null, direction, new Date().toISOString()).run();
 
-          // screened_tickers target_strike 업데이트
+          // screened_tickers target_strike 항상 새 값으로 업데이트
           await env.DB.prepare(
             "UPDATE screened_tickers SET target_strike = ? WHERE ticker = ?"
           ).bind(new_strike, sym).run();
         }
 
-        return json({ ok: true, ticker: sym, rolled_up: rolledUp, old_strike: oldStrike, new_strike }, 200, corsHeaders);
+        return json({ ok: true, ticker: sym, changed, direction: changed ? direction : null, old_strike: oldStrike, new_strike }, 200, corsHeaders);
       } catch (err) {
         return json({ ok: false, error: err.message }, 500, corsHeaders);
       }
