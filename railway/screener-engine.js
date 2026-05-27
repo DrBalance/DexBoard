@@ -396,12 +396,12 @@ export async function runScreenerCollection(cfWorkerUrl, cronSecret, symbols, on
     const sym = typeof symbols[i] === 'string' ? symbols[i] : symbols[i].symbol ?? symbols[i];
 
     try {
-      const { rows, callWall, upside, squeeze } = await analyzeSymbol(sym);
+      const { rows, callWall, upside, squeeze, spot } = await analyzeSymbol(sym);
       const saveResult = await saveSymbolRows(cfWorkerUrl, cronSecret, sym, rows, updatedAt);
 
       if (saveResult.ok) {
         // screened_tickers 집계값 업데이트
-        await updateScreenedTicker(cfWorkerUrl, cronSecret, sym, null, callWall, upside, rows, squeeze);
+        await updateScreenedTicker(cfWorkerUrl, cronSecret, sym, spot, callWall, upside, rows, squeeze);
 
         results.push({ symbol: sym, rows: rows.length, callWall });
         console.log(
@@ -496,7 +496,7 @@ export async function runWatchlistScan(cfWorkerUrl, cronSecret, onProgress) {
     const sym = typeof candidates[i] === 'string' ? candidates[i] : candidates[i].ticker;
 
     try {
-      const { rows, callWall, upside, squeeze } = await analyzeSymbol(sym);
+      const { rows, callWall, upside, squeeze, spot } = await analyzeSymbol(sym);
       const isCallWall = callWall.concentration_count >= 4;
 
       scanned.push({ symbol: sym, concentration_count: callWall.concentration_count });
@@ -543,7 +543,7 @@ export async function runWatchlistScan(cfWorkerUrl, cronSecret, onProgress) {
         }).catch(e => console.warn(`[watchlist] ${sym} 그룹 편입 실패:`, e.message));
 
         // screened_tickers 집계값 업데이트
-        await updateScreenedTicker(cfWorkerUrl, cronSecret, sym, null, callWall, upside, rows, squeeze)
+        await updateScreenedTicker(cfWorkerUrl, cronSecret, sym, spot, callWall, upside, rows, squeeze)
           .catch(e => console.warn(`[watchlist] ${sym} screened_tickers 업데이트 실패:`, e.message));
 
       } else {
