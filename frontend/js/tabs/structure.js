@@ -534,10 +534,15 @@ async function loadAndRenderCharts(symbol, scoreRow) {
   });
 
   try {
-    // 오늘 + 전일 동시 로드 (레거시 options-strikes 엔드포인트 제거)
-    const [res, histRes] = await Promise.all([
+    // 오늘 + 전일 + analyze-symbol(strikeRows) 동시 로드
+    const [res, histRes, analyzeRes] = await Promise.all([
       fetch(`${CF_API}/api/options-dex/${symbol}`),
       fetch(`${CF_API}/api/options-dex/${symbol}/history?days=3`),
+      fetch(`${RAILWAY_URL}/analyze-symbol`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
+        body:    JSON.stringify({ symbol }),
+      }),
     ]);
 
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -566,17 +571,16 @@ async function loadAndRenderCharts(symbol, scoreRow) {
 
     const spot = scoreRow?.spot_price ?? null;
 
-    // daily_screener의 strike_data(JSON 컬럼) → expirations 객체 변환 (히트맵/EM용)
-    const strikesExpirations = {};
-    rows.forEach(r => {
-      let strikes = [];
-      try { strikes = r.strike_data ? JSON.parse(r.strike_data) : []; } catch { strikes = []; }
-      if (!strikes.length) return;
-      if (!strikesExpirations[r.expiry_date]) {
-        strikesExpirations[r.expiry_date] = { strikes: [], flip_strike: r.flip_strike ?? null };
-      }
-      strikes.forEach(s => {
-        strikesExpirations[r.expiry_date].strikes.push({
+    // analyze-symbol strikeRows → expirations 객체 변환 (히트맵/EM용)
+    let strikesExpirations = {};
+    if (analyzeRes?.ok) {
+      const analyzeData = await analyzeRes.json();
+      const strikeRows  = analyzeData.strikeRows ?? [];
+      strikeRows.forEach(s => {
+        if (!strikesExpirations[s.expiry_date]) {
+          strikesExpirations[s.expiry_date] = { strikes: [], flip_strike: null };
+        }
+        strikesExpirations[s.expiry_date].strikes.push({
           strike: s.strike,
           dex:    s.dex    ?? 0,
           gex:    s.gex    ?? 0,
@@ -586,7 +590,7 @@ async function loadAndRenderCharts(symbol, scoreRow) {
           putOI:  s.put_oi  ?? 0,
         });
       });
-    });
+    }
 
     // 공통 계산
     const termData   = calculateTermStructure(rows, prevRows);
