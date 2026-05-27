@@ -742,7 +742,7 @@ function renderGroupsGrid() {
     return;
   }
   grid.innerHTML = groupsCache.map(g => `
-    <div class="group-card" id="gc-${g.id}">
+    <div class="group-card" id="gc-${g.code}">
       <div class="group-card-header">
         <span class="color-dot" style="background:${g.color||'#555'}"></span>
         <div>
@@ -750,32 +750,32 @@ function renderGroupsGrid() {
           <div class="group-card-code">${escHtml(g.code)} · ${g.symbol_count}종목</div>
         </div>
         <div style="margin-left:auto;display:flex;gap:6px">
-          <button class="btn btn-purple btn-sm" onclick="openHoldingsPanel(${g.id})">ETF 조회</button>
-          <button class="btn btn-red btn-sm" onclick="deleteGroup(${g.id},'${escHtml(g.name)}')">삭제</button>
+          <button class="btn btn-purple btn-sm" onclick="openHoldingsPanel('${g.code}')">ETF 조회</button>
+          <button class="btn btn-red btn-sm" onclick="deleteGroup('${g.code}','${escHtml(g.name)}')">삭제</button>
         </div>
       </div>
       <div class="group-card-body">
-        <div class="group-sym-list" id="gsyms-${g.id}">
+        <div class="group-sym-list" id="gsyms-${g.code}">
           <div class="loading" style="font-size:12px;padding:4px">로딩 중...</div>
         </div>
         <div class="group-add-row">
           <div class="sym-wrap">
-            <input class="form-input sm" id="gi-${g.id}"
+            <input class="form-input sm" id="gi-${g.code}"
               placeholder="티커 입력"
               style="text-transform:uppercase;width:110px"
-              oninput="onGroupSymInput(${g.id},this.value)"
-              onkeydown="if(event.key==='Enter')addGroupSymbol(${g.id})">
-            <div class="sym-dropdown" id="gdd-${g.id}"></div>
+              oninput="onGroupSymInput('${g.code}',this.value)"
+              onkeydown="if(event.key==='Enter')addGroupSymbol('${g.code}')">
+            <div class="sym-dropdown" id="gdd-${g.code}"></div>
           </div>
-          <button class="btn btn-blue btn-sm" onclick="addGroupSymbol(${g.id})">+ 추가</button>
-          <span class="form-msg" id="gm-${g.id}" style="font-size:11px"></span>
+          <button class="btn btn-blue btn-sm" onclick="addGroupSymbol('${g.code}')">+ 추가</button>
+          <span class="form-msg" id="gm-${g.code}" style="font-size:11px"></span>
         </div>
       </div>
     </div>
   `).join('');
 
   // 각 그룹의 심볼 목록 로드
-  groupsCache.forEach(g => loadGroupSymbols(g.id));
+  groupsCache.forEach(g => loadGroupSymbols(g.code));
 }
 
 async function loadGroupSymbols(id) {
