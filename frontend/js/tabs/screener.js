@@ -858,7 +858,16 @@ async function showCallWallHeatmap(symbol, targetStrike, triggerEl) {
     const data = await res.json();
     const strikeRows = data.strikeRows ?? [];
 
-    // target_strike 컬럼만 필터 + 만기별 정렬
+    // 만기별 최대 DEX 스트라이크 계산
+    const maxStrikeByExpiry = {};
+    strikeRows.forEach(s => {
+      if (!s.dex || s.dex <= 0) return;
+      if (!maxStrikeByExpiry[s.expiry_date] || s.dex > maxStrikeByExpiry[s.expiry_date].dex) {
+        maxStrikeByExpiry[s.expiry_date] = { strike: s.strike, dex: s.dex };
+      }
+    });
+
+    // target_strike 컬럼 DEX 값
     const byExpiry = {};
     strikeRows.forEach(s => {
       if (s.strike === targetStrike) {
@@ -875,26 +884,37 @@ async function showCallWallHeatmap(symbol, targetStrike, triggerEl) {
       return;
     }
 
-    // dex 최대값 (강도 계산용)
-    const allDex = Object.values(byExpiry).map(Math.abs);
-    const maxDex = Math.max(...allDex, 0.0001);
+    // 실제 최대인 경우의 DEX만 강도 계산에 사용
+    const activeDex = expiries
+      .filter(exp => maxStrikeByExpiry[exp]?.strike === targetStrike)
+      .map(exp => byExpiry[exp] ?? 0);
+    const maxDex = Math.max(...activeDex, 0.0001);
 
     const rows = expiries.map(exp => {
-      const dex      = byExpiry[exp];
-      const hasDex   = dex != null && dex > 0.001;
-      const intensity = hasDex ? Math.min(dex / maxDex, 1) : 0;
-      const green = hasDex
-        ? `rgba(34,197,94,${(intensity * 0.8 + 0.2).toFixed(2)})`
-        : 'transparent';
-      const textColor = hasDex && intensity > 0.5 ? '#fff' : '#333';
-      const border = hasDex ? '' : 'border:1.5px dashed #ccc;';
-      const label     = exp.slice(5);
-      const display   = hasDex ? Math.round(dex * 100) : '0';
-      const displayColor = hasDex ? textColor : 'transparent';
+      const isMax  = maxStrikeByExpiry[exp]?.strike === targetStrike;
+      const dex    = byExpiry[exp] ?? 0;
+      const label  = exp.slice(5);
+
+      let bg, borderStyle, textColor, display;
+
+      if (isMax && dex > 0.001) {
+        // target_strike가 이 만기의 최대 DEX → 초록
+        const intensity = Math.min(dex / maxDex, 1);
+        bg          = `rgba(34,197,94,${(intensity * 0.8 + 0.2).toFixed(2)})`;
+        borderStyle = '';
+        textColor   = intensity > 0.5 ? '#fff' : '#333';
+        display     = String(Math.round(dex * 100));
+      } else {
+        // 다른 스트라이크가 더 크거나 없음 → 점선
+        bg          = 'transparent';
+        borderStyle = 'border:1.5px dashed #ccc;';
+        textColor   = 'transparent';
+        display     = '0';
+      }
 
       return `<div class="sc-hm-row">
         <span class="sc-hm-label">${label}</span>
-        <div class="sc-hm-cell" style="background:${green};color:${displayColor};${border}">
+        <div class="sc-hm-cell" style="background:${bg};color:${textColor};${borderStyle}">
           ${display}
         </div>
       </div>`;
