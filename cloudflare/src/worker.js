@@ -538,10 +538,9 @@ export default {
           st.target_strike, st.concentration_count, st.upside, d.updated_at,
           w.company, w.sector, w.market_cap, w.short_float, w.beta
         FROM daily_screener d
-        LEFT JOIN screened_tickers st ON st.ticker = d.ticker AND st.group_code = 'WATCHLIST'
+        LEFT JOIN screened_tickers st ON st.ticker = d.ticker AND st.group_code IN ('WATCHLIST', 'MONITOR')
         LEFT JOIN watchlist w ON w.ticker = d.ticker
         WHERE d.ticker = ?
-        ORDER BY d.dte ASC
       `).bind(sym).all();
 
       const all = rows.results ?? [];
@@ -586,10 +585,9 @@ export default {
           st.squeeze_stars, st.squeeze_flags,
           d.updated_at,
           w.company, w.sector, w.market_cap, w.short_float, w.beta,
-          GROUP_CONCAT(DISTINCT st2.group_code) as groups
+          GROUP_CONCAT(DISTINCT st.group_code) as groups
         FROM daily_screener d
-        LEFT JOIN screened_tickers st ON st.ticker = d.ticker AND st.group_code = 'WATCHLIST'
-        LEFT JOIN screened_tickers st2 ON st2.ticker = d.ticker
+        LEFT JOIN screened_tickers st ON st.ticker = d.ticker AND st.group_code IN ('WATCHLIST', 'MONITOR')
         LEFT JOIN watchlist w ON w.ticker = d.ticker
         GROUP BY d.ticker, d.expiry_date
         ORDER BY d.ticker ASC, d.dte ASC
