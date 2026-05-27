@@ -988,6 +988,8 @@ export default {
 
 
 
+    // ── POST /api/watchlist/demote ───────────────────────────────
+    if (request.method === "POST" && path === "/api/watchlist/demote") {
       try {
         const { ticker } = await request.json();
         if (!ticker) return json({ error: "ticker 필요" }, 400, corsHeaders);
