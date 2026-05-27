@@ -534,11 +534,10 @@ async function loadAndRenderCharts(symbol, scoreRow) {
   });
 
   try {
-    // 오늘 + 전일 + options-strikes 동시 로드
-    const [res, histRes, strikesRes] = await Promise.all([
+    // 오늘 + 전일 동시 로드 (레거시 options-strikes 엔드포인트 제거)
+    const [res, histRes] = await Promise.all([
       fetch(`${CF_API}/api/options-dex/${symbol}`),
       fetch(`${CF_API}/api/options-dex/${symbol}/history?days=3`),
-      fetch(`${CF_API}/api/options-strikes/${symbol}`),
     ]);
 
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -567,16 +566,17 @@ async function loadAndRenderCharts(symbol, scoreRow) {
 
     const spot = scoreRow?.spot_price ?? null;
 
-    // options-strikes → expirations 객체 변환 (히트맵/EM용)
-    let strikesExpirations = {};
-    if (strikesRes?.ok) {
-      const strikesData = await strikesRes.json();
-      const strikeRows  = strikesData.rows ?? [];
-      strikeRows.forEach(s => {
-        if (!strikesExpirations[s.expiry_date]) {
-          strikesExpirations[s.expiry_date] = { strikes: [], flip_strike: null };
-        }
-        strikesExpirations[s.expiry_date].strikes.push({
+    // daily_screener의 strike_data(JSON 컬럼) → expirations 객체 변환 (히트맵/EM용)
+    const strikesExpirations = {};
+    rows.forEach(r => {
+      let strikes = [];
+      try { strikes = r.strike_data ? JSON.parse(r.strike_data) : []; } catch { strikes = []; }
+      if (!strikes.length) return;
+      if (!strikesExpirations[r.expiry_date]) {
+        strikesExpirations[r.expiry_date] = { strikes: [], flip_strike: r.flip_strike ?? null };
+      }
+      strikes.forEach(s => {
+        strikesExpirations[r.expiry_date].strikes.push({
           strike: s.strike,
           dex:    s.dex    ?? 0,
           gex:    s.gex    ?? 0,
@@ -586,7 +586,7 @@ async function loadAndRenderCharts(symbol, scoreRow) {
           putOI:  s.put_oi  ?? 0,
         });
       });
-    }
+    });
 
     // 공통 계산
     const termData   = calculateTermStructure(rows, prevRows);

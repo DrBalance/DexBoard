@@ -614,7 +614,10 @@ function renderTable(filter = 'all') {
     btn.addEventListener('click', e => { e.stopPropagation(); drillToStructure(btn.dataset.sym); });
   });
   tableWrap.querySelectorAll('.sc-row').forEach(row => {
-    row.addEventListener('click', () => drillToStructure(row.dataset.sym));
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('.sc-drill-btn')) return;
+      showTargetStrikePopover(row.dataset.sym, row);
+    });
   });
 
   updateSortIndicators();
@@ -808,6 +811,117 @@ async function loadRollupHistory(activeOnly = true) {
 function drillToStructure(symbol) {
   goToTab('structure');
   setTimeout(() => drillTo(symbol), 50);
+}
+// ============================================
+// Target Strike 만기별 팝오버
+// ============================================
+async function showTargetStrikePopover(symbol, anchorEl) {
+  // 기존 팝오버 제거
+  document.getElementById('sc-ts-popover')?.remove();
+
+  const popover = document.createElement('div');
+  popover.id = 'sc-ts-popover';
+  popover.style.cssText = `
+    position:fixed;z-index:9999;
+    background:#fff;border-radius:10px;
+    box-shadow:0 4px 24px rgba(0,0,0,0.18);
+    padding:14px 16px;min-width:200px;max-width:280px;
+    font-family:inherit;
+  `;
+  popover.innerHTML = `<div style="font-size:12px;color:#888;margin-bottom:8px">
+    <b style="color:#222;font-size:13px">${symbol}</b> · Call Wall 만기별
+    <span id="sc-ts-drill" style="cursor:pointer;color:#3b82f6;font-size:11px;margin-left:8px">Structure ▶</span>
+  </div><div id="sc-ts-body" style="color:#888;font-size:12px">로딩 중...</div>`;
+  document.body.appendChild(popover);
+
+  // 위치 계산
+  const rect = anchorEl.getBoundingClientRect();
+  const ph = popover.offsetHeight || 200;
+  let top = rect.bottom + 4;
+  if (top + ph > window.innerHeight - 10) top = rect.top - ph - 4;
+  popover.style.left = Math.min(rect.left, window.innerWidth - 290) + 'px';
+  popover.style.top  = top + 'px';
+
+  popover.querySelector('#sc-ts-drill').addEventListener('click', e => {
+    e.stopPropagation();
+    popover.remove();
+    drillToStructure(symbol);
+  });
+
+  // 외부 클릭 닫기
+  const closeHandler = (e) => {
+    if (!popover.contains(e.target)) {
+      popover.remove();
+      document.removeEventListener('click', closeHandler, true);
+    }
+  };
+  setTimeout(() => document.addEventListener('click', closeHandler, true), 0);
+
+  // /analyze-symbol 호출
+  try {
+    const res = await fetch(`${RAILWAY_URL}/analyze-symbol`, {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
+      body:    JSON.stringify({ symbol }),
+      signal:  AbortSignal.timeout(30000),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
+
+    const targetStrike = data.callWall?.target_strike ?? null;
+    const strikeRows   = data.strikeRows ?? [];
+
+    const body = document.getElementById('sc-ts-body');
+    if (!body) return;
+
+    if (!targetStrike || !strikeRows.length) {
+      body.innerHTML = '<span style="color:#aaa">Call Wall 데이터 없음</span>';
+      return;
+    }
+
+    // target_strike에 해당하는 만기별 셀만 추출
+    const targetRows = strikeRows
+      .filter(s => s.strike === targetStrike)
+      .sort((a, b) => (a.expiry_date ?? '').localeCompare(b.expiry_date ?? ''));
+
+    if (!targetRows.length) {
+      body.innerHTML = `<span style="color:#aaa">$${targetStrike} 해당 만기 없음</span>`;
+      return;
+    }
+
+    // DEX 최댓값으로 강도 정규화
+    const maxDex = Math.max(...targetRows.map(r => Math.abs(r.dex ?? 0)), 1);
+
+    const cells = targetRows.map(r => {
+      const dex       = r.dex ?? 0;
+      const intensity = Math.min(Math.abs(dex) / maxDex, 1);
+      const alpha     = dex > 0 ? (0.08 + intensity * 0.72).toFixed(2) : '0';
+      const bg        = dex > 0
+        ? `rgba(34,197,94,${alpha})`   // 초록 (콜 매도벽)
+        : (dex < 0 ? 'rgba(239,68,68,0.10)' : '#f3f4f6'); // 빨강(풋)/회색(빈셀)
+      const dexStr    = dex !== 0 ? (dex > 0 ? '+' : '') + (dex / 1e6).toFixed(1) + 'M' : '-';
+      return `
+        <div style="display:flex;align-items:center;gap:8px;padding:5px 0;border-bottom:1px solid #f0f0f0">
+          <span style="font-size:11px;color:#666;width:72px;flex-shrink:0">${r.expiry_date ?? '-'}</span>
+          <div style="flex:1;background:${bg};border-radius:5px;padding:3px 8px;text-align:right;
+                      font-size:12px;font-weight:600;color:${dex > 0 ? '#15803d' : (dex < 0 ? '#dc2626' : '#bbb')}">
+            ${dexStr}
+          </div>
+        </div>`;
+    }).join('');
+
+    body.innerHTML = `
+      <div style="font-size:11px;color:#888;margin-bottom:6px">
+        Call Wall Strike: <b style="color:#222">$${targetStrike}</b>
+        &nbsp;·&nbsp;${targetRows.length}개 만기
+      </div>
+      ${cells}
+    `;
+
+  } catch (err) {
+    const body = document.getElementById('sc-ts-body');
+    if (body) body.innerHTML = `<span style="color:#ef4444">${err.message}</span>`;
+  }
 }
 
 // ============================================
