@@ -785,26 +785,30 @@ async function loadRollupHistory(activeOnly = true) {
     };
 
     body.innerHTML = `
-      <table class="sc-rollup-tbl">
+      <table class="sc-tbl sc-rollup-tbl">
         <thead>
           <tr>
-            <th>종목</th>
-            <th>이전 목표가</th>
-            <th>새 목표가</th>
-            <th>현재가</th>
-            <th>감지 시각</th>
+            <th class="sc-th">종목</th>
+            <th class="sc-th">이전 목표가</th>
+            <th class="sc-th">새 목표가</th>
+            <th class="sc-th">현재가</th>
+            <th class="sc-th">감지 시각</th>
           </tr>
         </thead>
         <tbody>
-          ${rows.map(r => `
-            <tr>
-              <td class="sc-rollup-sym">${r.ticker}</td>
-              <td class="sc-rollup-old">$${r.old_strike}</td>
-              <td class="sc-rollup-new">$${r.new_strike} ↑</td>
-              <td>${r.spot_price ? '$' + r.spot_price.toFixed(2) : '-'}</td>
-              <td class="sc-rollup-time">${fmt(r.detected_at)}</td>
-            </tr>
-          `).join('')}
+          ${rows.map(r => {
+            const isUp = r.new_strike > r.old_strike;
+            const arrow = isUp ? '↑' : '↓';
+            const arrowColor = isUp ? 'var(--green)' : 'var(--red)';
+            return `
+            <tr class="sc-row">
+              <td class="sc-td-price" style="font-weight:700">${r.ticker}</td>
+              <td class="sc-td-price" style="color:var(--text3)">$${r.old_strike}</td>
+              <td class="sc-td-price"><span style="color:${arrowColor}">${arrow}</span> $${r.new_strike}</td>
+              <td class="sc-td-price">${r.spot_price ? '$' + r.spot_price.toFixed(2) : '-'}</td>
+              <td style="padding:9px 12px;font-size:12px;color:var(--text3);white-space:nowrap">${fmt(r.detected_at)}</td>
+            </tr>`;
+          }).join('')}
         </tbody>
       </table>
     `;
