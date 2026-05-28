@@ -411,7 +411,7 @@
   font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
-  color: var(--text3);
+  color: rgba(255,255,255,0.75);
   border-bottom: 1px solid var(--border);
   background: var(--bg3);
   white-space: nowrap;
@@ -424,7 +424,7 @@
 
 .sc-row { cursor: pointer; }
 .sc-row td { padding: 9px 12px; border-bottom: 1px solid rgba(255,255,255,0.04); vertical-align: middle; }
-.sc-row:hover td { background: rgba(255,255,255,0.025); }
+.sc-row:hover td { background: rgba(255,255,255,0.07); }
 
 /* ── 종목 셀 */
 .sc-td-sym { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 8px 12px; }
@@ -798,3 +798,38 @@
   font-weight: 600;
   min-width: 52px;
 }
+
+/* ── 롤업 이력 섹션 */
+.sc-rollup-section {
+  margin-bottom: 16px;
+}
+.sc-rollup-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 14px;
+  border-bottom: 1px solid var(--border);
+}
+.sc-rollup-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+.sc-rollup-toggle {
+  display: flex;
+  gap: 6px;
+}
+.sc-rollup-body {
+  overflow-x: auto;
+}
+.sc-rollup-tbl {
+  min-width: 600px;
+}
+.sc-rollup-loading,
+.sc-rollup-empty,
+.sc-rollup-error {
+  padding: 20px 16px;
+  font-size: 13px;
+  color: var(--text3);
+}
+.sc-rollup-error { color: var(--red); }
