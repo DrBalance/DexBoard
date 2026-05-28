@@ -1397,6 +1397,7 @@ if (session !== lastSession) {
     }).catch(e => console.error('[prevClose] 장 마감 저장 실패:', e.message));
     console.log('[scheduler] 장 마감 → prevClose 저장 완료 (수집은 ET 17:30에 처리)');
   }
+}  // if (session !== lastSession)
 
 // 평일 ET 18:00 — 전체 watchlist 스캔 자동 실행
 if (isWeekday() && h === 18 && new Date().getMinutes() === 0) {
