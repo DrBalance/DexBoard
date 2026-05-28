@@ -750,8 +750,10 @@ function renderGroupsGrid() {
           <div class="group-card-code">${escHtml(g.code)} · ${g.symbol_count}종목</div>
         </div>
         <div style="margin-left:auto;display:flex;gap:6px">
+          ${g.code !== 'WATCHLIST' ? `
           <button class="btn btn-purple btn-sm" onclick="openHoldingsPanel('${g.code}')">ETF 조회</button>
           <button class="btn btn-red btn-sm" onclick="deleteGroup('${g.code}','${escHtml(g.name)}')">삭제</button>
+          ` : ''}
         </div>
       </div>
       <div class="group-card-body">
