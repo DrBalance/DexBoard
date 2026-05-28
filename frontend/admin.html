@@ -758,7 +758,7 @@ function renderGroupsGrid() {
         <div class="group-sym-list" id="gsyms-${g.code}">
           <div class="loading" style="font-size:12px;padding:4px">로딩 중...</div>
         </div>
-        <div class="group-add-row">
+        ${g.code !== 'WATCHLIST' ? `<div class="group-add-row">
           <div class="sym-wrap">
             <input class="form-input sm" id="gi-${g.code}"
               placeholder="티커 입력"
@@ -769,7 +769,7 @@ function renderGroupsGrid() {
           </div>
           <button class="btn btn-blue btn-sm" onclick="addGroupSymbol('${g.code}')">+ 추가</button>
           <span class="form-msg" id="gm-${g.code}" style="font-size:11px"></span>
-        </div>
+        </div>` : ''}
       </div>
     </div>
   `).join('');
@@ -789,9 +789,8 @@ async function loadGroupSymbols(id) {
   }
   el.innerHTML = syms.map(s => `
     <span class="group-sym-tag">
-      <span class="type-badge ${s.type==='etf'?'type-etf':'type-stock'}" style="margin-right:2px">${s.type||'?'}</span>
       ${escHtml(s.symbol)}
-      <span class="rm" onclick="removeGroupSymbol(${id},'${s.symbol}')">✕</span>
+      ${id !== 'WATCHLIST' ? `<span class="rm" onclick="removeGroupSymbol('${id}','${s.symbol}')">✕</span>` : ''}
     </span>
   `).join('');
 }
