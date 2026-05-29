@@ -121,6 +121,7 @@ function renderShell() {
         </div>
       </div>
       <div id="st-expiry-panel" style="padding:8px 14px;border-bottom:1px solid var(--border)"></div>
+      <div id="st-peak-verify" style="padding:4px 14px;font-size:11px;font-family:var(--mono)"></div>
       <div id="st-heatmap-canvas" style="padding:4px 0"></div>
       <div style="padding:8px 14px 4px;font-size:11px;color:var(--text3)">선택만기 합산 · Expected Move</div>
       <div id="st-expiry-em" style="padding:0 14px 14px"></div>
@@ -658,6 +659,34 @@ async function loadAndRenderCharts(symbol, scoreRow) {
     // 각 섹션 렌더링
     renderVerdict({ termData, skewData, emData: [], spot, flipStrike, vannaSum, rows });
     _stRenderHeatmapSection(strikesExpirations, spot, symbol);
+
+    // ── peak_call_dex_strike 검증 메시지 (임시)
+    // D1에 저장된 peak_call_dex_strike vs 히트맵 실시간 계산값 비교
+    if (analyzeRes?.ok) {
+      const analyzeData = await analyzeRes.json().catch(() => null);
+      const verifyEl = document.getElementById('st-peak-verify');
+      if (verifyEl && analyzeData?.strikeRows?.length) {
+        const mismatches = [];
+        for (const row of rows) {
+          const stored = row.peak_call_dex_strike ?? null;
+          if (stored == null) continue;
+          // 히트맵과 동일한 방식으로 해당 만기 최대 콜DEX 스트라이크 계산
+          const expiryStrikes = strikesExpirations[row.expiry_date]?.strikes ?? [];
+          const above = expiryStrikes.filter(s => s.dex > 0);
+          const M = above.length ? above.reduce((a, b) => a.dex > b.dex ? a : b) : null;
+          if (M && M.strike !== stored) {
+            mismatches.push(`${row.expiry_date}: 저장=${stored} / 히트맵=${M.strike}`);
+          }
+        }
+        if (mismatches.length === 0) {
+          verifyEl.textContent = `✅ peak_call_dex_strike 일치 (${rows.filter(r => r.peak_call_dex_strike).length}개 만기)`;
+          verifyEl.style.color = '#22c55e';
+        } else {
+          verifyEl.textContent = `⚠️ 불일치 : ${mismatches.join(' | ')}`;
+          verifyEl.style.color = '#f59e0b';
+        }
+      }
+    }
     renderDexTermStructure(
       rows.map(r => ({ ...r, expiry_type: r.expiry_type ?? classifyExpiry(r.expiry_date, rows.map(x => x.expiry_date)) })),
       {
