@@ -73,27 +73,29 @@ function calcCallWall(rows, spot) {
   // rows[].dex 는 해당 만기 전체 합산값이고,
   // 스트라이크별 콜 DEX는 _strikeRows에 있음
   const peakStrikes = [];
+  const peakByExpiry = {};  // 만기별 최대 콜DEX 스트라이크 맵
 
   for (const row of rows) {
     const strikeRows = row._strikeRows;
     if (!strikeRows?.length) continue;
 
-    // 콜 DEX = delta * callOI * 100 / 1e6 (양수가 클수록 딜러 롱헤지 압력)
     let maxDex  = -Infinity;
     let maxStrike = null;
 
     for (const s of strikeRows) {
-      // dex 양수 = 콜 DEX (structure.js와 동일 기준)
-      // 풋 DEX(음수)는 제외 — 기관 콜 매도 집중 스트라이크만 탐지
-      // 현재가 위 스트라이크만 대상 (히트맵 초록 박스 M 로직과 동일)
-      if (s.dex == null || s.dex <= 0 || s.strike <= spot) continue;
+      // dex 양수 = 콜 DEX — 히트맵 _stExtractKeyLevels()와 동일한 기준
+      // spot 조건 없음: 전체 스트라이크에서 최대 콜 DEX 탐지
+      if (s.dex == null || s.dex <= 0) continue;
       if (s.dex > maxDex) {
         maxDex    = s.dex;
         maxStrike = s.strike;
       }
     }
 
-    if (maxStrike !== null) peakStrikes.push(maxStrike);
+    if (maxStrike !== null) {
+      peakStrikes.push(maxStrike);
+      peakByExpiry[row.expiry_date] = maxStrike;
+    }
   }
 
   if (!peakStrikes.length) return { target_strike: null, concentration_count: 0, distance_pct: null };
@@ -122,6 +124,7 @@ function calcCallWall(rows, spot) {
     target_strike:       targetStrike,
     concentration_count: maxCount,
     distance_pct:        distancePct,
+    peakByExpiry:        peakByExpiry,  // 만기별 최대 콜DEX 스트라이크 맵
   };
 }
 
@@ -292,6 +295,7 @@ export async function analyzeSymbol(symbol) {
       otm_call_iv:         row.otm_call_iv != null ? +row.otm_call_iv.toFixed(4) : null,
       otm_put_iv:          row.otm_put_iv  != null ? +row.otm_put_iv.toFixed(4)  : null,
       strike_data:         strikeData,
+      peak_call_dex_strike: callWall.peakByExpiry?.[r.expiry_date] ?? null,
     };
   });
 

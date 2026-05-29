@@ -224,7 +224,7 @@ export function filterOptionsScreener(options) {
 return options.filter((o) => {
 const parsed = parseOption(o.option);
 if (!parsed) return false;
-if (parsed.dte < 3 || parsed.dte > 60) return false;
+if (parsed.dte < 0 || parsed.dte > 60) return false;
 if (o.open_interest <= 0) return false;
 return true;
 });
