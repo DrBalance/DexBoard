@@ -85,7 +85,7 @@ function calcCallWall(rows, spot) {
     for (const s of strikeRows) {
       // dex 양수 = 콜 DEX — 히트맵 _stExtractKeyLevels()와 동일한 기준
       // spot 조건 없음: 전체 스트라이크에서 최대 콜 DEX 탐지
-      if (s.dex == null || s.dex <= 0) continue;
+      if (s.dex == null || s.dex <= 0 || s.strike <= spot) continue;
       if (s.dex > maxDex) {
         maxDex    = s.dex;
         maxStrike = s.strike;
@@ -168,7 +168,7 @@ function calcSqueeze(rows, targetStrike) {
     let maxDexValue = 0;
 
     for (const s of strikeRows) {
-      if (s.dex == null || s.dex <= 0) continue;
+      if (s.dex == null || s.dex <= 0 || s.strike <= spot) continue;
       if (s.dex > maxDex) {
         maxDex      = s.dex;
         maxStrike   = s.strike;
