@@ -855,6 +855,21 @@ function showCallWallHeatmap(symbol, targetStrike, triggerEl) {
   };
   setTimeout(() => document.addEventListener('click', close), 0);
 
+  // 마우스가 팝오버에서 150px 이상 멀어지면 자동 닫기
+  const onMouseMove = (e) => {
+    if (!_heatmapPopover) { document.removeEventListener('mousemove', onMouseMove); return; }
+    const r = pop.getBoundingClientRect();
+    const cx = (r.left + r.right) / 2;
+    const cy = (r.top + r.bottom) / 2;
+    const dist = Math.hypot(e.clientX - cx, e.clientY - cy);
+    if (dist > 150) {
+      pop.remove();
+      _heatmapPopover = null;
+      document.removeEventListener('mousemove', onMouseMove);
+    }
+  };
+  document.addEventListener('mousemove', onMouseMove);
+
   try {
     // D1에 저장된 peak_call_dex_strike/value 사용 (실시간 API 호출 불필요)
     const symData = allSymbols.find(s => s.symbol === symbol);
@@ -879,7 +894,7 @@ function showCallWallHeatmap(symbol, targetStrike, triggerEl) {
 
       let bg, borderStyle, textColor, display;
 
-      if (isMax && dex > 0.001) {
+      if (isMax) {
         // target_strike가 이 만기의 최대 DEX → 초록
         const intensity = Math.min(dex / maxDex, 1);
         bg          = `rgba(34,197,94,${(intensity * 0.8 + 0.2).toFixed(2)})`;
