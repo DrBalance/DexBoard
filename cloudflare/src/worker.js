@@ -614,8 +614,8 @@ export default {
             net_gex, flip_strike, atm_iv, call_oi, put_oi, pcr_oi,
             dex, vanna, charm,
             call_vol, put_vol, iv_skew, otm_call_iv, otm_put_iv,
-            strike_data, updated_at
-          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            strike_data, peak_call_dex_strike, peak_call_dex_value, updated_at
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         `).bind(
           ticker,
           r.expiry_date ?? null, r.dte ?? null, r.expiry_type ?? null,
@@ -624,7 +624,9 @@ export default {
           r.dex           ?? null, r.vanna       ?? null, r.charm       ?? null,
           r.call_vol      ?? null, r.put_vol     ?? null, r.iv_skew     ?? null,
           r.otm_call_iv   ?? null, r.otm_put_iv  ?? null,
-          r.strike_data   ?? null,
+          r.strike_data        ?? null,
+          r.peak_call_dex_strike ?? null,
+          r.peak_call_dex_value  ?? null,
           updated_at      ?? new Date().toISOString()
         ));
         await env.DB.batch([deleteStmt, ...insertStmts]);
