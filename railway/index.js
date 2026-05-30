@@ -99,7 +99,7 @@ const writeRes = await fetch(`${cfWorkerUrl}/d1/price-indicators`, {
     'Content-Type':  'application/json',
     'x-cron-secret': cronSecret,
   },
-  body: JSON.stringify({ rows, mode: 'ignore' }),
+  body: JSON.stringify({ rows, mode: 'replace' }),
   signal: AbortSignal.timeout(15000),
 });
 if (!writeRes.ok) throw new Error(`D1 write failed: ${writeRes.status}`);
@@ -1186,6 +1186,30 @@ console.error('[snapshotOpen] error:', e.message);
 // ─────────────────────────────────────────────────────────────────
 // 스크리너 백그라운드 수집 (HTTP 핸들러·스케줄러 공용)
 // ─────────────────────────────────────────────────────────────────
+// BB맵 종목 가격 지표 일괄 수집
+async function collectBbMapIndicators() {
+  const res = await fetch(`${CF_WORKER_URL}/api/bb-map-symbols`, {
+    signal: AbortSignal.timeout(10000),
+  });
+  if (!res.ok) throw new Error(`bb-map-symbols: ${res.status}`);
+  const data = await res.json();
+  const symbols = (data.symbols ?? data ?? []).map(s => s.symbol ?? s);
+  if (!symbols.length) { console.warn('[BB맵] 대상 심볼 없음'); return; }
+
+  console.log(`[BB맵] ${symbols.length}개 종목 가격 지표 수집 시작`);
+  let ok = 0, fail = 0;
+  for (const sym of symbols) {
+    try {
+      await collectPriceIndicators(sym, CF_WORKER_URL, CRON_SECRET);
+      ok++;
+    } catch (e) {
+      console.warn(`[BB맵] ${sym} 실패:`, e.message);
+      fail++;
+    }
+  }
+  console.log(`[BB맵] 완료 — 성공: ${ok}, 실패: ${fail}`);
+}
+
 async function runCollect(symbols, date) {
   try {
     // 심볼 배열 정규화 (문자열 또는 객체 모두 허용)
@@ -1235,6 +1259,13 @@ async function runCollect(symbols, date) {
       console.log(`[Screener] prune 완료 — 제거 ${pruneResult.removed.length}개`);
     } catch (e) {
       console.warn('[Screener] prune 실패 (계속 진행):', e.message);
+    }
+
+    // 트리거 3: BB맵 종목 가격 지표 수집
+    try {
+      await collectBbMapIndicators();
+    } catch (e) {
+      console.warn('[Screener] BB맵 수집 실패 (계속 진행):', e.message);
     }
 
   } catch (err) {
@@ -1511,6 +1542,13 @@ if (isWeekday() && h === 9 && new Date().getMinutes() === 50) {
         }
       }
       console.log(`[rollup] 감지 완료 — ${symbols.length}개 중 ${rolled}개 변경`);
+
+      // 롤업 완료 후 BB맵 종목 가격 지표 수집
+      try {
+        await collectBbMapIndicators();
+      } catch (e) {
+        console.warn('[rollup] BB맵 수집 실패 (계속 진행):', e.message);
+      }
     } catch (e) {
       console.error('[rollup] 스케줄러 오류:', e.message);
     }
