@@ -581,6 +581,7 @@ export default {
           d.ticker as symbol, st.spot_price, d.expiry_date, d.dte, d.expiry_type,
           d.net_gex, d.flip_strike, d.atm_iv,
           d.call_oi, d.put_oi, d.pcr_oi, d.dex, d.vanna, d.charm,
+          d.peak_call_dex_strike, d.peak_call_dex_value,
           st.target_strike, st.concentration_count, st.upside,
           st.squeeze_stars, st.squeeze_flags,
           d.updated_at,
