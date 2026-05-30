@@ -430,6 +430,8 @@ function aggregateBySymbol(rows) {
       put_oi:      r.put_oi,
       pcr_oi:      r.pcr_oi,
       dex:         r.dex,
+      peak_call_dex_strike: r.peak_call_dex_strike ?? null,
+      peak_call_dex_value:  r.peak_call_dex_value  ?? null,
     });
 
     sym._gexSum += r.net_gex ?? 0;
@@ -822,7 +824,7 @@ async function loadRollupHistory(activeOnly = true) {
 // ============================================
 let _heatmapPopover = null;
 
-async function showCallWallHeatmap(symbol, targetStrike, triggerEl) {
+function showCallWallHeatmap(symbol, targetStrike, triggerEl) {
   // 기존 팝오버 닫기
   if (_heatmapPopover) {
     _heatmapPopover.remove();
@@ -854,33 +856,9 @@ async function showCallWallHeatmap(symbol, targetStrike, triggerEl) {
   setTimeout(() => document.addEventListener('click', close), 0);
 
   try {
-    const res  = await fetch(`${RAILWAY_URL}/analyze-symbol`, {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
-      body:    JSON.stringify({ symbol }),
-    });
-    const data = await res.json();
-    const strikeRows = data.strikeRows ?? [];
-
-    // 만기별 최대 DEX 스트라이크 계산
-    const maxStrikeByExpiry = {};
-    strikeRows.forEach(s => {
-      if (!s.dex || s.dex <= 0) return;
-      if (!maxStrikeByExpiry[s.expiry_date] || s.dex > maxStrikeByExpiry[s.expiry_date].dex) {
-        maxStrikeByExpiry[s.expiry_date] = { strike: Number(s.strike), dex: s.dex };
-      }
-    });
-
-    // target_strike 컬럼 DEX 값
-    const byExpiry = {};
-    strikeRows.forEach(s => {
-      if (Number(s.strike) === Number(targetStrike)) {
-        byExpiry[s.expiry_date] = s.dex ?? 0;
-      }
-    });
-
-    // 전체 만기 목록 (DTE 오름차순)
-    const expiries = [...new Set(strikeRows.map(s => s.expiry_date))].sort();
+    // D1에 저장된 peak_call_dex_strike/value 사용 (실시간 API 호출 불필요)
+    const symData = allSymbols.find(s => s.symbol === symbol);
+    const expiries = (symData?.expiries ?? []).sort((a, b) => a.expiry_date.localeCompare(b.expiry_date));
 
     if (!expiries.length) {
       pop.querySelector('.sc-heatmap-pop-body').innerHTML =
@@ -888,16 +866,16 @@ async function showCallWallHeatmap(symbol, targetStrike, triggerEl) {
       return;
     }
 
-    // 실제 최대인 경우의 DEX만 강도 계산에 사용
+    // 강도 계산용 최대 DEX
     const activeDex = expiries
-      .filter(exp => maxStrikeByExpiry[exp]?.strike === targetStrike)
-      .map(exp => byExpiry[exp] ?? 0);
+      .filter(e => Number(e.peak_call_dex_strike) === Number(targetStrike))
+      .map(e => e.peak_call_dex_value ?? 0);
     const maxDex = Math.max(...activeDex, 0.0001);
 
     const rows = expiries.map(exp => {
-      const isMax  = Number(maxStrikeByExpiry[exp]?.strike) === Number(targetStrike);
-      const dex    = byExpiry[exp] ?? 0;
-      const label  = exp.slice(5);
+      const isMax  = Number(exp.peak_call_dex_strike) === Number(targetStrike);
+      const dex    = isMax ? (exp.peak_call_dex_value ?? 0) : 0;
+      const label  = exp.expiry_date.slice(5);
 
       let bg, borderStyle, textColor, display;
 
