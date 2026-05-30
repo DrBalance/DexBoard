@@ -1189,6 +1189,7 @@ console.error('[snapshotOpen] error:', e.message);
 // BB맵 종목 가격 지표 일괄 수집
 async function collectBbMapIndicators() {
   const res = await fetch(`${CF_WORKER_URL}/api/bb-map-symbols`, {
+    headers: { 'x-cron-secret': CRON_SECRET },
     signal: AbortSignal.timeout(10000),
   });
   if (!res.ok) throw new Error(`bb-map-symbols: ${res.status}`);

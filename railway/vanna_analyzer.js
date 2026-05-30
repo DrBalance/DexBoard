@@ -887,14 +887,9 @@ const payload0dte = {
 await kvPut('dex:spy:0dte', payload0dte);
 console.log(`[KV] dex:spy:0dte 저장 완료 -- 만기일 ${nextTradingDate}, ${newStrikes.length}건`);
 
-}
-
-const expiryCount  = Object.keys(expirations).length;
-const totalStrikes = Object.values(expirations).reduce((a, b) => a + b.length, 0);
-
 // ── 10. SPY 0DTE 스트라이크 스냅샷 D1 저장 ──────────────────────
 // 매 평일 15분마다 실행 — 나중에 그날을 리뷰하기 위한 아카이브
-if (zeroStrikes.length > 0 && CF_KV_URL) {
+if (CF_KV_URL) {
   try {
     // 전체 집계값 계산
     const totalGex   = zeroStrikes.reduce((a, s) => a + (s.gex   ?? 0), 0);
@@ -960,6 +955,10 @@ if (zeroStrikes.length > 0 && CF_KV_URL) {
     console.warn(`[D1] spy-snapshot 예외:`, snapErr.message);
   }
 }
+} // else (zeroStrikes.length > 0)
+
+const expiryCount  = Object.keys(expirations).length;
+const totalStrikes = Object.values(expirations).reduce((a, b) => a + b.length, 0);
 
 return {
 ok:          true,
