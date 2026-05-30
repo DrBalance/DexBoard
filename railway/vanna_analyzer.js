@@ -418,16 +418,12 @@ const strikeGexList = strikes.map(s => {
 const flipStrike = calcFlipStrike(strikeGexList);
 
 // ── 스트라이크별 IV 곡선 데이터 (Smile 곡선용 + 히트맵/EM용 Greeks 포함)
-// ATM ± 20% 범위 내, IV가 있는 스트라이크만
-const smileRange = spot * 0.20;
 const strikeIVRows = strikes
-  .filter(s => Math.abs(s.strike - spot) <= smileRange)
   .map(s => {
     const cIV = s.callIVCount > 0 ? +(s.callIV / s.callIVCount).toFixed(4) : null;
     const pIV = s.putIVCount  > 0 ? +(s.putIV  / s.putIVCount).toFixed(4)  : null;
     const avgIV = (cIV && pIV) ? +((cIV + pIV) / 2).toFixed(4)
                 : cIV ?? pIV ?? null;
-
     const delta = s.callDeltaCount > 0
       ? +(s.callDelta / s.callDeltaCount).toFixed(4) : null;
 
