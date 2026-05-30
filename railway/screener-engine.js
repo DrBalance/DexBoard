@@ -67,7 +67,7 @@ async function fetchCBOEChain(symbol) {
 //   4. concentration_count >= 4 이면 Call Wall로 판정
 // ============================================
 function calcCallWall(rows, spot) {
-  if (!rows?.length || !spot) return { target_strike: null, concentration_count: 0, distance_pct: null };
+  if (!rows?.length || !spot) return { target_strike: null, concentration_count: 0, distance_pct: null, peakByExpiry: {} };
 
   // 만기별 최대 콜 DEX 스트라이크 추출
   // rows[].dex 는 해당 만기 전체 합산값이고,
