@@ -224,7 +224,7 @@ export function filterOptionsScreener(options) {
 return options.filter((o) => {
 const parsed = parseOption(o.option);
 if (!parsed) return false;
-if (parsed.dte < 0 || parsed.dte > 60) return false;
+if (parsed.dte < 3 || parsed.dte > 60) return false;
 if (o.open_interest <= 0) return false;
 return true;
 });
@@ -427,7 +427,7 @@ const strikeIVRows = strikes
     const pIV = s.putIVCount  > 0 ? +(s.putIV  / s.putIVCount).toFixed(4)  : null;
     const avgIV = (cIV && pIV) ? +((cIV + pIV) / 2).toFixed(4)
                 : cIV ?? pIV ?? null;
-    if (!avgIV) return null;
+
     const delta = s.callDeltaCount > 0
       ? +(s.callDelta / s.callDeltaCount).toFixed(4) : null;
 
