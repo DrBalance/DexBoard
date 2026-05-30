@@ -94,7 +94,7 @@ function calcCallWall(rows, spot) {
 
     if (maxStrike !== null) {
       peakStrikes.push(maxStrike);
-      peakByExpiry[row.expiry_date] = maxStrike;
+      peakByExpiry[row.expiry_date] = { strike: maxStrike, dex: maxDex };
     }
   }
 
@@ -295,7 +295,8 @@ export async function analyzeSymbol(symbol) {
       otm_call_iv:         row.otm_call_iv != null ? +row.otm_call_iv.toFixed(4) : null,
       otm_put_iv:          row.otm_put_iv  != null ? +row.otm_put_iv.toFixed(4)  : null,
       strike_data:         strikeData,
-      peak_call_dex_strike: callWall.peakByExpiry?.[r.expiry_date] ?? null,
+      peak_call_dex_strike: callWall.peakByExpiry?.[r.expiry_date]?.strike ?? null,
+      peak_call_dex_value:  callWall.peakByExpiry?.[r.expiry_date]?.dex    ?? null,
     };
   });
 
