@@ -444,6 +444,39 @@ export default {
       }
     }
 
+    // ── POST /api/screener/market-snapshot ───────────────────────
+    // 커버드콜 활성 종목 수를 rollup_history(ticker='MARKET')에 기록
+    if (request.method === "POST" && path === "/api/screener/market-snapshot") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const { count } = await request.json();
+        if (count == null) return json({ error: "count 필요" }, 400, corsHeaders);
+
+        // 직전 MARKET row 조회 (old_strike = 전날 수치)
+        const prev = await env.DB.prepare(
+          "SELECT new_strike FROM rollup_history WHERE ticker = 'MARKET' ORDER BY detected_at DESC LIMIT 1"
+        ).first();
+
+        const oldCount  = prev?.new_strike ?? null;
+        const direction = oldCount == null ? 'init'
+          : count > oldCount ? 'rollup'
+          : count < oldCount ? 'rolldown'
+          : 'flat';
+
+        await env.DB.prepare(`
+          INSERT INTO rollup_history (ticker, old_strike, new_strike, spot_price, direction, detected_at)
+          VALUES ('MARKET', ?, ?, ?, ?, ?)
+        `).bind(oldCount, count, count, direction, new Date().toISOString()).run();
+
+        return json({ ok: true, old: oldCount, new: count, direction }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
     // ── GET /api/screener/rollup-history ─────────────────────────
     // 롤업 이력 조회 (active_only=true 시 현재 screened_tickers 종목만)
     if (request.method === "GET" && path === "/api/screener/rollup-history") {
@@ -455,6 +488,7 @@ export default {
             SELECT rh.id, rh.ticker, rh.old_strike, rh.new_strike, rh.spot_price, rh.detected_at
             FROM rollup_history rh
             INNER JOIN screened_tickers st ON st.ticker = rh.ticker
+            WHERE rh.ticker != 'MARKET'
             ORDER BY rh.detected_at DESC
             LIMIT 200
           `;
@@ -462,12 +496,91 @@ export default {
           query = `
             SELECT id, ticker, old_strike, new_strike, spot_price, detected_at
             FROM rollup_history
+            WHERE ticker != 'MARKET'
             ORDER BY detected_at DESC
             LIMIT 200
           `;
         }
         const rows = await env.DB.prepare(query).all();
         return json({ history: rows.results ?? [] }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
+    // ── GET /api/events ───────────────────────────────────────────
+    // 향후 N일간 경제/기업 이벤트 (Finnhub, KV 1시간 캐시)
+    if (request.method === "GET" && path === "/api/events") {
+      const days    = Math.min(parseInt(url.searchParams.get("days") ?? "14"), 30);
+      const symbols = (url.searchParams.get("symbols") ?? "").split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
+      const cacheKey = `events:${days}:${symbols.sort().join(",")}`;
+
+      // KV 캐시 확인 (1시간)
+      try {
+        const cached = await env.DEX_KV.get(cacheKey);
+        if (cached) {
+          return new Response(cached, { headers: { ...corsHeaders, "Content-Type": "application/json", "X-Cache": "HIT" } });
+        }
+      } catch {}
+
+      const FINNHUB_KEY = env.FINNHUB_KEY ?? "";
+      if (!FINNHUB_KEY) return json({ error: "FINNHUB_KEY not set" }, 500, corsHeaders);
+
+      const today   = new Date();
+      const toDate  = new Date(today);
+      toDate.setDate(today.getDate() + days);
+      const from = today.toISOString().slice(0, 10);
+      const to   = toDate.toISOString().slice(0, 10);
+
+      const BASE = "https://finnhub.io/api/v1";
+      const hdrs = { "X-Finnhub-Token": FINNHUB_KEY };
+
+      try {
+        // 병렬 호출: 경제 캘린더 + 실적 캘린더
+        const [econRes, earnRes] = await Promise.all([
+          fetch(`${BASE}/calendar/economic?from=${from}&to=${to}`, { headers: hdrs, signal: AbortSignal.timeout(8000) }),
+          fetch(`${BASE}/calendar/earnings?from=${from}&to=${to}`, { headers: hdrs, signal: AbortSignal.timeout(8000) }),
+        ]);
+
+        const econData = econRes.ok ? await econRes.json() : {};
+        const earnData = earnRes.ok ? await earnRes.json() : {};
+
+        // 경제 이벤트 — importance High만
+        const IMPORTANT = ['CPI', 'PPI', 'GDP', 'NFP', 'FOMC', 'PCE', 'Fed', 'Interest Rate', 'Nonfarm', 'Unemployment'];
+        const econEvents = (econData.economicCalendar ?? [])
+          .filter(e => e.importance === 3 || IMPORTANT.some(k => (e.event ?? '').includes(k)))
+          .map(e => ({
+            type:     'economic',
+            date:     e.time ?? e.date,
+            title:    e.event,
+            country:  e.country,
+            actual:   e.actual   ?? null,
+            forecast: e.forecast ?? null,
+            previous: e.prev     ?? null,
+          }));
+
+        // 기업 이벤트 — 스크리너 종목만 필터
+        const earnEvents = (earnData.earningsCalendar ?? [])
+          .filter(e => !symbols.length || symbols.includes((e.symbol ?? '').toUpperCase()))
+          .map(e => ({
+            type:   'earnings',
+            date:   e.date,
+            symbol: e.symbol,
+            eps_estimate: e.epsEstimate ?? null,
+            hour:   e.hour ?? null,  // 'bmo'=장전, 'amc'=장후
+          }));
+
+        // 날짜순 병합
+        const allEvents = [...econEvents, ...earnEvents]
+          .sort((a, b) => (a.date ?? '').localeCompare(b.date ?? ''));
+
+        const payload = JSON.stringify({ ok: true, from, to, events: allEvents });
+
+        // KV 캐시 저장 (1시간 = 3600초)
+        try { await env.DEX_KV.put(cacheKey, payload, { expirationTtl: 3600 }); } catch {}
+
+        return new Response(payload, { headers: { ...corsHeaders, "Content-Type": "application/json" } });
+
       } catch (err) {
         return json({ ok: false, error: err.message }, 500, corsHeaders);
       }
