@@ -92,77 +92,7 @@ function renderShell() {
   font-weight: 700;
   letter-spacing: 0.05em;
 }
-.sc-events-section {
-  margin: 0 0 16px 0;
-  background: var(--card-bg, #1e293b);
-  border: 1px solid var(--border, #334155);
-  border-radius: 10px;
-  overflow: hidden;
-}
-.sc-events-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 12px 16px;
-  border-bottom: 1px solid var(--border, #334155);
-}
-.sc-events-title {
-  font-size: 13px;
-  font-weight: 700;
-  color: var(--text1, #f1f5f9);
-}
-.sc-events-sub {
-  font-size: 11px;
-  color: var(--text3, #64748b);
-}
-.sc-events-body {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  padding: 12px 16px;
-}
-.sc-events-loading {
-  font-size: 12px;
-  color: var(--text3, #64748b);
-}
-.sc-event-card {
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 8px 12px;
-  border-radius: 8px;
-  border: 1px solid var(--border, #334155);
-  min-width: 140px;
-  max-width: 200px;
-}
-.sc-event-card.economic {
-  border-left: 3px solid #f59e0b;
-  background: rgba(245,158,11,0.06);
-}
-.sc-event-card.earnings {
-  border-left: 3px solid #3b82f6;
-  background: rgba(59,130,246,0.06);
-}
-.sc-event-date {
-  font-size: 10px;
-  color: var(--text3, #64748b);
-  font-weight: 600;
-}
-.sc-event-title {
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text1, #f1f5f9);
-  line-height: 1.3;
-}
-.sc-event-meta {
-  font-size: 10px;
-  color: var(--text3, #64748b);
-}
-.sc-event-empty {
-  font-size: 12px;
-  color: var(--text3, #64748b);
-  padding: 4px 0;
-}
+/* 이벤트 패널 스타일은 screener-structure.css 참조 */
 </style>
 <div class="screener-container">
 
@@ -228,7 +158,7 @@ function renderShell() {
       <span class="sc-events-title">📅 향후 14일 이벤트</span>
       <span class="sc-events-sub" id="sc-events-range"></span>
     </div>
-    <div id="sc-events-body" class="sc-events-body">
+    <div id="sc-events-body">
       <div class="sc-events-loading">이벤트 데이터 불러오는 중...</div>
     </div>
   </div>
@@ -928,45 +858,66 @@ async function loadEvents(symbols = []) {
     const data = await res.json();
 
     if (!data.ok || !data.events?.length) {
-      body.innerHTML = '<div class="sc-event-empty">이벤트 없음</div>';
+      body.innerHTML = '<div class="sc-events-empty">이벤트 없음</div>';
       return;
     }
 
     if (range) range.textContent = `${data.from} ~ ${data.to}`;
 
+    const DAY = ['일','월','화','수','목','금','토'];
     const fmtDate = (dt) => {
       if (!dt) return '-';
       const d = new Date(dt);
-      return `${d.getMonth() + 1}/${d.getDate()}(${['일','월','화','수','목','금','토'][d.getDay()]})`;
+      return `${d.getMonth()+1}/${d.getDate()}(${DAY[d.getDay()]})`;
     };
 
-    const cards = data.events.map(e => {
+    const rows = data.events.map(e => {
       if (e.type === 'economic') {
         const meta = [
           e.forecast != null ? `예상 ${e.forecast}` : null,
           e.previous != null ? `이전 ${e.previous}` : null,
         ].filter(Boolean).join(' · ');
         return `
-          <div class="sc-event-card economic">
-            <div class="sc-event-date">${fmtDate(e.date)} · 경제</div>
-            <div class="sc-event-title">${e.title ?? '-'}</div>
-            ${meta ? `<div class="sc-event-meta">${meta}</div>` : ''}
-          </div>`;
+          <tr>
+            <td class="sc-ev-date">${fmtDate(e.date)}</td>
+            <td><span class="sc-ev-type-dot economic"></span><span class="sc-ev-title">${e.title ?? '-'}</span></td>
+            <td class="sc-ev-symbol">-</td>
+            <td class="sc-ev-meta">${meta || '-'}</td>
+            <td>-</td>
+          </tr>`;
       } else {
-        const hour = e.hour === 'bmo' ? '장전' : e.hour === 'amc' ? '장후' : '';
+        const hourLabel = e.hour === 'bmo' ? '장전' : e.hour === 'amc' ? '장후' : '-';
+        const hourCls   = e.hour === 'bmo' ? 'bmo' : e.hour === 'amc' ? 'amc' : '';
+        const eps       = e.eps_estimate != null ? `EPS 예상 $${e.eps_estimate}` : '-';
         return `
-          <div class="sc-event-card earnings">
-            <div class="sc-event-date">${fmtDate(e.date)} · 실적</div>
-            <div class="sc-event-title">${e.symbol}</div>
-            <div class="sc-event-meta">${[hour, e.eps_estimate != null ? `EPS 예상 $${e.eps_estimate}` : null].filter(Boolean).join(' · ') || '-'}</div>
-          </div>`;
+          <tr>
+            <td class="sc-ev-date">${fmtDate(e.date)}</td>
+            <td><span class="sc-ev-type-dot earnings"></span><span class="sc-ev-title">실적발표</span></td>
+            <td class="sc-ev-symbol">${e.symbol}</td>
+            <td class="sc-ev-meta">${eps}</td>
+            <td><span class="sc-ev-hour ${hourCls}">${hourLabel}</span></td>
+          </tr>`;
       }
     }).join('');
 
-    body.innerHTML = cards;
+    body.innerHTML = `
+      <div class="sc-events-scroll">
+        <table class="sc-events-tbl">
+          <thead>
+            <tr>
+              <th>날짜</th>
+              <th>이벤트</th>
+              <th>종목</th>
+              <th>세부</th>
+              <th>시간</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`;
 
   } catch (e) {
-    body.innerHTML = `<div class="sc-event-empty">로드 실패: ${e.message}</div>`;
+    body.innerHTML = `<div class="sc-events-empty">로드 실패: ${e.message}</div>`;
   }
 }
 
