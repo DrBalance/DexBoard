@@ -1269,6 +1269,20 @@ async function runCollect(symbols, date) {
       console.warn('[Screener] BB맵 수집 실패 (계속 진행):', e.message);
     }
 
+    // 트리거 4: 커버드콜 활성 종목 수 스냅샷 저장
+    try {
+      const countRes = await fetch(`${CF_WORKER_URL}/api/screener/market-snapshot`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
+        body:    JSON.stringify({ count: result.count }),
+        signal:  AbortSignal.timeout(8000),
+      });
+      const countData = await countRes.json();
+      console.log(`[Screener] market-snapshot 저장 완료 — ${countData.old} → ${countData.new} (${countData.direction})`);
+    } catch (e) {
+      console.warn('[Screener] market-snapshot 저장 실패 (계속 진행):', e.message);
+    }
+
   } catch (err) {
     console.error("[Screener] 수집 중 치명적 오류:", err.message);
     collectState = {
