@@ -45,6 +45,125 @@ function renderShell() {
   el.dataset.ready = '1';
 
   el.innerHTML = `
+<style>
+.sc-sym-wrap {
+  position: relative;
+  display: inline-block;
+}
+.sc-sym-wrap:hover .sc-sym-tooltip {
+  display: block;
+}
+.sc-sym-tooltip {
+  display: none;
+  position: absolute;
+  left: 100%;
+  top: 50%;
+  transform: translateY(-50%);
+  margin-left: 8px;
+  z-index: 100;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 8px;
+  padding: 10px 12px;
+  min-width: 180px;
+  box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+  pointer-events: none;
+}
+.sc-tip-company {
+  font-size: 12px;
+  font-weight: 700;
+  color: #f1f5f9;
+  margin-bottom: 8px;
+  white-space: nowrap;
+}
+.sc-tip-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: 11px;
+  color: #94a3b8;
+  margin-top: 4px;
+}
+.sc-tip-label {
+  color: #64748b;
+}
+.sc-sector-abbr {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+.sc-events-section {
+  margin: 0 0 16px 0;
+  background: var(--card-bg, #1e293b);
+  border: 1px solid var(--border, #334155);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.sc-events-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border, #334155);
+}
+.sc-events-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text1, #f1f5f9);
+}
+.sc-events-sub {
+  font-size: 11px;
+  color: var(--text3, #64748b);
+}
+.sc-events-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 12px 16px;
+}
+.sc-events-loading {
+  font-size: 12px;
+  color: var(--text3, #64748b);
+}
+.sc-event-card {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--border, #334155);
+  min-width: 140px;
+  max-width: 200px;
+}
+.sc-event-card.economic {
+  border-left: 3px solid #f59e0b;
+  background: rgba(245,158,11,0.06);
+}
+.sc-event-card.earnings {
+  border-left: 3px solid #3b82f6;
+  background: rgba(59,130,246,0.06);
+}
+.sc-event-date {
+  font-size: 10px;
+  color: var(--text3, #64748b);
+  font-weight: 600;
+}
+.sc-event-title {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text1, #f1f5f9);
+  line-height: 1.3;
+}
+.sc-event-meta {
+  font-size: 10px;
+  color: var(--text3, #64748b);
+}
+.sc-event-empty {
+  font-size: 12px;
+  color: var(--text3, #64748b);
+  padding: 4px 0;
+}
+</style>
 <div class="screener-container">
 
   <!-- ── 수집 패널 ── -->
@@ -102,6 +221,17 @@ function renderShell() {
 
   <!-- ── 요약 카드 ── -->
   <div class="screener-summary" id="sc-summary"></div>
+
+  <!-- ── 이벤트 패널 ── -->
+  <div id="sc-events-section" class="sc-events-section" style="display:none">
+    <div class="sc-events-header">
+      <span class="sc-events-title">📅 향후 14일 이벤트</span>
+      <span class="sc-events-sub" id="sc-events-range"></span>
+    </div>
+    <div id="sc-events-body" class="sc-events-body">
+      <div class="sc-events-loading">이벤트 데이터 불러오는 중...</div>
+    </div>
+  </div>
 
   <!-- ── 롤업 이력 ── -->
   <div id="sc-rollup-section" class="sc-rollup-section" style="display:none">
@@ -370,6 +500,13 @@ async function loadScreener() {
     showContent();
     renderTable(getActiveFilter());
 
+    // 이벤트 패널
+    const eventsSection = document.getElementById('sc-events-section');
+    if (eventsSection) {
+      eventsSection.style.display = 'block';
+      loadEvents(allSymbols.map(s => s.symbol));
+    }
+
     // 롤업 이력 섹션 표시
     const rollupSection = document.getElementById('sc-rollup-section');
     if (rollupSection) {
@@ -473,11 +610,14 @@ function renderSummary(data) {
   const el = document.getElementById('sc-summary');
   if (!el) return;
 
-  const callWalls = data.filter(r => (r.concentration_count ?? 0) >= 4).length;
-  const above     = data.filter(r => (r.dist_pct ?? 0) > 0).length;
-  const below     = data.filter(r => (r.dist_pct ?? 0) < 0).length;
-  const near      = data.filter(r => Math.abs(r.dist_pct ?? 999) <= 3).length;
-  const posGex    = data.filter(r => (r.total_gex ?? 0) > 0).length;
+  const callWalls   = data.filter(r => (r.concentration_count ?? 0) >= 4).length;
+  const above       = data.filter(r => (r.dist_pct ?? 0) > 0).length;
+  const below       = data.filter(r => (r.dist_pct ?? 0) < 0).length;
+  const near        = data.filter(r => Math.abs(r.dist_pct ?? 999) <= 3).length;
+  const coveredCall = data.length; // 현재 스캔 결과 전체 = 커버드콜 활성 종목
+
+  // 커버드콜 활성 종목 수 색상 임계값
+  const ccColor = coveredCall >= 30 ? '#22c55e' : coveredCall >= 15 ? '#eab308' : '#ef4444';
 
   el.innerHTML = `
     <div class="sc-sum-card">
@@ -497,12 +637,8 @@ function renderSummary(data) {
       <div class="sc-sum-label">플립존 근접 (±3%)</div>
     </div>
     <div class="sc-sum-card">
-      <div class="sc-sum-num green">${posGex}</div>
-      <div class="sc-sum-label">Net GEX 양수</div>
-    </div>
-    <div class="sc-sum-card">
-      <div class="sc-sum-num muted">${data.length}</div>
-      <div class="sc-sum-label">모니터링 종목</div>
+      <div class="sc-sum-num" style="color:${ccColor}">${coveredCall}</div>
+      <div class="sc-sum-label">커버드콜 활성 종목</div>
     </div>
   `;
 }
@@ -549,23 +685,18 @@ function renderTable(filter = 'all') {
     <thead>
       <tr>
         <th class="sc-th sortable" data-col="symbol">종목</th>
-        <th class="sc-th sortable" data-col="company">회사명</th>
         <th class="sc-th sortable" data-col="sector">섹터</th>
-        <th class="sc-th sortable" data-col="market_cap">시가총액</th>
-        <th class="sc-th sortable" data-col="short_float">Short%</th>
-        <th class="sc-th sortable" data-col="beta">Beta</th>
         <th class="sc-th sortable" data-col="spot_price">현재가</th>
         <th class="sc-th sortable" data-col="target_strike">목표가</th>
         <th class="sc-th sortable" data-col="upside">상승여력</th>
         <th class="sc-th sortable" data-col="concentration_count">집중도</th>
-        <th class="sc-th sortable" data-col="flip_strike">플립존</th>
-        <th class="sc-th sortable" data-col="dist_pct">플립존 거리</th>
-        <th class="sc-th sortable" data-col="total_gex">Net GEX</th>
-        <th class="sc-th sortable" data-col="atm_iv">ATM IV</th>
         <th class="sc-th sortable" data-col="squeeze_stars">스퀴즈</th>
-        <th class="sc-th">만기 수</th>
         <th class="sc-th">히트맵</th>
         <th class="sc-th">분석</th>
+        <th class="sc-th sortable" data-col="dist_pct">플립존 거리</th>
+        <th class="sc-th sortable" data-col="flip_strike">플립존</th>
+        <th class="sc-th sortable" data-col="total_gex">Net GEX</th>
+        <th class="sc-th sortable" data-col="atm_iv">ATM IV</th>
       </tr>
     </thead>`;
 
@@ -633,12 +764,42 @@ function renderTable(filter = 'all') {
 
 // ── 시가총액 B/M 변환
 function fmtMarketCap(val) {
-  if (val == null) return '<span class="muted">-</span>';
+  if (val == null) return '-';
   const abs = Math.abs(val);
   if (abs >= 1e9) return `$${(val / 1e9).toFixed(1)}B`;
   if (abs >= 1e6) return `$${(val / 1e6).toFixed(0)}M`;
   return `$${val.toLocaleString()}`;
 }
+
+// ── 섹터 약어 매핑
+const SECTOR_ABBR = {
+  'Technology':             'TECH',
+  'Financial':              'FIN',
+  'Financial Services':     'FIN',
+  'Healthcare':             'HLTH',
+  'Consumer Cyclical':      'CYCL',
+  'Consumer Defensive':     'DEF',
+  'Energy':                 'ENRG',
+  'Basic Materials':        'MAT',
+  'Industrials':            'INDU',
+  'Real Estate':            'REIT',
+  'Utilities':              'UTIL',
+  'Communication Services': 'COMM',
+};
+
+const SECTOR_COLOR = {
+  'TECH': '#3b82f6',
+  'FIN':  '#8b5cf6',
+  'HLTH': '#22c55e',
+  'CYCL': '#f97316',
+  'DEF':  '#eab308',
+  'ENRG': '#92400e',
+  'MAT':  '#94a3b8',
+  'INDU': '#60a5fa',
+  'REIT': '#ef4444',
+  'UTIL': '#67e8f9',
+  'COMM': '#6366f1',
+};
 
 // ── 행 렌더
 function buildRow(r) {
@@ -648,30 +809,30 @@ function buildRow(r) {
   const totalGex  = r.total_gex;
   const callCount = r.concentration_count ?? 0;
   const targetSt  = r.target_strike;
-  // 상승여력: screened_tickers.upside 직접 사용
   const upside    = r.upside ?? null;
 
-  // ── 기본 필드
-  const companyStr = r.company
-    ? `<span class="sc-company" title="${r.company}">${r.company}</span>`
-    : '<span class="muted">-</span>';
-  const sectorStr  = r.sector
-    ? `<span class="sc-sector-tag">${r.sector}</span>`
-    : '<span class="muted">-</span>';
-  const mcapStr    = fmtMarketCap(r.market_cap);
+  // ── 섹터 약어 + 툴팁
+  const sectorAbbr  = SECTOR_ABBR[r.sector] ?? r.sector?.slice(0, 4).toUpperCase() ?? '-';
+  const sectorColor = SECTOR_COLOR[sectorAbbr] ?? '#94a3b8';
+  const mcap        = fmtMarketCap(r.market_cap);
+  const shortF      = r.short_float != null ? `${r.short_float.toFixed(1)}%` : '-';
+  const betaV       = r.beta != null ? r.beta.toFixed(2) : '-';
 
-  // SHORT% — 15% 미만: 회색, 15% 이상: 빨간색
-  const shortFloatStr = r.short_float != null
-    ? (() => {
-        const sf = r.short_float;
-        const cls = sf >= 15 ? 'red' : 'muted';
-        return `<span class="${cls}">${sf.toFixed(1)}%</span>`;
-      })()
-    : '<span class="muted">-</span>';
+  // 종목 심볼 + 툴팁 (회사명, 섹터전체, 시가총액, Short%, Beta)
+  const symStr = `
+    <span class="sc-sym-wrap">
+      <span class="sc-sym">${r.symbol}</span>
+      <div class="sc-sym-tooltip">
+        <div class="sc-tip-company">${r.company ?? r.symbol}</div>
+        <div class="sc-tip-row"><span class="sc-tip-label">섹터</span><span>${r.sector ?? '-'}</span></div>
+        <div class="sc-tip-row"><span class="sc-tip-label">시총</span><span>${mcap}</span></div>
+        <div class="sc-tip-row"><span class="sc-tip-label">Short</span><span class="${(r.short_float ?? 0) >= 15 ? 'red' : ''}">${shortF}</span></div>
+        <div class="sc-tip-row"><span class="sc-tip-label">Beta</span><span class="${(r.beta ?? 0) >= 1.5 ? 'red' : ''}">${betaV}</span></div>
+      </div>
+    </span>`;
 
-  const betaStr = r.beta != null
-    ? `<span class="${r.beta >= 1.5 ? 'red' : r.beta <= 0.5 ? 'green' : ''}">${r.beta.toFixed(2)}</span>`
-    : '<span class="muted">-</span>';
+  // 섹터 약어 셀
+  const sectorStr = `<span class="sc-sector-abbr" style="color:${sectorColor}">${sectorAbbr}</span>`;
 
   // 플립존 거리
   const isNear    = distPct != null && Math.abs(distPct) <= 3;
@@ -698,30 +859,26 @@ function buildRow(r) {
     ? `$${targetSt.toFixed(0)}`
     : '<span class="muted">-</span>';
 
-  // 상승여력 — 컬러바 + % (최대 +30% 기준)
+  // 상승여력 — 컬러바 + %
   const upsideStr = upside != null
     ? (() => {
-        const pct     = Math.max(0, Math.min(upside, 30));
-        const barPct  = Math.round((pct / 30) * 100);
-        const color   = upside >= 15 ? '#22c55e' : upside >= 5 ? '#4ade80' : '#86efac';
+        const pct    = Math.max(0, Math.min(upside, 30));
+        const barPct = Math.round((pct / 30) * 100);
+        const color  = upside >= 15 ? '#22c55e' : upside >= 5 ? '#4ade80' : '#86efac';
         return `
           <span style="display:inline-flex;align-items:center;gap:5px;white-space:nowrap">
             <span style="
               display:inline-block;width:48px;height:6px;
               background:rgba(255,255,255,0.08);border-radius:3px;overflow:hidden;
-              vertical-align:middle;
-            ">
-              <span style="
-                display:block;height:100%;width:${barPct}%;
-                background:${color};border-radius:3px;
-              "></span>
+              vertical-align:middle;">
+              <span style="display:block;height:100%;width:${barPct}%;background:${color};border-radius:3px;"></span>
             </span>
             <span style="color:${color}">${upside > 0 ? '+' : ''}${upside.toFixed(1)}%</span>
           </span>`;
       })()
     : '<span class="muted">-</span>';
 
-  // 집중도 — 4: 회색, 5: 흰색, 6: 노란색, 7+: 노란색+⚡
+  // 집중도
   const concentrationStr = (() => {
     if (callCount <= 0) return '<span class="muted">-</span>';
     if (callCount <= 4) return `<span class="muted">${callCount}</span>`;
@@ -734,32 +891,83 @@ function buildRow(r) {
 
   return `
     <tr class="sc-row${callCount >= 4 ? ' sc-row-callwall' : ''}" data-sym="${r.symbol}">
-      <td class="sc-td-sym">
-        <span class="sc-sym">${r.symbol}</span>
-      </td>
-      <td class="sc-td-company">${companyStr}</td>
+      <td class="sc-td-sym">${symStr}</td>
       <td class="sc-td-sector">${sectorStr}</td>
-      <td class="sc-td-mcap">${mcapStr}</td>
-      <td class="sc-td-short">${shortFloatStr}</td>
-      <td class="sc-td-beta">${betaStr}</td>
       <td class="sc-td-price">${spot ? '$' + spot.toFixed(2) : '-'}</td>
       <td class="sc-td-price">${targetStr}</td>
       <td class="sc-td-dist">${upsideStr}</td>
       <td class="sc-td-cw">${concentrationStr}</td>
-      <td class="sc-td-price">${flipStr}</td>
-      <td class="sc-td-dist">${distStr}</td>
-      <td class="sc-td-gex">${gexStr}</td>
-      <td class="sc-td-iv">${ivStr}</td>
-      <td class="sc-td-squeeze">${'★'.repeat(r.squeeze_stars ?? 0) || '-'}</td>
-      <td class="sc-td-num">${r.expiries?.length ?? '-'}</td>
+      <td class="sc-td-squeeze">${'★'.repeat(r.squeeze_stars ?? 0) || '<span class="muted">-</span>'}</td>
       <td>
         <button class="sc-heatmap-btn" data-sym="${r.symbol}" data-strike="${r.target_strike ?? ''}" title="콜월 히트맵">▦</button>
       </td>
       <td>
         <button class="sc-drill-btn" data-sym="${r.symbol}" title="Structure 탭에서 분석">▶</button>
       </td>
+      <td class="sc-td-dist">${distStr}</td>
+      <td class="sc-td-price">${flipStr}</td>
+      <td class="sc-td-gex">${gexStr}</td>
+      <td class="sc-td-iv">${ivStr}</td>
     </tr>
   `;
+}
+
+// ============================================
+// 이벤트 패널
+// ============================================
+async function loadEvents(symbols = []) {
+  const body  = document.getElementById('sc-events-body');
+  const range = document.getElementById('sc-events-range');
+  if (!body) return;
+
+  body.innerHTML = '<div class="sc-events-loading">불러오는 중...</div>';
+
+  try {
+    const symParam = symbols.join(',');
+    const res  = await fetch(`${CF_API}/api/events?days=14&symbols=${encodeURIComponent(symParam)}`);
+    const data = await res.json();
+
+    if (!data.ok || !data.events?.length) {
+      body.innerHTML = '<div class="sc-event-empty">이벤트 없음</div>';
+      return;
+    }
+
+    if (range) range.textContent = `${data.from} ~ ${data.to}`;
+
+    const fmtDate = (dt) => {
+      if (!dt) return '-';
+      const d = new Date(dt);
+      return `${d.getMonth() + 1}/${d.getDate()}(${['일','월','화','수','목','금','토'][d.getDay()]})`;
+    };
+
+    const cards = data.events.map(e => {
+      if (e.type === 'economic') {
+        const meta = [
+          e.forecast != null ? `예상 ${e.forecast}` : null,
+          e.previous != null ? `이전 ${e.previous}` : null,
+        ].filter(Boolean).join(' · ');
+        return `
+          <div class="sc-event-card economic">
+            <div class="sc-event-date">${fmtDate(e.date)} · 경제</div>
+            <div class="sc-event-title">${e.title ?? '-'}</div>
+            ${meta ? `<div class="sc-event-meta">${meta}</div>` : ''}
+          </div>`;
+      } else {
+        const hour = e.hour === 'bmo' ? '장전' : e.hour === 'amc' ? '장후' : '';
+        return `
+          <div class="sc-event-card earnings">
+            <div class="sc-event-date">${fmtDate(e.date)} · 실적</div>
+            <div class="sc-event-title">${e.symbol}</div>
+            <div class="sc-event-meta">${[hour, e.eps_estimate != null ? `EPS 예상 $${e.eps_estimate}` : null].filter(Boolean).join(' · ') || '-'}</div>
+          </div>`;
+      }
+    }).join('');
+
+    body.innerHTML = cards;
+
+  } catch (e) {
+    body.innerHTML = `<div class="sc-event-empty">로드 실패: ${e.message}</div>`;
+  }
 }
 
 // ============================================
