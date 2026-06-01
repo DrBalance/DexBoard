@@ -116,6 +116,21 @@
 }
 .struct-refresh-btn:hover { color: var(--blue); border-color: var(--blue); }
 
+.struct-collect-btn {
+  padding: 7px 14px;
+  border: 1px solid var(--blue);
+  background: var(--blue);
+  color: #fff;
+  border-radius: 7px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: opacity 0.15s;
+  flex-shrink: 0;
+}
+.struct-collect-btn:hover    { opacity: 0.85; }
+.struct-collect-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
 /* ── 상태 박스 */
 .struct-state-box {
   display: flex;
