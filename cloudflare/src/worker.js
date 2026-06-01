@@ -717,7 +717,8 @@ export default {
 
     // ── GET /api/screener/latest ────────────────────────────────
     if (request.method === "GET" && path === "/api/screener/latest") {
-      const rows = await env.DB.prepare(`
+      const symbolFilter = url.searchParams.get("symbol")?.toUpperCase() ?? null;
+      const baseQuery = `
         SELECT
           d.ticker as symbol, st.spot_price, d.expiry_date, d.dte, d.expiry_type,
           d.net_gex, d.flip_strike, d.atm_iv,
@@ -733,9 +734,13 @@ export default {
         LEFT JOIN screened_tickers st ON st.ticker = d.ticker
         LEFT JOIN groups g ON g.code = st.group_code
         LEFT JOIN watchlist w ON w.ticker = d.ticker
+        ${symbolFilter ? 'WHERE d.ticker = ?' : ''}
         GROUP BY d.ticker, d.expiry_date
         ORDER BY d.ticker ASC, d.dte ASC
-      `).all();
+      `;
+      const rows = symbolFilter
+        ? await env.DB.prepare(baseQuery).bind(symbolFilter).all()
+        : await env.DB.prepare(baseQuery).all();
       return json(rows.results ?? [], 200, corsHeaders);
     }
 
@@ -929,6 +934,35 @@ export default {
           "DELETE FROM screened_tickers WHERE group_code = 'WATCHLIST'"
         ).run();
         return json({ ok: true }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
+    // ── POST /api/symbols/add ────────────────────────────────────
+    // 종목을 screened_tickers에 추가 (group_code 지정)
+    // body: { symbol, group }  group 기본값: 'CHECK'
+    if (request.method === "POST" && path === "/api/symbols/add") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const { symbol, group = "CHECK" } = await request.json();
+        if (!symbol) return json({ ok: false, error: "symbol 필요" }, 400, corsHeaders);
+        const ticker = symbol.toUpperCase();
+
+        // watchlist에도 없으면 먼저 추가
+        await env.DB.prepare(
+          "INSERT OR IGNORE INTO watchlist (ticker, is_watchlist) VALUES (?, 0)"
+        ).bind(ticker).run();
+
+        // screened_tickers에 추가
+        await env.DB.prepare(
+          "INSERT OR IGNORE INTO screened_tickers (ticker, group_code) VALUES (?, ?)"
+        ).bind(ticker, group.toUpperCase()).run();
+
+        return json({ ok: true, ticker, group }, 200, corsHeaders);
       } catch (err) {
         return json({ ok: false, error: err.message }, 500, corsHeaders);
       }
