@@ -283,7 +283,7 @@ function updateCollectUI(data) {
         if (!r.running) {
           clearInterval(statusPollTimer);
           statusPollTimer = null;
-          if (r.last_run?.ok) loadScreener();
+          if (r.last_run?.ok) { loadScreener(); loadBbMap(); }
         }
       }, 3000);
     }
@@ -373,7 +373,7 @@ async function startCollection(force = false) {
           if (!r.running) {
             clearInterval(statusPollTimer);
             statusPollTimer = null;
-            if (r.last_run?.ok) loadScreener();
+            if (r.last_run?.ok) { loadScreener(); loadBbMap(); }
           }
         }, 3000);
       }
@@ -462,7 +462,8 @@ function aggregateBySymbol(rows) {
   for (const r of rows) {
     if (!map[r.symbol]) {
       // groups: GROUP_CONCAT 결과 (콤마 문자열) → 배열
-      const groups = (r.groups ?? '').split(',').map(g => g.trim()).filter(Boolean);
+      const groups      = (r.groups      ?? '').split(',').map(g => g.trim()).filter(Boolean);
+      const group_names = (r.group_names ?? '').split(',').map(g => g.trim()).filter(Boolean);
       map[r.symbol] = {
         symbol:              r.symbol,
         spot_price:          r.spot_price,
@@ -478,6 +479,7 @@ function aggregateBySymbol(rows) {
         squeeze_flags:       r.squeeze_flags ?? null,
         updated_at:          r.updated_at,
         groups,
+        group_names,
         expiries:  [],
         _gexSum:   0,
         _flipList: [],
@@ -586,20 +588,23 @@ function renderTable(filter = 'all') {
   if (filter === 'below')    rows = rows.filter(r => (r.dist_pct ?? 0) < 0);
   if (filter === 'near')     rows = rows.filter(r => Math.abs(r.dist_pct ?? 999) <= 3);
 
-  // 그룹별 동적 분리 (groups 문자열 기반)
-  // 그룹 우선순위: watchlist가 아닌 그룹 먼저, watchlist 마지막
-  const groupMap = {};
+  // 그룹별 동적 분리 (group_code 기반, group_name으로 라벨 표시)
+  const groupMap   = {}; // code → 종목 배열
+  const groupLabel = {}; // code → 표시 이름
   for (const r of rows) {
-    const grps = r.groups ?? [];
+    const grps  = r.groups      ?? [];
+    const names = r.group_names ?? [];
     if (!grps.length) {
-      // 그룹 없는 종목은 watchlist로 처리
-      if (!groupMap['watchlist']) groupMap['watchlist'] = [];
-      groupMap['watchlist'].push(r);
+      if (!groupMap['_etc']) groupMap['_etc'] = [];
+      if (!groupMap['_etc'].find(x => x.symbol === r.symbol)) groupMap['_etc'].push(r);
+      groupLabel['_etc'] = '📌 기타';
     } else {
-      for (const g of grps) {
-        if (!groupMap[g]) groupMap[g] = [];
-        // 중복 방지 (여러 그룹에 속한 종목)
-        if (!groupMap[g].find(x => x.symbol === r.symbol)) groupMap[g].push(r);
+      for (let i = 0; i < grps.length; i++) {
+        const code = grps[i];
+        const name = names[i] ?? code;
+        if (!groupMap[code]) groupMap[code] = [];
+        if (!groupMap[code].find(x => x.symbol === r.symbol)) groupMap[code].push(r);
+        groupLabel[code] = name;
       }
     }
   }
@@ -641,18 +646,15 @@ function renderTable(filter = 'all') {
 
   let html = '';
 
-  // watchlist를 제외한 그룹 먼저, watchlist 마지막
-  const groupOrder = Object.keys(groupMap).filter(g => g !== 'watchlist');
-  groupOrder.push('watchlist');
-
-  const groupLabels = {
-    watchlist: '⭐ Watchlist',
-  };
+  // WATCHLIST 그룹 마지막, 나머지는 등록 순서대로
+  const groupOrder = Object.keys(groupMap).filter(g => g !== 'WATCHLIST' && g !== '_etc');
+  if (groupMap['WATCHLIST']) groupOrder.push('WATCHLIST');
+  if (groupMap['_etc'])      groupOrder.push('_etc');
 
   for (const g of groupOrder) {
     if (!groupMap[g]?.length) continue;
     const gRows = [...groupMap[g]].sort(sortFn);
-    const label = groupLabels[g] ?? `📌 ${g}`;
+    const label = groupLabel[g] ?? g;
     const marginTop = html ? 'margin-top:24px' : '';
     html += `<div class="sc-group-header" style="${marginTop}">${label} <span class="sc-group-count">${gRows.length}</span></div>`;
     html += buildTable(gRows);
@@ -865,39 +867,44 @@ async function loadEvents(symbols = []) {
     if (range) range.textContent = `${data.from} ~ ${data.to}`;
 
     const DAY = ['일','월','화','수','목','금','토'];
-    const fmtDate = (dt) => {
+
+    // ET ISO → KST 변환 (ET = UTC-5/UTC-4, KST = UTC+9)
+    // time_et는 worker에서 UTC ISO로 저장했으므로 그대로 KST로 변환
+    const toKST = (isoStr) => {
+      if (!isoStr) return null;
+      return new Date(isoStr); // JS Date는 내부적으로 UTC, 표시만 로컬
+    };
+    const fmtKSTDate = (dt) => {
       if (!dt) return '-';
-      const d = new Date(dt);
-      return `${d.getMonth()+1}/${d.getDate()}(${DAY[d.getDay()]})`;
+      // KST = UTC+9
+      const kst = new Date(dt.getTime() + 9 * 60 * 60 * 1000);
+      return `${kst.getUTCMonth()+1}/${kst.getUTCDate()}(${DAY[kst.getUTCDay()]})`;
+    };
+    const fmtKSTTime = (dt) => {
+      if (!dt) return null;
+      const kst = new Date(dt.getTime() + 9 * 60 * 60 * 1000);
+      const hh  = String(kst.getUTCHours()).padStart(2, '0');
+      const mm  = String(kst.getUTCMinutes()).padStart(2, '0');
+      return `${hh}:${mm} KST`;
     };
 
     const rows = data.events.map(e => {
-      if (e.type === 'economic') {
-        const meta = [
-          e.forecast != null ? `예상 ${e.forecast}` : null,
-          e.previous != null ? `이전 ${e.previous}` : null,
-        ].filter(Boolean).join(' · ');
-        return `
-          <tr>
-            <td class="sc-ev-date">${fmtDate(e.date)}</td>
-            <td><span class="sc-ev-type-dot economic"></span><span class="sc-ev-title">${e.title ?? '-'}</span></td>
-            <td class="sc-ev-symbol">-</td>
-            <td class="sc-ev-meta">${meta || '-'}</td>
-            <td>-</td>
-          </tr>`;
-      } else {
-        const hourLabel = e.hour === 'bmo' ? '장전' : e.hour === 'amc' ? '장후' : '-';
-        const hourCls   = e.hour === 'bmo' ? 'bmo' : e.hour === 'amc' ? 'amc' : '';
-        const eps       = e.eps_estimate != null ? `EPS 예상 $${e.eps_estimate}` : '-';
-        return `
-          <tr>
-            <td class="sc-ev-date">${fmtDate(e.date)}</td>
-            <td><span class="sc-ev-type-dot earnings"></span><span class="sc-ev-title">실적발표</span></td>
-            <td class="sc-ev-symbol">${e.symbol}</td>
-            <td class="sc-ev-meta">${eps}</td>
-            <td><span class="sc-ev-hour ${hourCls}">${hourLabel}</span></td>
-          </tr>`;
-      }
+      // earnings only (economic 제거)
+      const dtKST    = toKST(e.time_et);
+      const dateStr  = fmtKSTDate(dtKST);
+      const timeStr  = fmtKSTTime(dtKST);
+      const timingLabel = e.timing === 'BMO' ? '장전' : e.timing === 'AMC' ? '장후' : '-';
+      const timingCls   = e.timing === 'BMO' ? 'bmo' : e.timing === 'AMC' ? 'amc' : '';
+      const eps         = e.eps_estimate != null ? `EPS 예상 $${e.eps_estimate}` : '-';
+      const timeDisplay = timeStr ? `${timeStr}` : timingLabel;
+      return `
+        <tr>
+          <td class="sc-ev-date">${dateStr}</td>
+          <td><span class="sc-ev-type-dot earnings"></span><span class="sc-ev-title">실적발표</span></td>
+          <td class="sc-ev-symbol">${e.symbol ?? '-'}</td>
+          <td class="sc-ev-meta">${eps}</td>
+          <td><span class="sc-ev-hour ${timingCls}">${timingLabel}</span><span class="sc-ev-time-kst">${timeStr ?? ''}</span></td>
+        </tr>`;
     }).join('');
 
     body.innerHTML = `
@@ -905,11 +912,11 @@ async function loadEvents(symbols = []) {
         <table class="sc-events-tbl">
           <thead>
             <tr>
-              <th>날짜</th>
+              <th>날짜 (KST)</th>
               <th>이벤트</th>
               <th>종목</th>
               <th>세부</th>
-              <th>시간</th>
+              <th>시간 (KST)</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
