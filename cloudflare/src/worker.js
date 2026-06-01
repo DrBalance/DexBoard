@@ -509,7 +509,10 @@ export default {
     }
 
     // ── GET /api/events ───────────────────────────────────────────
-    // 향후 N일간 경제/기업 이벤트 (Finnhub, KV 1시간 캐시)
+    // 향후 N일간 실적 발표 이벤트 (Yahoo Finance, KV 1시간 캐시)
+    // - screened_tickers 종목에 한정
+    // - 장전(BMO)/장후(AMC) 포함
+    // - 시간은 ET 기준으로 반환 (프론트에서 KST 변환)
     if (request.method === "GET" && path === "/api/events") {
       const days    = Math.min(parseInt(url.searchParams.get("days") ?? "14"), 30);
       const symbols = (url.searchParams.get("symbols") ?? "").split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
@@ -523,60 +526,85 @@ export default {
         }
       } catch {}
 
-      const FINNHUB_KEY = env.FINNHUB_KEY ?? "";
-      if (!FINNHUB_KEY) return json({ error: "FINNHUB_KEY not set" }, 500, corsHeaders);
-
-      const today   = new Date();
-      const toDate  = new Date(today);
+      const today  = new Date();
+      const toDate = new Date(today);
       toDate.setDate(today.getDate() + days);
       const from = today.toISOString().slice(0, 10);
       const to   = toDate.toISOString().slice(0, 10);
 
-      const BASE = "https://finnhub.io/api/v1";
-      const hdrs = { "X-Finnhub-Token": FINNHUB_KEY };
+      // symbols가 없으면 빈 결과 반환
+      if (!symbols.length) {
+        return json({ ok: true, from, to, events: [] }, 200, corsHeaders);
+      }
 
       try {
-        // 병렬 호출: 경제 캘린더 + 실적 캘린더
-        const [econRes, earnRes] = await Promise.all([
-          fetch(`${BASE}/calendar/economic?from=${from}&to=${to}`, { headers: hdrs, signal: AbortSignal.timeout(8000) }),
-          fetch(`${BASE}/calendar/earnings?from=${from}&to=${to}`, { headers: hdrs, signal: AbortSignal.timeout(8000) }),
-        ]);
+        // Yahoo Finance에서 종목별 실적 발표 정보 병렬 조회
+        // quoteSummary API: earningsHistory + calendarEvents 모듈 사용
+        const fetchEarnings = async (sym) => {
+          try {
+            const res = await fetch(
+              `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${sym}?modules=calendarEvents`,
+              {
+                headers: { 'User-Agent': 'Mozilla/5.0' },
+                signal: AbortSignal.timeout(8000),
+              }
+            );
+            if (!res.ok) return null;
+            const data = await res.json();
+            const cal  = data?.quoteSummary?.result?.[0]?.calendarEvents;
+            if (!cal) return null;
 
-        const econData = econRes.ok ? await econRes.json() : {};
-        const earnData = earnRes.ok ? await earnRes.json() : {};
+            // earnings.earningsDate: ET 기준 Unix timestamp 배열
+            const dates = cal.earnings?.earningsDate ?? [];
+            if (!dates.length) return null;
 
-        // 경제 이벤트 — importance High만
-        const IMPORTANT = ['CPI', 'PPI', 'GDP', 'NFP', 'FOMC', 'PCE', 'Fed', 'Interest Rate', 'Nonfarm', 'Unemployment'];
-        const econEvents = (econData.economicCalendar ?? [])
-          .filter(e => e.importance === 3 || IMPORTANT.some(k => (e.event ?? '').includes(k)))
-          .map(e => ({
-            type:     'economic',
-            date:     e.time ?? e.date,
-            title:    e.event,
-            country:  e.country,
-            actual:   e.actual   ?? null,
-            forecast: e.forecast ?? null,
-            previous: e.prev     ?? null,
-          }));
+            // 가장 가까운 미래 날짜 선택
+            const nowTs = Date.now() / 1000;
+            const next  = dates.find(d => (d.raw ?? 0) >= nowTs) ?? dates[dates.length - 1];
+            if (!next?.raw) return null;
 
-        // 기업 이벤트 — 스크리너 종목만 필터
-        const earnEvents = (earnData.earningsCalendar ?? [])
-          .filter(e => !symbols.length || symbols.includes((e.symbol ?? '').toUpperCase()))
-          .map(e => ({
-            type:   'earnings',
-            date:   e.date,
-            symbol: e.symbol,
-            eps_estimate: e.epsEstimate ?? null,
-            hour:   e.hour ?? null,  // 'bmo'=장전, 'amc'=장후
-          }));
+            const earningsTs = next.raw; // Unix timestamp (ET)
+            const earningsDate = new Date(earningsTs * 1000);
+            const dateStr = earningsDate.toISOString().slice(0, 10);
 
-        // 날짜순 병합
-        const allEvents = [...econEvents, ...earnEvents]
-          .sort((a, b) => (a.date ?? '').localeCompare(b.date ?? ''));
+            // days 범위 내인지 확인
+            if (dateStr < from || dateStr > to) return null;
 
-        const payload = JSON.stringify({ ok: true, from, to, events: allEvents });
+            // 장전/장후 판단: ET 기준 시간으로 추정
+            // Yahoo Finance earningsDate timestamp가 장전(0930 ET 이전)이면 BMO, 이후면 AMC
+            const etHour = earningsDate.getUTCHours() - 4; // ET = UTC-4 (EDT 기준)
+            let timing = null;
+            if (etHour < 12) timing = 'BMO'; // 장전
+            else             timing = 'AMC'; // 장후
 
-        // KV 캐시 저장 (1시간 = 3600초)
+            return {
+              type:   'earnings',
+              date:   dateStr,
+              time_et: earningsDate.toISOString(), // ET 기준 ISO (프론트에서 KST 변환)
+              timing, // 'BMO'=장전, 'AMC'=장후
+              symbol: sym,
+              eps_estimate: cal.earnings?.earningsAverage?.raw ?? null,
+            };
+          } catch {
+            return null;
+          }
+        };
+
+        // 종목별 병렬 조회 (최대 5개씩 배치)
+        const events = [];
+        const batchSize = 5;
+        for (let i = 0; i < symbols.length; i += batchSize) {
+          const batch   = symbols.slice(i, i + batchSize);
+          const results = await Promise.all(batch.map(fetchEarnings));
+          results.forEach(r => { if (r) events.push(r); });
+        }
+
+        // 날짜순 정렬
+        events.sort((a, b) => (a.date ?? '').localeCompare(b.date ?? ''));
+
+        const payload = JSON.stringify({ ok: true, from, to, events });
+
+        // KV 캐시 저장 (1시간)
         try { await env.DEX_KV.put(cacheKey, payload, { expirationTtl: 3600 }); } catch {}
 
         return new Response(payload, { headers: { ...corsHeaders, "Content-Type": "application/json" } });
@@ -651,7 +679,7 @@ export default {
           st.target_strike, st.concentration_count, st.upside, d.updated_at,
           w.company, w.sector, w.market_cap, w.short_float, w.beta
         FROM daily_screener d
-        LEFT JOIN screened_tickers st ON st.ticker = d.ticker AND st.group_code IN ('WATCHLIST', 'MONITOR')
+        LEFT JOIN screened_tickers st ON st.ticker = d.ticker
         LEFT JOIN watchlist w ON w.ticker = d.ticker
         WHERE d.ticker = ?
       `).bind(sym).all();
@@ -699,9 +727,11 @@ export default {
           st.squeeze_stars, st.squeeze_flags,
           d.updated_at,
           w.company, w.sector, w.market_cap, w.short_float, w.beta,
-          GROUP_CONCAT(DISTINCT st.group_code) as groups
+          GROUP_CONCAT(DISTINCT st.group_code) as groups,
+          GROUP_CONCAT(DISTINCT g.name) as group_names
         FROM daily_screener d
-        LEFT JOIN screened_tickers st ON st.ticker = d.ticker AND st.group_code IN ('WATCHLIST', 'MONITOR')
+        LEFT JOIN screened_tickers st ON st.ticker = d.ticker
+        LEFT JOIN groups g ON g.code = st.group_code
         LEFT JOIN watchlist w ON w.ticker = d.ticker
         GROUP BY d.ticker, d.expiry_date
         ORDER BY d.ticker ASC, d.dte ASC
