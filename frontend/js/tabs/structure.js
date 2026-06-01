@@ -328,7 +328,7 @@ async function loadStructure(symbol) {
 
   try {
     const [screenerRes, flowRes] = await Promise.all([
-      fetch(`${CF_API}/api/screener/latest`),
+      fetch(`${CF_API}/api/screener/latest?symbol=${encodeURIComponent(symbol)}`),
       fetch(`${CF_API}/api/structure/${symbol}`),
     ]);
 
@@ -423,7 +423,7 @@ async function loadOneTime(symbol) {
         'Content-Type':  'application/json',
         'x-cron-secret': CRON_SECRET,
       },
-      body: JSON.stringify({ symbol }),
+      body: JSON.stringify({ symbol, save: addToScreener }),
       signal: AbortSignal.timeout(30000),
     });
 
