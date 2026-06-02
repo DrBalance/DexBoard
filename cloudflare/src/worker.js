@@ -838,10 +838,6 @@ export default {
       }
     }
 
-    // ── POST /d1/screened-tickers/update ───────────────────────
-    // body: { ticker, spot_price, upside, concentration_count, target_strike, total_gex, atm_iv, flip_strike }
-    if (request.method === "POST" && path === "/d1/screened-tickers/update") {
-
     // ── POST /d1/screened-tickers/spot-price ─────────────────────
     // 장중 가격 업데이트 전용: spot_price + upside만 갱신
     // 옵션 구조 필드(target_strike, gex 등)는 건드리지 않음
