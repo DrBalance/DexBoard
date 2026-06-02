@@ -614,6 +614,59 @@ export default {
       }
     }
 
+    // ── GET /api/live-prices ─────────────────────────────────────
+    // Yahoo Finance batch quote 프록시 (CORS 우회)
+    // ?symbols=AAPL,NVDA,MSFT
+    // 반환: { quotes: [{ symbol, regularMarketPrice, marketState }, ...] }
+    if (request.method === "GET" && path === "/api/live-prices") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const symbolsParam = new URL(request.url).searchParams.get("symbols") ?? "";
+        if (!symbolsParam) return json({ error: "symbols 파라미터 필요" }, 400, corsHeaders);
+
+        const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbolsParam)}&fields=regularMarketPrice,marketState`;
+        const res = await fetch(url, {
+          headers: { "User-Agent": "Mozilla/5.0" },
+          signal:  AbortSignal.timeout(12000),
+        });
+        if (!res.ok) throw new Error(`Yahoo HTTP ${res.status}`);
+
+        const data   = await res.json();
+        const result = data?.quoteResponse?.result ?? [];
+        const quotes = result.map(q => ({
+          symbol:              q.symbol,
+          regularMarketPrice:  q.regularMarketPrice ?? null,
+          marketState:         q.marketState        ?? null,
+        }));
+        return json({ ok: true, quotes }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
+    // ── GET /api/screener/price-targets ─────────────────────────
+    // updateLivePrices() 전용: target_strike + flip_strike만 반환 (경량)
+    // screener/latest 전체 조회 대신 사용
+    if (request.method === "GET" && path === "/api/screener/price-targets") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const rows = await env.DB.prepare(`
+          SELECT ticker as symbol, target_strike, flip_strike, spot_price
+          FROM screened_tickers
+          ORDER BY ticker ASC
+        `).all();
+        return json({ targets: rows.results ?? [] }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
     // ── GET /api/screener/symbols ───────────────────────────────
     if (request.method === "GET" && path === "/api/screener/symbols") {
       const rows = await env.DB.prepare(`
@@ -786,6 +839,35 @@ export default {
     }
 
     // ── POST /d1/screened-tickers/update ───────────────────────
+    // body: { ticker, spot_price, upside, concentration_count, target_strike, total_gex, atm_iv, flip_strike }
+    if (request.method === "POST" && path === "/d1/screened-tickers/update") {
+
+    // ── POST /d1/screened-tickers/spot-price ─────────────────────
+    // 장중 가격 업데이트 전용: spot_price + upside만 갱신
+    // 옵션 구조 필드(target_strike, gex 등)는 건드리지 않음
+    if (request.method === "POST" && path === "/d1/screened-tickers/spot-price") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const { ticker, spot_price, upside } = await request.json();
+        if (!ticker) return json({ ok: false, error: "ticker 필요" }, 400, corsHeaders);
+        await env.DB.prepare(`
+          UPDATE screened_tickers
+          SET spot_price = ?, upside = ?
+          WHERE ticker = ?
+        `).bind(
+          spot_price ?? null,
+          upside     ?? null,
+          ticker.toUpperCase()
+        ).run();
+        return json({ ok: true, ticker: ticker.toUpperCase() }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
     // body: { ticker, spot_price, upside, concentration_count, target_strike, total_gex, atm_iv, flip_strike }
     if (request.method === "POST" && path === "/d1/screened-tickers/update") {
       const secret = request.headers.get("x-cron-secret");
