@@ -7,7 +7,7 @@
 
 import http from "http";
 import { calculateAndStore, collectSymbol, getTodayET } from "./vanna_analyzer.js";
-import { runScreenerCollection, fetchScreenerSymbols, analyzeSymbol, saveSymbolRows, updateScreenedTicker, runWatchlistScan, pruneWatchlistGroup } from "./screener-engine.js";
+import { runScreenerCollection, fetchScreenerSymbols, analyzeSymbol, saveSymbolRows, updateScreenedTicker, runWatchlistScan, pruneWatchlistGroup, fetchYahooBatchQuote } from "./screener-engine.js";
 import { fetchChartData, VALID_RESOLUTIONS } from "./chart-api.js";
 
 const TWELVE_KEY = process.env.TWELVE_KEY || "";
@@ -1306,12 +1306,144 @@ function startScheduler() {
 let lastSession  = null;
 let screenerDone = false;  // 당일 스크리너 수집 여부
 let openDone     = false;  // 당일 장 시작 스냅샷 여부
+let livePriceDone = false; // 당일 장중 가격 업데이트 여부 (자정 초기화)
 
 // 매일 자정 플래그 초기화
 setInterval(() => {
 const h = getETHour();
-if (h === 0) { screenerDone = false; openDone = false; }
+if (h === 0) { screenerDone = false; openDone = false; livePriceDone = false; }
 }, 60_000);
+
+// ─────────────────────────────────────────────────────────────────
+// 장중 실시간 가격 업데이트
+//
+// 흐름:
+//   1. Yahoo batch quote → screened_tickers 전체 spot_price + upside 갱신
+//   2. 돌파 종목(spot > target_strike) → analyzeSymbol() 재실행
+//      → saveSymbolRows() + updateScreenedTicker() + rollup-check
+//
+// 호출 시점: ET 10:00 이후, 5분마다 (1분 루프에서 min % 5 === 0 조건)
+// CBOE 보호: 평상시 Yahoo만 호출, 돌파 시에만 CBOE 재조회
+// ─────────────────────────────────────────────────────────────────
+let _livePriceRunning = false;
+
+async function updateLivePrices() {
+  if (_livePriceRunning) {
+    console.log('[livePrices] 이전 실행 중 — 스킵');
+    return;
+  }
+  _livePriceRunning = true;
+
+  try {
+    // 1. screened_tickers 전체 종목 + 현재 target_strike 조회
+    const symRes = await fetch(`${CF_WORKER_URL}/api/screener/symbols`, {
+      headers: { 'x-cron-secret': CRON_SECRET },
+      signal:  AbortSignal.timeout(10000),
+    });
+    if (!symRes.ok) throw new Error(`screener/symbols HTTP ${symRes.status}`);
+    const symData = await symRes.json();
+    const symbols = (symData.symbols ?? []).map(s => s.symbol ?? s);
+    if (!symbols.length) { console.log('[livePrices] 대상 종목 없음 — 스킵'); return; }
+
+    // 2. screened_tickers에서 target_strike + flip_strike 경량 조회
+    const stRes = await fetch(`${CF_WORKER_URL}/api/screener/price-targets`, {
+      headers: { 'x-cron-secret': CRON_SECRET },
+      signal:  AbortSignal.timeout(10000),
+    });
+    const stData = stRes.ok ? await stRes.json() : {};
+    // symbol → { target_strike, flip_strike, spot_price } 맵
+    const stMap = {};
+    for (const r of (stData.targets ?? [])) {
+      stMap[r.symbol] = r;
+    }
+
+    // 3. Yahoo batch quote
+    const quotes = await fetchYahooBatchQuote(CF_WORKER_URL, CRON_SECRET, symbols);
+
+    // 장이 REGULAR가 아닌 경우 (Yahoo marketState 기준) 조기 종료
+    const states = Object.values(quotes).map(q => q.marketState);
+    const isRegular = states.some(s => s === 'REGULAR');
+    if (!isRegular) {
+      console.log('[livePrices] 정규장 아님 — 스킵');
+      return;
+    }
+
+    console.log(`[livePrices] ${symbols.length}개 종목 가격 업데이트 시작`);
+
+    const breached = []; // 돌파 종목
+    const updatedAt = new Date().toISOString();
+
+    for (const sym of symbols) {
+      const q = quotes[sym];
+      if (!q?.price) continue;
+
+      const newSpot     = q.price;
+      const st          = stMap[sym];
+      const targetStrike = st?.target_strike ?? null;
+      const flipStrike   = st?.flip_strike   ?? null;
+
+      // upside 재계산
+      const upside = (targetStrike && newSpot)
+        ? Math.round(((targetStrike - newSpot) / newSpot) * 10000) / 100
+        : null;
+
+      // spot_price + upside만 업데이트 (옵션 구조는 건드리지 않음)
+      try {
+        await fetch(`${CF_WORKER_URL}/d1/screened-tickers/spot-price`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
+          body: JSON.stringify({ ticker: sym, spot_price: newSpot, upside }),
+          signal: AbortSignal.timeout(8000),
+        });
+      } catch (e) {
+        console.warn(`[livePrices] ${sym} spot 업데이트 실패:`, e.message);
+      }
+
+      // 돌파 감지: 새 현재가가 목표가(Call Wall)를 넘었을 때
+      if (targetStrike && newSpot > targetStrike) {
+        breached.push({ sym, newSpot, targetStrike });
+      }
+    }
+
+    console.log(`[livePrices] 가격 업데이트 완료 — 돌파 종목: ${breached.length}개`);
+
+    // 4. 돌파 종목 → CBOE 재조회 + 전체 갱신 + rollup-check
+    for (const { sym, newSpot, targetStrike } of breached) {
+      console.log(`[livePrices] 돌파 감지: ${sym} (현재가 $${newSpot} > 목표가 $${targetStrike}) → CBOE 재조회`);
+      try {
+        const result = await analyzeSymbol(sym);
+        const { rows, callWall, upside: newUpside, squeeze, spot } = result;
+
+        await saveSymbolRows(CF_WORKER_URL, CRON_SECRET, sym, rows, updatedAt);
+        await updateScreenedTicker(CF_WORKER_URL, CRON_SECRET, sym, spot, callWall, newUpside, rows, squeeze);
+
+        // rollup-check (target_strike 변경 여부 → rollup_history 기록)
+        if (callWall.target_strike) {
+          const res = await fetch(`${CF_WORKER_URL}/api/screener/rollup-check`, {
+            method:  'POST',
+            headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
+            body:    JSON.stringify({ ticker: sym, new_strike: callWall.target_strike, new_spot: spot }),
+            signal:  AbortSignal.timeout(8000),
+          });
+          const data = await res.json();
+          if (data.changed) {
+            console.log(`[livePrices] 롤업: ${sym} $${data.old_strike} → $${data.new_strike} (${data.direction})`);
+          }
+        }
+
+        // CBOE 부하 분산
+        await sleep(1500 + Math.random() * 500);
+      } catch (e) {
+        console.warn(`[livePrices] ${sym} CBOE 재조회 실패:`, e.message);
+      }
+    }
+
+  } catch (err) {
+    console.error('[livePrices] 오류:', err.message);
+  } finally {
+    _livePriceRunning = false;
+  }
+}
 
 // 1분마다 세션 체크 → 폴링 주기 동적 조정
 let snapshotTimer = null;
@@ -1568,6 +1700,16 @@ if (isWeekday() && h === 9 && new Date().getMinutes() === 50) {
       console.error('[rollup] 스케줄러 오류:', e.message);
     }
   })();
+}
+
+// 평일 ET 10:00~15:59, 5분마다 장중 가격 업데이트
+// 09:50 롤업 감지 완료 이후부터 시작
+if (isWeekday()) {
+  const now = new Date();
+  const min = now.getMinutes();
+  if (h >= 10 && h < 16 && min % 5 === 0) {
+    updateLivePrices().catch(e => console.error('[livePrices] 스케줄 오류:', e.message));
+  }
 }
 
 // 평일 ET 09:00~16:59, 15분마다 DEX 계산

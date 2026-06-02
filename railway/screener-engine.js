@@ -655,3 +655,35 @@ export async function pruneWatchlistGroup(cfWorkerUrl, cronSecret) {
   console.log(`[prune] 완료 — 제거 ${removed.length}개, 유지 ${kept.length}개`);
   return { ok: true, removed, kept: kept.length };
 }
+
+// ============================================
+// Yahoo Finance batch quote
+//
+// 여러 심볼을 한 번에 조회해 현재가 반환
+// 반환값: { AAPL: { price, marketState }, NVDA: { ... }, ... }
+//
+// CORS 우회: CF Worker의 /api/live-prices 프록시를 거침
+// ============================================
+export async function fetchYahooBatchQuote(cfWorkerUrl, cronSecret, symbols) {
+  if (!symbols?.length) return {};
+
+  const url = `${cfWorkerUrl}/api/live-prices?symbols=${encodeURIComponent(symbols.join(','))}`;
+  const res = await fetch(url, {
+    headers: { 'x-cron-secret': cronSecret },
+    signal:  AbortSignal.timeout(15000),
+  });
+  if (!res.ok) throw new Error(`live-prices HTTP ${res.status}`);
+
+  const data = await res.json();
+  // data.quotes: [{ symbol, regularMarketPrice, marketState }, ...]
+  const result = {};
+  for (const q of (data.quotes ?? [])) {
+    if (q.symbol && q.regularMarketPrice != null) {
+      result[q.symbol] = {
+        price:       Math.round(q.regularMarketPrice * 100) / 100,
+        marketState: q.marketState ?? 'UNKNOWN',
+      };
+    }
+  }
+  return result;
+}
