@@ -406,12 +406,31 @@ async function loadScreener() {
   showState('loading', '스크리너 데이터를 불러오는 중...');
 
   try {
-    const res  = await fetch(`${CF_API}/api/screener/latest`);
-    const rows = await res.json();
+    // screener/latest + rollup-history 동시 fetch (rollupMap이 테이블 렌더 전에 준비되어야 함)
+    const [res, rlRes] = await Promise.all([
+      fetch(`${CF_API}/api/screener/latest`),
+      fetch(`${CF_API}/api/screener/rollup-history?active_only=true`),
+    ]);
+    const rows   = await res.json();
+    const rlData = await rlRes.json();
 
     if (!Array.isArray(rows) || !rows.length) {
       showState('empty', '스크리너 데이터가 없습니다. 위의 [지금 수집] 버튼을 눌러 수집을 시작하세요.');
       return;
+    }
+
+    // rollupMap 구성 (테이블 렌더 전에 완료)
+    rollupMap = {};
+    for (const r of (rlData.history ?? [])) {
+      if (!rollupMap[r.ticker]) rollupMap[r.ticker] = [];
+      rollupMap[r.ticker].push({
+        old_strike:  r.old_strike,
+        new_strike:  r.new_strike,
+        detected_at: r.detected_at,
+      });
+    }
+    for (const sym of Object.keys(rollupMap)) {
+      rollupMap[sym].sort((a, b) => a.detected_at.localeCompare(b.detected_at));
     }
 
     // 만기별 rows를 종목 단위로 집계 (screened_tickers 집계값 직접 사용)
@@ -436,28 +455,6 @@ async function loadScreener() {
     if (eventsSection) {
       eventsSection.style.display = 'block';
       loadEvents(allSymbols.map(s => s.symbol));
-    }
-
-    // 롤업 이력 fetch → rollupMap 구성 (스파크라인용) + 섹션 표시
-    try {
-      const rlRes  = await fetch(`${CF_API}/api/screener/rollup-history?active_only=true`);
-      const rlData = await rlRes.json();
-      rollupMap = {};
-      for (const r of (rlData.history ?? [])) {
-        if (!rollupMap[r.ticker]) rollupMap[r.ticker] = [];
-        rollupMap[r.ticker].push({
-          old_strike:   r.old_strike,
-          new_strike:   r.new_strike,
-          detected_at:  r.detected_at,
-        });
-      }
-      // detected_at 오름차순 정렬 (시간순)
-      for (const sym of Object.keys(rollupMap)) {
-        rollupMap[sym].sort((a, b) => a.detected_at.localeCompare(b.detected_at));
-      }
-    } catch (e) {
-      console.warn('[screener] rollupMap 로드 실패:', e.message);
-      rollupMap = {};
     }
 
     const rollupSection = document.getElementById('sc-rollup-section');
