@@ -850,7 +850,7 @@ function buildRow(r) {
 // ============================================
 function buildRollupSparkline(events) {
   // events: [{ old_strike, new_strike, detected_at }, ...] 시간순
-  if (!events || events.length < 2) return '<span class="muted">-</span>';
+  if (!events || events.length < 1) return '<span class="muted">-</span>';
 
   // 표시할 strike 시계열: 시작값(old_strike of first) + 각 new_strike
   const values = [events[0].old_strike, ...events.map(e => e.new_strike)];
