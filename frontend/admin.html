@@ -104,8 +104,13 @@ input[type=color]{width:32px;height:28px;border:1px solid var(--border);border-r
 .group-card-code{font-family:var(--mono);font-size:11px;color:var(--text3)}
 .group-card-body{padding:12px 16px}
 .group-sym-list{display:flex;flex-wrap:wrap;gap:4px;min-height:32px;margin-bottom:10px}
-.group-sym-tag{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:4px;font-size:12px;font-weight:700;font-family:var(--mono);background:var(--bg3);border:1px solid var(--border);color:var(--text)}
+.group-sym-tag{display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:4px;font-size:12px;font-weight:700;font-family:var(--mono);background:var(--bg3);border:1px solid var(--border);color:var(--text);transition:border-color .15s,background .15s}
 .group-sym-tag .rm{cursor:pointer;color:var(--text3);font-size:10px}.group-sym-tag .rm:hover{color:var(--red)}
+.group-sym-tag.selectable{cursor:pointer;user-select:none}.group-sym-tag.selectable:hover{border-color:var(--blue)}
+.group-sym-tag.selected{background:rgba(88,166,255,.18);border-color:var(--blue);color:var(--blue)}
+.group-sym-tag input[type=checkbox]{accent-color:var(--blue);cursor:pointer;width:12px;height:12px}
+.bulk-del-bar{display:flex;align-items:center;gap:8px;margin-bottom:6px;flex-wrap:wrap}
+.sel-count{font-size:11px;color:var(--text3)}
 .group-add-row{display:flex;gap:6px;align-items:center}
 
 /* ── BB 맵 */
@@ -752,6 +757,9 @@ function renderGroupsGrid() {
         <div style="margin-left:auto;display:flex;gap:6px">
           ${g.code !== 'WATCHLIST' ? `
           <button class="btn btn-purple btn-sm" onclick="openHoldingsPanel('${g.code}')">ETF 조회</button>
+          <button class="btn btn-sm" id="selbtn-${g.code}"
+            style="background:var(--bg3);border:1px solid var(--border);color:var(--text3)"
+            onclick="toggleSelectMode('${g.code}')">☑ 선택삭제</button>
           <button class="btn btn-red btn-sm" onclick="deleteGroup('${g.code}','${escHtml(g.name)}')">삭제</button>
           ` : ''}
         </div>
@@ -789,10 +797,13 @@ async function loadGroupSymbols(id) {
     el.innerHTML = '<span style="color:var(--text3);font-size:12px">종목 없음</span>';
     return;
   }
+  const isSelectMode = el.dataset.selectMode === '1';
   el.innerHTML = syms.map(s => `
-    <span class="group-sym-tag">
+    <span class="group-sym-tag${isSelectMode ? ' selectable' : ''}"
+      ${isSelectMode ? `onclick="toggleSymTag(this,'${id}','${s.symbol}')"` : ''}>
+      ${isSelectMode ? `<input type="checkbox" class="sym-chk" data-sym="${escHtml(s.symbol)}" onclick="event.stopPropagation();toggleSymTag(this.closest('.group-sym-tag'),'${id}','${s.symbol}')">` : ''}
       ${escHtml(s.symbol)}
-      ${id !== 'WATCHLIST' ? `<span class="rm" onclick="removeGroupSymbol('${id}','${s.symbol}')">✕</span>` : ''}
+      ${!isSelectMode && id !== 'WATCHLIST' ? `<span class="rm" onclick="removeGroupSymbol('${id}','${s.symbol}')">✕</span>` : ''}
     </span>
   `).join('');
 }
@@ -854,6 +865,90 @@ async function removeGroupSymbol(groupId, symbol) {
   await loadGroupSymbols(groupId);
   await loadGroups();
   loadSymbols(); reloadStats();
+}
+
+// ── 복수 선택 삭제 기능
+const selectModeState = {}; // groupId → boolean
+
+function toggleSelectMode(groupId) {
+  const el = document.getElementById(`gsyms-${groupId}`);
+  const btn = document.getElementById(`selbtn-${groupId}`);
+  if (!el) return;
+  const entering = el.dataset.selectMode !== '1';
+  el.dataset.selectMode = entering ? '1' : '0';
+
+  if (entering) {
+    btn.style.background = 'rgba(88,166,255,.18)';
+    btn.style.borderColor = 'var(--blue)';
+    btn.style.color = 'var(--blue)';
+    btn.textContent = '✕ 취소';
+    // 선택 컨트롤 바 삽입
+    const bar = document.createElement('div');
+    bar.className = 'bulk-del-bar';
+    bar.id = `selbar-${groupId}`;
+    bar.innerHTML = `
+      <button class="btn btn-sm" style="background:var(--bg3);border:1px solid var(--border);color:var(--text3)"
+        onclick="selectAllSyms('${groupId}',true)">전체선택</button>
+      <button class="btn btn-sm" style="background:var(--bg3);border:1px solid var(--border);color:var(--text3)"
+        onclick="selectAllSyms('${groupId}',false)">전체해제</button>
+      <span class="sel-count" id="selcount-${groupId}">0개 선택됨</span>
+      <button class="btn btn-red btn-sm" onclick="removeSelectedSymbols('${groupId}')">선택 삭제</button>
+    `;
+    el.parentNode.insertBefore(bar, el);
+    loadGroupSymbols(groupId);
+  } else {
+    btn.style.background = 'var(--bg3)';
+    btn.style.borderColor = 'var(--border)';
+    btn.style.color = 'var(--text3)';
+    btn.textContent = '☑ 선택삭제';
+    const bar = document.getElementById(`selbar-${groupId}`);
+    if (bar) bar.remove();
+    loadGroupSymbols(groupId);
+  }
+}
+
+function toggleSymTag(tagEl, groupId, symbol) {
+  const chk = tagEl.querySelector('.sym-chk');
+  if (!chk) return;
+  chk.checked = !chk.checked;
+  tagEl.classList.toggle('selected', chk.checked);
+  updateSelCount(groupId);
+}
+
+function selectAllSyms(groupId, checked) {
+  const el = document.getElementById(`gsyms-${groupId}`);
+  el.querySelectorAll('.sym-chk').forEach(chk => {
+    chk.checked = checked;
+    chk.closest('.group-sym-tag').classList.toggle('selected', checked);
+  });
+  updateSelCount(groupId);
+}
+
+function updateSelCount(groupId) {
+  const el = document.getElementById(`gsyms-${groupId}`);
+  const count = el.querySelectorAll('.sym-chk:checked').length;
+  const countEl = document.getElementById(`selcount-${groupId}`);
+  if (countEl) countEl.textContent = `${count}개 선택됨`;
+}
+
+async function removeSelectedSymbols(groupId) {
+  const el = document.getElementById(`gsyms-${groupId}`);
+  const checked = [...el.querySelectorAll('.sym-chk:checked')].map(c => c.dataset.sym);
+  if (!checked.length) { alert('선택된 종목이 없습니다.'); return; }
+  if (!confirm(`선택된 ${checked.length}개 종목을 이 그룹에서 제거하시겠습니까?\n(${checked.join(', ')})`)) return;
+
+  let orphans = [];
+  for (const sym of checked) {
+    const d = await api('DELETE', `/api/admin/groups/${groupId}/symbols/${sym}`);
+    if (d.orphan_removed) orphans.push(sym);
+  }
+  if (orphans.length) alert(`🗑 어느 그룹에도 속하지 않아 데이터 삭제됨:\n${orphans.join(', ')}`);
+
+  await loadGroupSymbols(groupId);
+  await loadGroups();
+  loadSymbols(); reloadStats();
+  // 선택 바의 카운트 초기화
+  updateSelCount(groupId);
 }
 
 // ── ETF 구성종목 조회 패널
