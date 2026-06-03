@@ -21,6 +21,7 @@ let sortCol        = 'concentration_count';
 let sortDir        = 'desc';
 let isLoading      = false;
 let statusPollTimer = null;
+let rollupMap      = {};   // symbol → [{ old_strike, new_strike, detected_at }, ...]
 
 // ============================================
 // 진입점
@@ -437,7 +438,28 @@ async function loadScreener() {
       loadEvents(allSymbols.map(s => s.symbol));
     }
 
-    // 롤업 이력 섹션 표시
+    // 롤업 이력 fetch → rollupMap 구성 (스파크라인용) + 섹션 표시
+    try {
+      const rlRes  = await fetch(`${CF_API}/api/screener/rollup-history?active_only=true`);
+      const rlData = await rlRes.json();
+      rollupMap = {};
+      for (const r of (rlData.history ?? [])) {
+        if (!rollupMap[r.ticker]) rollupMap[r.ticker] = [];
+        rollupMap[r.ticker].push({
+          old_strike:   r.old_strike,
+          new_strike:   r.new_strike,
+          detected_at:  r.detected_at,
+        });
+      }
+      // detected_at 오름차순 정렬 (시간순)
+      for (const sym of Object.keys(rollupMap)) {
+        rollupMap[sym].sort((a, b) => a.detected_at.localeCompare(b.detected_at));
+      }
+    } catch (e) {
+      console.warn('[screener] rollupMap 로드 실패:', e.message);
+      rollupMap = {};
+    }
+
     const rollupSection = document.getElementById('sc-rollup-section');
     if (rollupSection) {
       rollupSection.style.display = 'block';
@@ -626,6 +648,7 @@ function renderTable(filter = 'all') {
         <th class="sc-th sortable" data-col="upside">상승여력</th>
         <th class="sc-th sortable" data-col="concentration_count">집중도</th>
         <th class="sc-th sortable" data-col="squeeze_stars">스퀴즈</th>
+        <th class="sc-th">롤업</th>
         <th class="sc-th">히트맵</th>
         <th class="sc-th">분석</th>
         <th class="sc-th sortable" data-col="dist_pct">플립존 거리</th>
@@ -821,6 +844,57 @@ function buildRow(r) {
 
   const flipStr = flip ? `$${flip.toFixed(0)}` : '<span class="muted">-</span>';
 
+
+// ============================================
+// 롤업 스파크라인 SVG 생성
+// ============================================
+function buildRollupSparkline(events) {
+  // events: [{ old_strike, new_strike, detected_at }, ...] 시간순
+  if (!events || events.length < 2) return '<span class="muted">-</span>';
+
+  // 표시할 strike 시계열: 시작값(old_strike of first) + 각 new_strike
+  const values = [events[0].old_strike, ...events.map(e => e.new_strike)];
+  const W = 72, H = 28, PAD = 3;
+
+  const minV = Math.min(...values);
+  const maxV = Math.max(...values);
+  const range = maxV - minV || 1;
+
+  const xs = values.map((_, i) => PAD + (i / (values.length - 1)) * (W - PAD * 2));
+  const ys = values.map(v => H - PAD - ((v - minV) / range) * (H - PAD * 2));
+
+  // 방향: 전체적으로 올랐는지 내렸는지
+  const isUp = values[values.length - 1] >= values[0];
+  const lineColor = isUp ? '#3fb950' : '#f85149';
+  const dotColor  = isUp ? '#3fb950' : '#f85149';
+
+  const polyline = xs.map((x, i) => `${x.toFixed(1)},${ys[i].toFixed(1)}`).join(' ');
+
+  // fill 영역 (선 아래)
+  const fillPath = [
+    `M ${xs[0].toFixed(1)},${ys[0].toFixed(1)}`,
+    ...xs.slice(1).map((x, i) => `L ${x.toFixed(1)},${ys[i+1].toFixed(1)}`),
+    `L ${xs[xs.length-1].toFixed(1)},${H - PAD}`,
+    `L ${xs[0].toFixed(1)},${H - PAD}`,
+    'Z'
+  ].join(' ');
+
+  // 마지막 점 (현재 값 강조)
+  const lastX = xs[xs.length - 1].toFixed(1);
+  const lastY = ys[ys.length - 1].toFixed(1);
+
+  // 툴팁용 title
+  const title = events.map(e =>
+    `$${e.old_strike}→$${e.new_strike} (${e.detected_at?.slice(0,10) ?? ''})`
+  ).join('\n');
+
+  return `<svg width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="display:block;overflow:visible" title="${title}">
+    <path d="${fillPath}" fill="${lineColor}" fill-opacity="0.12" stroke="none"/>
+    <polyline points="${polyline}" fill="none" stroke="${lineColor}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${lastX}" cy="${lastY}" r="2.2" fill="${dotColor}"/>
+  </svg>`;
+}
+
   return `
     <tr class="sc-row${callCount >= 4 ? ' sc-row-callwall' : ''}" data-sym="${r.symbol}">
       <td class="sc-td-sym">${symStr}</td>
@@ -830,6 +904,7 @@ function buildRow(r) {
       <td class="sc-td-dist">${upsideStr}</td>
       <td class="sc-td-cw">${concentrationStr}</td>
       <td class="sc-td-squeeze">${'★'.repeat(r.squeeze_stars ?? 0) || '<span class="muted">-</span>'}</td>
+      <td style="padding:6px 10px;vertical-align:middle">${buildRollupSparkline(rollupMap[r.symbol])}</td>
       <td>
         <button class="sc-heatmap-btn" data-sym="${r.symbol}" data-strike="${r.target_strike ?? ''}" title="콜월 히트맵">▦</button>
       </td>
