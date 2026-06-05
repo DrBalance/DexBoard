@@ -16,6 +16,7 @@ const CRON_SECRET = process.env.CRON_SECRET || "";
 const GEMINI_KEY  = process.env.GEMINI_KEY  || "";
 const CF_WORKER_URL = process.env.CF_WORKER_URL || "";
 const CF_KV_SECRET  = process.env.CF_KV_SECRET  || "";
+const FINNHUB_KEY   = process.env.FINNHUB_KEY   || "";
 
 // ─────────────────────────────────────────────────────────────────
 // 가격 수집 + BB 계산 → CF Worker D1 저장
@@ -1392,44 +1393,30 @@ async function updateLivePrices() {
       stMap[r.symbol] = r;
     }
 
-    // 3. Yahoo 개별 순차 조회 (batch 429 방지 — 종목당 1건씩, 100ms 간격)
+    // 3. Finnhub 개별 순차 조회 (종목당 1건씩, 100ms 간격)
     const quotes = {};
-    const yahooHeaders = {
-      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-      'Accept': 'application/json',
-    };
     for (const sym of symbols) {
       try {
-        const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(sym)}&fields=regularMarketPrice,marketState`;
-        const r   = await fetch(url, { headers: yahooHeaders, signal: AbortSignal.timeout(8000) });
+        const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${FINNHUB_KEY}`;
+        const r   = await fetch(url, { signal: AbortSignal.timeout(8000) });
         if (r.ok) {
           const data = await r.json();
-          const q    = data?.quoteResponse?.result?.[0];
-          if (q?.regularMarketPrice != null) {
+          // Finnhub: { c: 현재가, t: timestamp } — c=0이면 데이터 없음
+          if (data?.c && data.c > 0) {
             quotes[sym] = {
-              price:       Math.round(q.regularMarketPrice * 100) / 100,
-              marketState: q.marketState ?? 'UNKNOWN',
+              price: Math.round(data.c * 100) / 100,
             };
           }
         } else {
-          console.warn(`[livePrices] ${sym} Yahoo HTTP ${r.status}`);
+          console.warn(`[livePrices] ${sym} Finnhub HTTP ${r.status}`);
         }
       } catch (e) {
         console.warn(`[livePrices] ${sym} 조회 실패: ${e.message}`);
       }
       await sleep(100);
     }
-    console.log(`[livePrices] Yahoo 조회 완료 — ${Object.keys(quotes).length}/${symbols.length}개`);
 
-    // 장이 REGULAR가 아닌 경우 (Yahoo marketState 기준) 조기 종료
-    const states = Object.values(quotes).map(q => q.marketState);
-    const isRegular = states.some(s => s === 'REGULAR');
-    if (!isRegular) {
-      console.log('[livePrices] 정규장 아님 — 스킵');
-      return;
-    }
-
-    console.log(`[livePrices] ${symbols.length}개 종목 가격 업데이트 시작`);
+    console.log(`[livePrices] ${symbols.length}개 종목 가격 업데이트 완료 — 유효 ${Object.keys(quotes).length}개`);
 
     const breached = []; // 돌파 종목
     const updatedAt = new Date().toISOString();
