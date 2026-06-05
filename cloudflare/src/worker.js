@@ -649,12 +649,8 @@ export default {
 
     // ── GET /api/screener/price-targets ─────────────────────────
     // updateLivePrices() 전용: target_strike + flip_strike만 반환 (경량)
-    // screener/latest 전체 조회 대신 사용
+    // screener/latest 전체 조회 대신 사용 (인증 불필요 — 읽기 전용 공개 데이터)
     if (request.method === "GET" && path === "/api/screener/price-targets") {
-      const secret = request.headers.get("x-cron-secret");
-      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
-        return json({ error: "Unauthorized" }, 401, corsHeaders);
-      }
       try {
         const rows = await env.DB.prepare(`
           SELECT ticker as symbol, target_strike, flip_strike, spot_price
