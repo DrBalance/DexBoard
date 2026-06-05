@@ -494,6 +494,25 @@ return sendJSON(res, 429, { ok: false, error: "서버 요청 한도 초과 (IP �
 
 }
 
+// ── POST /webhook/live-prices ────────────────────────────────────
+// Google Sheets Apps Script → 장중 현재가 수신 → DB 업데이트
+// payload: { prices: { AAPL: 213.5, NVDA: 118.2, ... }, ts: "ISO" }
+if (req.method === "POST" && req.url === "/webhook/live-prices") {
+  const auth = req.headers["x-cron-secret"];
+  if (CRON_SECRET && auth !== CRON_SECRET) {
+    return sendJSON(res, 401, { ok: false, error: "Unauthorized" });
+  }
+  const body   = await readBody(req);
+  const prices = body.prices ?? {};
+  if (!Object.keys(prices).length) {
+    return sendJSON(res, 400, { ok: false, error: "prices 필드 필요" });
+  }
+  // 즉시 응답 후 백그라운드 처리
+  sendJSON(res, 202, { ok: true, accepted: true, count: Object.keys(prices).length });
+  processLivePrices(prices).catch(e => console.error('[livePrices] 처리 오류:', e.message));
+  return;
+}
+
 // ── POST /webhook/prevclose ───────────────────────────────────────
 // Google Sheets Apps Script → 장 마감 후 전일 종가 수신
 if (req.method === "POST" && req.url === "/webhook/prevclose") {
@@ -1357,107 +1376,72 @@ if (h === 0) { screenerDone = false; openDone = false; livePriceDone = false; }
 //   2. 돌파 종목(spot > target_strike) → analyzeSymbol() 재실행
 //      → saveSymbolRows() + updateScreenedTicker() + rollup-check
 //
-// 호출 시점: ET 10:00 이후, 5분마다 (1분 루프에서 min % 5 === 0 조건)
-// CBOE 보호: 평상시 Yahoo만 호출, 돌파 시에만 CBOE 재조회
+// ─────────────────────────────────────────────────────────────────
+// 장중 가격 업데이트 — Google Sheets Apps Script에서 수신
+//
+// Apps Script 흐름:
+//   ET 09:55 — /api/screener/symbols 조회 → Sheets 종목 갱신
+//   ET 10:00~ — 5분마다 GOOGLEFINANCE() 값 읽어 POST
+//
+// payload: { prices: { AAPL: 213.5, NVDA: 118.2, ... }, ts: ISO }
 // ─────────────────────────────────────────────────────────────────
 let _livePriceRunning = false;
 
-async function updateLivePrices() {
-  console.log('[livePrices] 실행 시작');
+async function processLivePrices(prices) {
   if (_livePriceRunning) {
     console.log('[livePrices] 이전 실행 중 — 스킵');
-    return;
+    return { ok: false, reason: 'running' };
   }
   _livePriceRunning = true;
 
   try {
-    // 1. screened_tickers 전체 종목 + 현재 target_strike 조회
-    const symRes = await fetch(`${CF_WORKER_URL}/api/screener/symbols`, {
-      headers: { 'x-cron-secret': CRON_SECRET },
-      signal:  AbortSignal.timeout(10000),
-    });
-    if (!symRes.ok) throw new Error(`screener/symbols HTTP ${symRes.status}`);
-    const symData = await symRes.json();
-    const symbols = (symData.symbols ?? []).map(s => s.symbol ?? s);
-    if (!symbols.length) { console.log('[livePrices] 대상 종목 없음 — 스킵'); return; }
+    const symbols = Object.keys(prices);
+    if (!symbols.length) return { ok: false, reason: 'no symbols' };
 
-    // 2. screened_tickers에서 target_strike + flip_strike 경량 조회
+    // target_strike + flip_strike 조회
     const stRes = await fetch(`${CF_WORKER_URL}/api/screener/price-targets`, {
-      headers: { 'x-cron-secret': CRON_SECRET },
-      signal:  AbortSignal.timeout(10000),
+      signal: AbortSignal.timeout(10000),
     });
     const stData = stRes.ok ? await stRes.json() : {};
-    // symbol → { target_strike, flip_strike, spot_price } 맵
-    const stMap = {};
-    for (const r of (stData.targets ?? [])) {
-      stMap[r.symbol] = r;
-    }
+    const stMap  = {};
+    for (const r of (stData.targets ?? [])) stMap[r.symbol] = r;
 
-    // 3. Finnhub 개별 순차 조회 (종목당 1건씩, 100ms 간격)
-    const quotes = {};
-    for (const sym of symbols) {
-      try {
-        const url = `https://finnhub.io/api/v1/quote?symbol=${encodeURIComponent(sym)}&token=${FINNHUB_KEY}`;
-        const r   = await fetch(url, { signal: AbortSignal.timeout(8000) });
-        if (r.ok) {
-          const data = await r.json();
-          // Finnhub: { c: 현재가, t: timestamp } — c=0이면 데이터 없음
-          if (data?.c && data.c > 0) {
-            quotes[sym] = {
-              price: Math.round(data.c * 100) / 100,
-            };
-          }
-        } else {
-          console.warn(`[livePrices] ${sym} Finnhub HTTP ${r.status}`);
-        }
-      } catch (e) {
-        console.warn(`[livePrices] ${sym} 조회 실패: ${e.message}`);
-      }
-      await sleep(100);
-    }
-
-    console.log(`[livePrices] ${symbols.length}개 종목 가격 업데이트 완료 — 유효 ${Object.keys(quotes).length}개`);
-
-    const breached = []; // 돌파 종목
+    const breached  = [];
     const updatedAt = new Date().toISOString();
 
     for (const sym of symbols) {
-      const q = quotes[sym];
-      if (!q?.price) continue;
+      const newSpot = prices[sym];
+      if (!newSpot || newSpot <= 0) continue;
 
-      const newSpot     = q.price;
-      const st          = stMap[sym];
+      const st           = stMap[sym];
       const targetStrike = st?.target_strike ?? null;
-      const flipStrike   = st?.flip_strike   ?? null;
-
-      // upside 재계산
-      const upside = (targetStrike && newSpot)
+      const upside       = (targetStrike && newSpot)
         ? Math.round(((targetStrike - newSpot) / newSpot) * 10000) / 100
         : null;
 
-      // spot_price + upside만 업데이트 (옵션 구조는 건드리지 않음)
+      // spot_price + upside 업데이트
       try {
         await fetch(`${CF_WORKER_URL}/d1/screened-tickers/spot-price`, {
           method:  'POST',
           headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
-          body: JSON.stringify({ ticker: sym, spot_price: newSpot, upside }),
-          signal: AbortSignal.timeout(8000),
+          body:    JSON.stringify({ ticker: sym, spot_price: newSpot, upside }),
+          signal:  AbortSignal.timeout(8000),
         });
       } catch (e) {
         console.warn(`[livePrices] ${sym} spot 업데이트 실패:`, e.message);
       }
 
-      // 돌파 감지: 새 현재가가 목표가(Call Wall)를 넘었을 때
+      // 돌파 감지
       if (targetStrike && newSpot > targetStrike) {
         breached.push({ sym, newSpot, targetStrike });
       }
     }
 
-    console.log(`[livePrices] 가격 업데이트 완료 — 돌파 종목: ${breached.length}개`);
+    console.log(`[livePrices] ${symbols.length}개 처리 완료 — 돌파: ${breached.length}개`);
 
-    // 4. 돌파 종목 → CBOE 재조회 + 전체 갱신 + rollup-check
+    // 돌파 종목 → CBOE 재조회 + rollup-check
     for (const { sym, newSpot, targetStrike } of breached) {
-      console.log(`[livePrices] 돌파 감지: ${sym} (현재가 $${newSpot} > 목표가 $${targetStrike}) → CBOE 재조회`);
+      console.log(`[livePrices] 돌파: ${sym} $${newSpot} > $${targetStrike} → CBOE 재조회`);
       try {
         const result = await analyzeSymbol(sym);
         const { rows, callWall, upside: newUpside, squeeze, spot } = result;
@@ -1465,9 +1449,8 @@ async function updateLivePrices() {
         await saveSymbolRows(CF_WORKER_URL, CRON_SECRET, sym, rows, updatedAt);
         await updateScreenedTicker(CF_WORKER_URL, CRON_SECRET, sym, spot, callWall, newUpside, rows, squeeze);
 
-        // rollup-check (target_strike 변경 여부 → rollup_history 기록)
         if (callWall.target_strike) {
-          const res = await fetch(`${CF_WORKER_URL}/api/screener/rollup-check`, {
+          const res  = await fetch(`${CF_WORKER_URL}/api/screener/rollup-check`, {
             method:  'POST',
             headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
             body:    JSON.stringify({ ticker: sym, new_strike: callWall.target_strike, new_spot: spot }),
@@ -1478,16 +1461,17 @@ async function updateLivePrices() {
             console.log(`[livePrices] 롤업: ${sym} $${data.old_strike} → $${data.new_strike} (${data.direction})`);
           }
         }
-
-        // CBOE 부하 분산
         await sleep(1500 + Math.random() * 500);
       } catch (e) {
         console.warn(`[livePrices] ${sym} CBOE 재조회 실패:`, e.message);
       }
     }
 
+    return { ok: true, processed: symbols.length, breached: breached.length };
+
   } catch (err) {
     console.error('[livePrices] 오류:', err.message);
+    return { ok: false, error: err.message };
   } finally {
     _livePriceRunning = false;
   }
@@ -1766,18 +1750,7 @@ if (isWeekday()) {
 lastSession = getMarketSession();
 scheduleSnapshot();
 
-// 장중 가격 업데이트 — 독립 5분 타이머 (1분 루프 타이밍 미스 방지)
-setInterval(() => {
-  if (isWeekday() && getMarketSession() === 'REGULAR') {
-    updateLivePrices().catch(e => console.error('[livePrices] 오류:', e.message));
-  }
-}, 5 * 60_000);
-
-// 서버 시작 시 즉시 1회 실행 (장중인 경우)
-if (isWeekday() && getMarketSession() === 'REGULAR') {
-  console.log('[livePrices] 서버 시작 즉시 실행');
-  updateLivePrices().catch(e => console.error('[livePrices] 초기 실행 오류:', e.message));
-}
+// 장중 가격 업데이트는 Google Sheets Apps Script → /webhook/live-prices 로 수신
 
 // 서버 시작 시 prevClose 초기화 (KV → Yahoo 폴백)
 initPrevClose().catch(e => console.error('[prevClose] 초기화 실패:', e.message));
