@@ -1702,16 +1702,6 @@ if (isWeekday() && h === 9 && new Date().getMinutes() === 50) {
   })();
 }
 
-// 평일 ET 10:00~15:59, 5분마다 장중 가격 업데이트
-// 09:50 롤업 감지 완료 이후부터 시작
-if (isWeekday()) {
-  const now = new Date();
-  const min = now.getMinutes();
-  if (h >= 10 && h < 16 && min % 5 === 0) {
-    updateLivePrices().catch(e => console.error('[livePrices] 스케줄 오류:', e.message));
-  }
-}
-
 // 평일 ET 09:00~16:59, 15분마다 DEX 계산
 if (isWeekday()) {
   const now = new Date();
@@ -1727,6 +1717,13 @@ if (isWeekday()) {
 // 최초 실행
 lastSession = getMarketSession();
 scheduleSnapshot();
+
+// 장중 가격 업데이트 — 독립 5분 타이머 (1분 루프 타이밍 미스 방지)
+setInterval(() => {
+  if (isWeekday() && getMarketSession() === 'REGULAR') {
+    updateLivePrices().catch(e => console.error('[livePrices] 오류:', e.message));
+  }
+}, 5 * 60_000);
 
 // 서버 시작 시 prevClose 초기화 (KV → Yahoo 폴백)
 initPrevClose().catch(e => console.error('[prevClose] 초기화 실패:', e.message));
