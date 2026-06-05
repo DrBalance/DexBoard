@@ -7,7 +7,7 @@
 
 import http from "http";
 import { calculateAndStore, collectSymbol, getTodayET } from "./vanna_analyzer.js";
-import { runScreenerCollection, fetchScreenerSymbols, analyzeSymbol, saveSymbolRows, updateScreenedTicker, runWatchlistScan, pruneWatchlistGroup, fetchYahooBatchQuote } from "./screener-engine.js";
+import { runScreenerCollection, fetchScreenerSymbols, analyzeSymbol, saveSymbolRows, updateScreenedTicker, runWatchlistScan, pruneWatchlistGroup } from "./screener-engine.js";
 import { fetchChartData, VALID_RESOLUTIONS } from "./chart-api.js";
 
 const TWELVE_KEY = process.env.TWELVE_KEY || "";
@@ -1392,8 +1392,23 @@ async function updateLivePrices() {
       stMap[r.symbol] = r;
     }
 
-    // 3. Yahoo batch quote
-    const quotes = await fetchYahooBatchQuote(`http://localhost:${PORT}`, CRON_SECRET, symbols);
+    // 3. Yahoo batch quote (Railway에서 직접 호출 — CF Worker IP 차단 우회)
+    const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols.join(','))}&fields=regularMarketPrice,marketState`;
+    const yahooRes = await fetch(yahooUrl, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (!yahooRes.ok) throw new Error(`Yahoo HTTP ${yahooRes.status}`);
+    const yahooData = await yahooRes.json();
+    const quotes = {};
+    for (const q of (yahooData?.quoteResponse?.result ?? [])) {
+      if (q.symbol && q.regularMarketPrice != null) {
+        quotes[q.symbol] = {
+          price:       Math.round(q.regularMarketPrice * 100) / 100,
+          marketState: q.marketState ?? 'UNKNOWN',
+        };
+      }
+    }
 
     // 장이 REGULAR가 아닌 경우 (Yahoo marketState 기준) 조기 종료
     const states = Object.values(quotes).map(q => q.marketState);
