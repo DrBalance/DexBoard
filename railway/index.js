@@ -1354,29 +1354,6 @@ async function runCollect(symbols, date) {
 }
 
 // ─────────────────────────────────────────────────────────────────
-// 스케줄러
-// ─────────────────────────────────────────────────────────────────
-function startScheduler() {
-let lastSession  = null;
-let screenerDone = false;  // 당일 스크리너 수집 여부
-let openDone     = false;  // 당일 장 시작 스냅샷 여부
-let livePriceDone = false; // 당일 장중 가격 업데이트 여부 (자정 초기화)
-
-// 매일 자정 플래그 초기화
-setInterval(() => {
-const h = getETHour();
-if (h === 0) { screenerDone = false; openDone = false; livePriceDone = false; }
-}, 60_000);
-
-// ─────────────────────────────────────────────────────────────────
-// 장중 실시간 가격 업데이트
-//
-// 흐름:
-//   1. Yahoo batch quote → screened_tickers 전체 spot_price + upside 갱신
-//   2. 돌파 종목(spot > target_strike) → analyzeSymbol() 재실행
-//      → saveSymbolRows() + updateScreenedTicker() + rollup-check
-//
-// ─────────────────────────────────────────────────────────────────
 // 장중 가격 업데이트 — Google Sheets Apps Script에서 수신
 //
 // Apps Script 흐름:
@@ -1476,6 +1453,31 @@ async function processLivePrices(prices) {
     _livePriceRunning = false;
   }
 }
+
+// ─────────────────────────────────────────────────────────────────
+// 스케줄러
+// ─────────────────────────────────────────────────────────────────
+function startScheduler() {
+let lastSession  = null;
+let screenerDone = false;  // 당일 스크리너 수집 여부
+let openDone     = false;  // 당일 장 시작 스냅샷 여부
+let livePriceDone = false; // 당일 장중 가격 업데이트 여부 (자정 초기화)
+
+// 매일 자정 플래그 초기화
+setInterval(() => {
+const h = getETHour();
+if (h === 0) { screenerDone = false; openDone = false; livePriceDone = false; }
+}, 60_000);
+
+// ─────────────────────────────────────────────────────────────────
+// 장중 실시간 가격 업데이트
+//
+// 흐름:
+//   1. Yahoo batch quote → screened_tickers 전체 spot_price + upside 갱신
+//   2. 돌파 종목(spot > target_strike) → analyzeSymbol() 재실행
+//      → saveSymbolRows() + updateScreenedTicker() + rollup-check
+//
+
 
 // 1분마다 세션 체크 → 폴링 주기 동적 조정
 let snapshotTimer = null;
