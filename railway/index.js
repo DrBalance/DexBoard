@@ -397,6 +397,40 @@ if (req.method === "GET" && req.url.startsWith("/api/chart")) {
   }
 }
 
+// ── GET /live-prices ─────────────────────────────────────────────
+// Yahoo Finance batch quote 프록시 (Railway IP 사용 → CF Worker IP 차단 우회)
+// ?symbols=AAPL,NVDA,MSFT
+if (req.method === "GET" && req.url.startsWith("/live-prices")) {
+  const auth = req.headers["x-cron-secret"];
+  if (CRON_SECRET && auth !== CRON_SECRET) {
+    res.writeHead(401);
+    return res.end("Unauthorized");
+  }
+  try {
+    const urlObj      = new URL(req.url, `http://localhost`);
+    const symbolsParam = urlObj.searchParams.get("symbols") ?? "";
+    if (!symbolsParam) return sendJSON(res, 400, { error: "symbols 파라미터 필요" });
+
+    const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbolsParam)}&fields=regularMarketPrice,marketState`;
+    const yRes = await fetch(url, {
+      headers: { "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36" },
+      signal: AbortSignal.timeout(12000),
+    });
+    if (!yRes.ok) throw new Error(`Yahoo HTTP ${yRes.status}`);
+
+    const data   = await yRes.json();
+    const result = data?.quoteResponse?.result ?? [];
+    const quotes = result.map(q => ({
+      symbol:             q.symbol,
+      regularMarketPrice: q.regularMarketPrice ?? null,
+      marketState:        q.marketState        ?? null,
+    }));
+    return sendJSON(res, 200, { ok: true, quotes });
+  } catch (err) {
+    return sendJSON(res, 500, { ok: false, error: err.message });
+  }
+}
+
 // ── GET /health ──────────────────────────────────────────────────
 if (req.method === "GET" && req.url === "/health") {
 return sendJSON(res, 200, { status: "ok", ts: new Date().toISOString() });
@@ -1328,6 +1362,7 @@ if (h === 0) { screenerDone = false; openDone = false; livePriceDone = false; }
 let _livePriceRunning = false;
 
 async function updateLivePrices() {
+  console.log('[livePrices] 실행 시작');
   if (_livePriceRunning) {
     console.log('[livePrices] 이전 실행 중 — 스킵');
     return;
@@ -1358,7 +1393,7 @@ async function updateLivePrices() {
     }
 
     // 3. Yahoo batch quote
-    const quotes = await fetchYahooBatchQuote(CF_WORKER_URL, CRON_SECRET, symbols);
+    const quotes = await fetchYahooBatchQuote(`http://localhost:${PORT}`, CRON_SECRET, symbols);
 
     // 장이 REGULAR가 아닌 경우 (Yahoo marketState 기준) 조기 종료
     const states = Object.values(quotes).map(q => q.marketState);
@@ -1724,6 +1759,12 @@ setInterval(() => {
     updateLivePrices().catch(e => console.error('[livePrices] 오류:', e.message));
   }
 }, 5 * 60_000);
+
+// 서버 시작 시 즉시 1회 실행 (장중인 경우)
+if (isWeekday() && getMarketSession() === 'REGULAR') {
+  console.log('[livePrices] 서버 시작 즉시 실행');
+  updateLivePrices().catch(e => console.error('[livePrices] 초기 실행 오류:', e.message));
+}
 
 // 서버 시작 시 prevClose 초기화 (KV → Yahoo 폴백)
 initPrevClose().catch(e => console.error('[prevClose] 초기화 실패:', e.message));

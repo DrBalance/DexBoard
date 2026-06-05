@@ -662,12 +662,13 @@ export async function pruneWatchlistGroup(cfWorkerUrl, cronSecret) {
 // 여러 심볼을 한 번에 조회해 현재가 반환
 // 반환값: { AAPL: { price, marketState }, NVDA: { ... }, ... }
 //
-// CORS 우회: CF Worker의 /api/live-prices 프록시를 거침
+// Railway 서버의 /live-prices 엔드포인트를 통해 Yahoo Finance 조회
+// (CF Worker IP는 Yahoo에 차단됨 → Railway IP 사용)
 // ============================================
-export async function fetchYahooBatchQuote(cfWorkerUrl, cronSecret, symbols) {
+export async function fetchYahooBatchQuote(railwayUrl, cronSecret, symbols) {
   if (!symbols?.length) return {};
 
-  const url = `${cfWorkerUrl}/api/live-prices?symbols=${encodeURIComponent(symbols.join(','))}`;
+  const url = `${railwayUrl}/live-prices?symbols=${encodeURIComponent(symbols.join(','))}`;
   const res = await fetch(url, {
     headers: { 'x-cron-secret': cronSecret },
     signal:  AbortSignal.timeout(15000),
