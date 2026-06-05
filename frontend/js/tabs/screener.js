@@ -31,11 +31,76 @@ export function initScreener() {
   checkCollectionStatus();
   loadScreener();
   loadBbMap();
+  // 이미 장중이면 즉시 폴링 시작
+  if (window._marketState === 'REGULAR') startLivePricePolling();
 }
 
 export function refreshScreener() {
   loadScreener();
 }
+
+// ============================================
+// 장중 현재가 폴링 (5분마다 테이블 갱신)
+// ============================================
+let _livePriceTimer = null;
+
+function startLivePricePolling() {
+  if (_livePriceTimer) return;
+  _livePriceTimer = setInterval(pollLivePrices, 5 * 60_000);
+}
+
+function stopLivePricePolling() {
+  if (_livePriceTimer) { clearInterval(_livePriceTimer); _livePriceTimer = null; }
+}
+
+async function pollLivePrices() {
+  // 스크리너 데이터가 없거나 장외면 스킵
+  if (!allSymbols.length) return;
+  if (window._marketState && window._marketState !== 'REGULAR') return;
+
+  try {
+    const res  = await fetch(`${CF_API}/api/screener/price-targets`);
+    const data = await res.json();
+    const map  = {};
+    for (const r of (data.targets ?? [])) map[r.symbol] = r;
+
+    let changed = false;
+    for (const sym of allSymbols) {
+      const t = map[sym.symbol];
+      if (!t || t.spot_price == null) continue;
+
+      const newSpot = t.spot_price;
+      if (newSpot === sym.spot_price) continue;  // 변화 없으면 스킵
+
+      sym.spot_price = newSpot;
+      // upside 재계산
+      sym.upside = (sym.target_strike && newSpot)
+        ? Math.round(((sym.target_strike - newSpot) / newSpot) * 10000) / 100
+        : null;
+      // dist_pct 재계산
+      sym.dist_pct = (sym.flip_strike && newSpot)
+        ? Math.round(((newSpot - sym.flip_strike) / sym.flip_strike) * 10000) / 100
+        : null;
+      changed = true;
+    }
+
+    if (changed) {
+      renderTable(getActiveFilter());
+      console.log('[livePrices] 테이블 갱신');
+    }
+  } catch (e) {
+    console.warn('[livePrices] 폴링 실패:', e.message);
+  }
+}
+
+// 장 상태 변화 감지 → 폴링 시작/중단
+window.addEventListener('marketStateChanged', ({ detail }) => {
+  if (detail.marketState === 'REGULAR') {
+    startLivePricePolling();
+  } else {
+    stopLivePricePolling();
+  }
+});
 
 // ============================================
 // HTML 뼈대
