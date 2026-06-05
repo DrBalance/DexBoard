@@ -1024,33 +1024,38 @@ async function loadRollupHistory(activeOnly = true) {
         + ' ' + d.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false });
     };
 
+    const ROW_H  = 36;   // 행 높이(px) — CSS와 맞춰야 함
+    const VISIBLE = 5;    // 보이는 행 수
+
     body.innerHTML = `
-      <table class="sc-tbl sc-rollup-tbl">
-        <thead>
-          <tr>
-            <th class="sc-th">종목</th>
-            <th class="sc-th">이전 목표가</th>
-            <th class="sc-th">새 목표가</th>
-            <th class="sc-th">현재가</th>
-            <th class="sc-th">감지 시각</th>
-          </tr>
-        </thead>
-        <tbody>
-          ${rows.map(r => {
-            const isUp = r.new_strike > r.old_strike;
-            const arrow = isUp ? '↑' : '↓';
-            const arrowColor = isUp ? 'var(--green)' : 'var(--red)';
-            return `
-            <tr class="sc-row">
-              <td class="sc-td-price" style="font-weight:700">${r.ticker}</td>
-              <td class="sc-td-price" style="color:var(--text3)">$${r.old_strike}</td>
-              <td class="sc-td-price"><span style="color:${arrowColor}">${arrow}</span> $${r.new_strike}</td>
-              <td class="sc-td-price">${r.spot_price ? '$' + r.spot_price.toFixed(2) : '-'}</td>
-              <td style="padding:9px 12px;font-size:12px;color:var(--text3);white-space:nowrap">${fmt(r.detected_at)}</td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>
+      <div class="sc-rollup-scroll" style="max-height:${ROW_H * VISIBLE}px;overflow-y:auto;border-radius:6px;">
+        <table class="sc-tbl sc-rollup-tbl" style="width:100%;border-collapse:collapse;">
+          <thead style="position:sticky;top:0;z-index:1;background:var(--bg2,#161b22);">
+            <tr>
+              <th class="sc-th">종목</th>
+              <th class="sc-th">이전 목표가</th>
+              <th class="sc-th">새 목표가</th>
+              <th class="sc-th">현재가</th>
+              <th class="sc-th">감지 시각</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${rows.map(r => {
+              const isUp = r.new_strike > r.old_strike;
+              const arrow = isUp ? '↑' : '↓';
+              const arrowColor = isUp ? 'var(--green)' : 'var(--red)';
+              return `
+              <tr class="sc-row" style="height:${ROW_H}px;">
+                <td class="sc-td-price" style="font-weight:700">${r.ticker}</td>
+                <td class="sc-td-price" style="color:var(--text3)">$${r.old_strike}</td>
+                <td class="sc-td-price"><span style="color:${arrowColor}">${arrow}</span> $${r.new_strike}</td>
+                <td class="sc-td-price">${r.spot_price ? '$' + r.spot_price.toFixed(2) : '-'}</td>
+                <td style="padding:9px 12px;font-size:12px;color:var(--text3);white-space:nowrap">${fmt(r.detected_at)}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
     `;
   } catch (e) {
     body.innerHTML = `<div class="sc-rollup-error">이력 로드 실패: ${e.message}</div>`;
