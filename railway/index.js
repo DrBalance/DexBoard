@@ -503,7 +503,7 @@ if (req.method === "POST" && req.url === "/webhook/tradingview") {
   }
 
   // 심볼별 가격 갱신 헬퍼 (flat 구조: price + prev 별도 필드)
-  function updatePrice(cacheKey, price, prev) {
+  const updatePrice = (cacheKey, price, prev) => {
     const p = parseFloat(price);
     if (isNaN(p) || p <= 0) return;
     const prevClose = parseFloat(prev) || _cache[cacheKey]?.prevClose || null;
@@ -511,7 +511,7 @@ if (req.method === "POST" && req.url === "/webhook/tradingview") {
     const changePct = prevClose != null ? Math.round((p - prevClose) / prevClose * 10000) / 100 : null;
     _cache[cacheKey] = { ..._cache[cacheKey], price: p, prevClose, change, changePct };
     console.log(`[webhook] ${cacheKey.toUpperCase()}: $${p} prev=$${prevClose} (${changePct ?? '?'}%)`);
-  }
+  };
 
   const { spy, spy_prev, qqq, qqq_prev, iwm, iwm_prev, vix, vix_prev, vold, time } = body;
 
