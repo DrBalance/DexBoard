@@ -1392,23 +1392,34 @@ async function updateLivePrices() {
       stMap[r.symbol] = r;
     }
 
-    // 3. Yahoo batch quote (Railway에서 직접 호출 — CF Worker IP 차단 우회)
-    const yahooUrl = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(symbols.join(','))}&fields=regularMarketPrice,marketState`;
-    const yahooRes = await fetch(yahooUrl, {
-      headers: { 'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36' },
-      signal: AbortSignal.timeout(15000),
-    });
-    if (!yahooRes.ok) throw new Error(`Yahoo HTTP ${yahooRes.status}`);
-    const yahooData = await yahooRes.json();
+    // 3. Yahoo 개별 순차 조회 (batch 429 방지 — 종목당 1건씩, 100ms 간격)
     const quotes = {};
-    for (const q of (yahooData?.quoteResponse?.result ?? [])) {
-      if (q.symbol && q.regularMarketPrice != null) {
-        quotes[q.symbol] = {
-          price:       Math.round(q.regularMarketPrice * 100) / 100,
-          marketState: q.marketState ?? 'UNKNOWN',
-        };
+    const yahooHeaders = {
+      'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+      'Accept': 'application/json',
+    };
+    for (const sym of symbols) {
+      try {
+        const url = `https://query1.finance.yahoo.com/v7/finance/quote?symbols=${encodeURIComponent(sym)}&fields=regularMarketPrice,marketState`;
+        const r   = await fetch(url, { headers: yahooHeaders, signal: AbortSignal.timeout(8000) });
+        if (r.ok) {
+          const data = await r.json();
+          const q    = data?.quoteResponse?.result?.[0];
+          if (q?.regularMarketPrice != null) {
+            quotes[sym] = {
+              price:       Math.round(q.regularMarketPrice * 100) / 100,
+              marketState: q.marketState ?? 'UNKNOWN',
+            };
+          }
+        } else {
+          console.warn(`[livePrices] ${sym} Yahoo HTTP ${r.status}`);
+        }
+      } catch (e) {
+        console.warn(`[livePrices] ${sym} 조회 실패: ${e.message}`);
       }
+      await sleep(100);
     }
+    console.log(`[livePrices] Yahoo 조회 완료 — ${Object.keys(quotes).length}/${symbols.length}개`);
 
     // 장이 REGULAR가 아닌 경우 (Yahoo marketState 기준) 조기 종료
     const states = Object.values(quotes).map(q => q.marketState);
