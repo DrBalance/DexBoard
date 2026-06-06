@@ -709,6 +709,7 @@ function renderTable(filter = 'all') {
         <th class="sc-th sortable" data-col="target_strike">목표가</th>
         <th class="sc-th sortable" data-col="upside">상승여력</th>
         <th class="sc-th sortable" data-col="concentration_count">집중도</th>
+        <th class="sc-th sortable" data-col="bet_strength">베팅강도</th>
         <th class="sc-th sortable" data-col="squeeze_stars">스퀴즈</th>
         <th class="sc-th">롤업</th>
         <th class="sc-th">히트맵</th>
@@ -895,6 +896,37 @@ function buildRow(r) {
       })()
     : '<span class="muted">-</span>';
 
+  // ── 베팅강도 계산
+  // 합산 DEX: target_strike와 일치하는 만기들의 peak_call_dex_value 합산
+  const totalDex = (r.expiries ?? [])
+    .filter(e => Number(e.peak_call_dex_strike) === Number(r.target_strike))
+    .reduce((sum, e) => sum + (e.peak_call_dex_value ?? 0), 0);
+
+  // 시총 M$ 단위로 변환 (DB는 달러 원값)
+  const marketCapM = r.market_cap != null ? r.market_cap / 1e6 : null;
+
+  // 비중 = 합산DEX(M$) / (시총M$ × 0.7)
+  // 임계값 0.00005를 1로 환산
+  const THRESHOLD = 0.00005;
+  const betStrength = (marketCapM && marketCapM > 0 && totalDex > 0)
+    ? (totalDex / (marketCapM * 0.7)) / THRESHOLD
+    : null;
+
+  // 베팅강도 표시
+  const betStrengthStr = (() => {
+    if (betStrength === null) return '<span class="muted">-</span>';
+    const val = betStrength.toFixed(2);
+    let color;
+    if (betStrength >= 2.0)      color = '#22c55e';
+    else if (betStrength >= 1.0) color = '#4ade80';
+    else if (betStrength >= 0.5) color = '#eab308';
+    else                         color = '#ef4444';
+    return `<span style="color:${color};font-weight:600">${val}</span>`;
+  })();
+
+  // bet_strength를 정렬에 사용할 수 있도록 r에 주입
+  r.bet_strength = betStrength ?? -1;
+
   // 집중도
   const concentrationStr = (() => {
     if (callCount <= 0) return '<span class="muted">-</span>';
@@ -965,6 +997,7 @@ function buildRollupSparkline(events) {
       <td class="sc-td-price">${targetStr}</td>
       <td class="sc-td-dist">${upsideStr}</td>
       <td class="sc-td-cw">${concentrationStr}</td>
+      <td class="sc-td-cw" style="text-align:center">${betStrengthStr}</td>
       <td class="sc-td-squeeze">${'★'.repeat(r.squeeze_stars ?? 0) || '<span class="muted">-</span>'}</td>
       <td style="padding:6px 10px;vertical-align:middle">${buildRollupSparkline(rollupMap[r.symbol])}</td>
       <td>
