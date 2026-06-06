@@ -510,9 +510,9 @@ export default {
 
     // ── GET /api/events ───────────────────────────────────────────
     // 향후 N일간 이벤트 (Finnhub, KV 1시간 캐시)
-    // - earnings: 전체 종목 조회, screened 종목 여부는 프론트에서 강조 처리
+    // - earnings: watchlist 종목으로 한정, screened 종목은 프론트에서 강조
     // - economic: FOMC/CPI/NFP/GDP 화이트리스트 필터 + 날짜×카테고리 그룹핑
-    // - screened_symbols 목록도 함께 반환 (프론트 강조용)
+    // - screenedSymbols 목록도 함께 반환 (프론트 강조용)
     if (request.method === "GET" && path === "/api/events") {
       const days     = Math.min(parseInt(url.searchParams.get("days") ?? "14"), 30);
       const cacheKey = `events:finnhub:${days}`;
@@ -541,20 +541,31 @@ export default {
         screenedSymbols = (rows.results ?? []).map(r => r.symbol);
       } catch {}
 
+      // watchlist 심볼 목록 조회 (earnings 필터용)
+      let watchlistSymbols = new Set();
       try {
-        // ── ① Finnhub earnings calendar
+        const rows = await env.DB.prepare(
+          `SELECT DISTINCT ticker FROM watchlist`
+        ).all();
+        (rows.results ?? []).forEach(r => watchlistSymbols.add(r.ticker));
+      } catch {}
+
+      try {
+        // ── ① Finnhub earnings calendar (워치리스트 종목만)
         const earningsRes = await fetch(
           `https://finnhub.io/api/v1/calendar/earnings?from=${from}&to=${to}&token=${FINNHUB}`,
           { signal: AbortSignal.timeout(10000) }
         );
         const earningsData = earningsRes.ok ? await earningsRes.json() : { earningsCalendar: [] };
-        const earningsList = (earningsData.earningsCalendar ?? []).map(e => ({
-          type:         'earnings',
-          date:         e.date,
-          symbol:       e.symbol,
-          eps_estimate: e.epsEstimate ?? null,
-          timing:       null, // Finnhub earnings calendar에 timing 없음
-        }));
+        const earningsList = (earningsData.earningsCalendar ?? [])
+          .filter(e => watchlistSymbols.has(e.symbol))
+          .map(e => ({
+            type:         'earnings',
+            date:         e.date,
+            symbol:       e.symbol,
+            eps_estimate: e.epsEstimate ?? null,
+            timing:       null,
+          }));
 
         // ── ② Finnhub economic calendar (화이트리스트 필터 + 그룹핑)
         const MACRO_WHITELIST = [
