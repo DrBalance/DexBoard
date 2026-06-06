@@ -223,6 +223,7 @@ function renderShell() {
     <div class="sc-events-header">
       <span class="sc-events-title">📅 향후 14일 이벤트</span>
       <span class="sc-events-sub" id="sc-events-range"></span>
+      <button id="sc-events-refresh-btn" class="sc-events-refresh-btn" title="이벤트 새로 조회">↻ 지금 조회</button>
     </div>
     <div id="sc-events-body">
       <div class="sc-events-loading">이벤트 데이터 불러오는 중...</div>
@@ -273,6 +274,7 @@ function bindEvents() {
   document.getElementById('sc-collect-btn')?.addEventListener('click', () => startCollection(false));
   document.getElementById('sc-force-btn')?.addEventListener('click',   () => startCollection(true));
   document.getElementById('sc-refresh-btn')?.addEventListener('click', () => loadScreener());
+  document.getElementById('sc-events-refresh-btn')?.addEventListener('click', () => loadEvents([], true));
 
   document.getElementById('sc-filter-pills')?.addEventListener('click', e => {
     const btn = e.target.closest('.pill');
@@ -1017,15 +1019,18 @@ function buildRollupSparkline(events) {
 // ============================================
 // 이벤트 패널
 // ============================================
-async function loadEvents(symbols = []) {
+async function loadEvents(symbols = [], force = false) {
   const body  = document.getElementById('sc-events-body');
   const range = document.getElementById('sc-events-range');
+  const btn   = document.getElementById('sc-events-refresh-btn');
   if (!body) return;
 
   body.innerHTML = '<div class="sc-events-loading">불러오는 중...</div>';
+  if (btn) { btn.disabled = true; btn.textContent = '↻ 조회 중...'; }
 
   try {
-    const res  = await fetch(`${CF_API}/api/events?days=14`);
+    const url = `${CF_API}/api/events?days=14${force ? '&force=1' : ''}`;
+    const res  = await fetch(url);
     const data = await res.json();
 
     if (!data.ok || !data.events?.length) {
@@ -1038,11 +1043,16 @@ async function loadEvents(symbols = []) {
     const DAY = ['일','월','화','수','목','금','토'];
     const screenedSet = new Set(data.screenedSymbols ?? []);
 
+    // 날짜 문자열(YYYY-MM-DD) → KST 날짜 표시
     const fmtDate = (dateStr) => {
       if (!dateStr) return '-';
       const d = new Date(dateStr + 'T00:00:00Z');
-      return `${d.getUTCMonth()+1}/${d.getUTCDate()}(${DAY[d.getUTCDay()]})`;
+      const kst = new Date(d.getTime() + 9 * 60 * 60 * 1000);
+      return `${kst.getUTCMonth()+1}/${kst.getUTCDate()}(${DAY[kst.getUTCDay()]})`;
     };
+
+    const economicList = data.events.filter(e => e.type === 'economic');
+    const earningsList  = data.events.filter(e => e.type === 'earnings');
 
     // 카테고리별 색상
     const ECO_COLOR = {
@@ -1053,60 +1063,86 @@ async function loadEvents(symbols = []) {
       RETAIL: '#a78bfa',
     };
 
-    const rows = data.events.map(e => {
-      const dateStr = fmtDate(e.date);
+    // ── 경제 이벤트 테이블
+    const ecoRows = economicList.map(e => {
+      const color = ECO_COLOR[e.category] ?? '#94a3b8';
+      return `
+        <tr class="sc-ev-row-eco">
+          <td class="sc-ev-date">${fmtDate(e.date)}</td>
+          <td>
+            <span class="sc-ev-type-dot" style="background:${color}"></span>
+            <span class="sc-ev-title" style="color:${color}">${e.title}</span>
+          </td>
+        </tr>`;
+    }).join('');
 
-      if (e.type === 'economic') {
-        // 경제 이벤트 행
-        const color = ECO_COLOR[e.category] ?? '#94a3b8';
-        return `
-          <tr class="sc-ev-row-eco">
-            <td class="sc-ev-date">${dateStr}</td>
-            <td colspan="3">
-              <span class="sc-ev-type-dot" style="background:${color}"></span>
-              <span class="sc-ev-title" style="color:${color}">${e.title}</span>
-            </td>
-            <td></td>
-          </tr>`;
-      }
-
-      // earnings 행
-      const isScreened  = screenedSet.has(e.symbol);
-      const symClass     = isScreened ? 'sc-ev-symbol screened' : 'sc-ev-symbol';
-      const rowClass     = isScreened ? 'sc-ev-row-screened' : '';
-      const eps          = e.eps_estimate != null ? `EPS 예상 $${e.eps_estimate}` : '-';
-      const timingLabel  = e.timing === 'BMO' ? '장전' : e.timing === 'AMC' ? '장후' : '-';
-      const timingCls    = e.timing === 'BMO' ? 'bmo' : e.timing === 'AMC' ? 'amc' : '';
-      const screenedBadge = isScreened ? ' <span class="sc-ev-badge">●</span>' : '';
+    // ── 실적 테이블
+    const earnRows = earningsList.map(e => {
+      const isScreened    = screenedSet.has(e.symbol);
+      const rowClass      = isScreened ? 'sc-ev-row-screened' : '';
+      const symClass      = isScreened ? 'sc-ev-symbol screened' : 'sc-ev-symbol';
+      const badge         = isScreened ? ' <span class="sc-ev-badge">●</span>' : '';
+      const eps           = e.eps_estimate != null ? `$${e.eps_estimate}` : '-';
+      const timingLabel   = e.timing === 'BMO' ? '장전' : e.timing === 'AMC' ? '장후' : '-';
+      const timingCls     = e.timing === 'BMO' ? 'bmo' : e.timing === 'AMC' ? 'amc' : '';
+      const beta          = e.beta != null ? e.beta.toFixed(2) : '-';
+      const shortF        = e.short_float != null ? `${e.short_float.toFixed(1)}%` : '-';
+      const shortFCls     = (e.short_float ?? 0) >= 20 ? 'red' : (e.short_float ?? 0) >= 10 ? 'amber' : '';
+      const company       = e.company ?? '-';
 
       return `
         <tr class="sc-ev-row ${rowClass}">
-          <td class="sc-ev-date">${dateStr}</td>
-          <td><span class="sc-ev-type-dot earnings"></span><span class="sc-ev-title">실적발표</span></td>
-          <td class="${symClass}">${e.symbol ?? '-'}${screenedBadge}</td>
-          <td class="sc-ev-meta">${eps}</td>
+          <td class="sc-ev-date">${fmtDate(e.date)}</td>
+          <td class="${symClass}">${e.symbol ?? '-'}${badge}</td>
+          <td class="sc-ev-company">${company}</td>
+          <td class="sc-ev-meta">${beta}</td>
+          <td class="sc-ev-meta ${shortFCls}">${shortF}</td>
+          <td class="sc-ev-meta">EPS ${eps}</td>
           <td><span class="sc-ev-hour ${timingCls}">${timingLabel}</span></td>
         </tr>`;
     }).join('');
 
     body.innerHTML = `
-      <div class="sc-events-scroll">
-        <table class="sc-events-tbl">
-          <thead>
-            <tr>
-              <th>날짜</th>
-              <th>이벤트</th>
-              <th>종목</th>
-              <th>세부</th>
-              <th>시간</th>
-            </tr>
-          </thead>
-          <tbody>${rows}</tbody>
-        </table>
+      <div class="sc-events-split">
+        <div class="sc-events-panel">
+          <div class="sc-events-panel-title">📊 경제 이벤트</div>
+          <div class="sc-events-scroll">
+            <table class="sc-events-tbl">
+              <thead>
+                <tr>
+                  <th>날짜 (KST)</th>
+                  <th>이벤트</th>
+                </tr>
+              </thead>
+              <tbody>${ecoRows || '<tr><td colspan="2" class="sc-events-empty">이벤트 없음</td></tr>'}</tbody>
+            </table>
+          </div>
+        </div>
+        <div class="sc-events-panel">
+          <div class="sc-events-panel-title">📅 실적 발표</div>
+          <div class="sc-events-scroll">
+            <table class="sc-events-tbl">
+              <thead>
+                <tr>
+                  <th>날짜 (KST)</th>
+                  <th>티커</th>
+                  <th>기업명</th>
+                  <th>Beta</th>
+                  <th>Short%</th>
+                  <th>EPS 예상</th>
+                  <th>시간</th>
+                </tr>
+              </thead>
+              <tbody>${earnRows || '<tr><td colspan="7" class="sc-events-empty">이벤트 없음</td></tr>'}</tbody>
+            </table>
+          </div>
+        </div>
       </div>`;
 
   } catch (e) {
     body.innerHTML = `<div class="sc-events-empty">로드 실패: ${e.message}</div>`;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '↻ 지금 조회'; }
   }
 }
 
