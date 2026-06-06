@@ -509,14 +509,13 @@ export default {
     }
 
     // ── GET /api/events ───────────────────────────────────────────
-    // 향후 N일간 실적 발표 이벤트 (Yahoo Finance, KV 1시간 캐시)
-    // - screened_tickers 종목에 한정
-    // - 장전(BMO)/장후(AMC) 포함
-    // - 시간은 ET 기준으로 반환 (프론트에서 KST 변환)
+    // 향후 N일간 이벤트 (Finnhub, KV 1시간 캐시)
+    // - earnings: 전체 종목 조회, screened 종목 여부는 프론트에서 강조 처리
+    // - economic: FOMC/CPI/NFP/GDP 화이트리스트 필터 + 날짜×카테고리 그룹핑
+    // - screened_symbols 목록도 함께 반환 (프론트 강조용)
     if (request.method === "GET" && path === "/api/events") {
-      const days    = Math.min(parseInt(url.searchParams.get("days") ?? "14"), 30);
-      const symbols = (url.searchParams.get("symbols") ?? "").split(",").map(s => s.trim().toUpperCase()).filter(Boolean);
-      const cacheKey = `events:${days}:${symbols.sort().join(",")}`;
+      const days     = Math.min(parseInt(url.searchParams.get("days") ?? "14"), 30);
+      const cacheKey = `events:finnhub:${days}`;
 
       // KV 캐시 확인 (1시간)
       try {
@@ -531,78 +530,90 @@ export default {
       toDate.setDate(today.getDate() + days);
       const from = today.toISOString().slice(0, 10);
       const to   = toDate.toISOString().slice(0, 10);
+      const FINNHUB = env.FINNHUB_KEY;
 
-      // symbols가 없으면 빈 결과 반환
-      if (!symbols.length) {
-        return json({ ok: true, from, to, events: [] }, 200, corsHeaders);
-      }
+      // screened_tickers 심볼 목록 조회 (프론트 강조용)
+      let screenedSymbols = [];
+      try {
+        const rows = await env.DB.prepare(
+          `SELECT DISTINCT symbol FROM screened_tickers`
+        ).all();
+        screenedSymbols = (rows.results ?? []).map(r => r.symbol);
+      } catch {}
 
       try {
-        // Yahoo Finance에서 종목별 실적 발표 정보 병렬 조회
-        // quoteSummary API: earningsHistory + calendarEvents 모듈 사용
-        const fetchEarnings = async (sym) => {
-          try {
-            const res = await fetch(
-              `https://query1.finance.yahoo.com/v10/finance/quoteSummary/${sym}?modules=calendarEvents`,
-              {
-                headers: { 'User-Agent': 'Mozilla/5.0' },
-                signal: AbortSignal.timeout(8000),
-              }
-            );
-            if (!res.ok) return null;
-            const data = await res.json();
-            const cal  = data?.quoteSummary?.result?.[0]?.calendarEvents;
-            if (!cal) return null;
+        // ── ① Finnhub earnings calendar
+        const earningsRes = await fetch(
+          `https://finnhub.io/api/v1/calendar/earnings?from=${from}&to=${to}&token=${FINNHUB}`,
+          { signal: AbortSignal.timeout(10000) }
+        );
+        const earningsData = earningsRes.ok ? await earningsRes.json() : { earningsCalendar: [] };
+        const earningsList = (earningsData.earningsCalendar ?? []).map(e => ({
+          type:         'earnings',
+          date:         e.date,
+          symbol:       e.symbol,
+          eps_estimate: e.epsEstimate ?? null,
+          timing:       null, // Finnhub earnings calendar에 timing 없음
+        }));
 
-            // earnings.earningsDate: ET 기준 Unix timestamp 배열
-            const dates = cal.earnings?.earningsDate ?? [];
-            if (!dates.length) return null;
+        // ── ② Finnhub economic calendar (화이트리스트 필터 + 그룹핑)
+        const MACRO_WHITELIST = [
+          { key: 'FOMC',  patterns: ['fomc', 'federal reserve', 'fed rate', 'federal open market', 'powell', 'waller', 'barkin', 'kashkari', 'daly', 'bostic', 'williams', 'jefferson', 'cook', 'kugler', 'logan', 'musalem', 'schmid', 'hammack'] },
+          { key: 'CPI',   patterns: ['cpi', 'consumer price', 'ppi', 'producer price', 'core inflation', 'inflation'] },
+          { key: 'NFP',   patterns: ['nonfarm', 'non-farm', 'nfp', 'unemployment', 'jobless', 'payroll', 'labor'] },
+          { key: 'GDP',   patterns: ['gdp', 'gross domestic'] },
+          { key: 'RETAIL',patterns: ['retail sales'] },
+        ];
 
-            // 가장 가까운 미래 날짜 선택
-            const nowTs = Date.now() / 1000;
-            const next  = dates.find(d => (d.raw ?? 0) >= nowTs) ?? dates[dates.length - 1];
-            if (!next?.raw) return null;
-
-            const earningsTs = next.raw; // Unix timestamp (ET)
-            const earningsDate = new Date(earningsTs * 1000);
-            const dateStr = earningsDate.toISOString().slice(0, 10);
-
-            // days 범위 내인지 확인
-            if (dateStr < from || dateStr > to) return null;
-
-            // 장전/장후 판단: ET 기준 시간으로 추정
-            // Yahoo Finance earningsDate timestamp가 장전(0930 ET 이전)이면 BMO, 이후면 AMC
-            const etHour = earningsDate.getUTCHours() - 4; // ET = UTC-4 (EDT 기준)
-            let timing = null;
-            if (etHour < 12) timing = 'BMO'; // 장전
-            else             timing = 'AMC'; // 장후
-
-            return {
-              type:   'earnings',
-              date:   dateStr,
-              time_et: earningsDate.toISOString(), // ET 기준 ISO (프론트에서 KST 변환)
-              timing, // 'BMO'=장전, 'AMC'=장후
-              symbol: sym,
-              eps_estimate: cal.earnings?.earningsAverage?.raw ?? null,
-            };
-          } catch {
-            return null;
+        const getCategory = (eventName) => {
+          const lower = (eventName ?? '').toLowerCase();
+          for (const { key, patterns } of MACRO_WHITELIST) {
+            if (patterns.some(p => lower.includes(p))) return key;
           }
+          return null;
         };
 
-        // 종목별 병렬 조회 (최대 5개씩 배치)
-        const events = [];
-        const batchSize = 5;
-        for (let i = 0; i < symbols.length; i += batchSize) {
-          const batch   = symbols.slice(i, i + batchSize);
-          const results = await Promise.all(batch.map(fetchEarnings));
-          results.forEach(r => { if (r) events.push(r); });
+        const ecoRes = await fetch(
+          `https://finnhub.io/api/v1/calendar/economic?token=${FINNHUB}`,
+          { signal: AbortSignal.timeout(10000) }
+        );
+        const ecoData = ecoRes.ok ? await ecoRes.json() : { economicCalendar: [] };
+
+        // 날짜 범위 필터 + 카테고리 분류
+        // 같은 날짜 × 카테고리로 그룹핑
+        const ecoGroupMap = {}; // key: `${date}:${category}`
+        for (const e of (ecoData.economicCalendar ?? [])) {
+          if (!e.eventName || !e.time) continue;
+          const dateStr = e.time.slice(0, 10);
+          if (dateStr < from || dateStr > to) continue;
+          const category = getCategory(e.eventName);
+          if (!category) continue;
+
+          const groupKey = `${dateStr}:${category}`;
+          if (!ecoGroupMap[groupKey]) {
+            ecoGroupMap[groupKey] = { date: dateStr, category, names: [] };
+          }
+          // 중복 이름 방지
+          const shortName = e.eventName.trim();
+          if (!ecoGroupMap[groupKey].names.includes(shortName)) {
+            ecoGroupMap[groupKey].names.push(shortName);
+          }
         }
 
-        // 날짜순 정렬
-        events.sort((a, b) => (a.date ?? '').localeCompare(b.date ?? ''));
+        // 그룹핑된 경제 이벤트 → events 배열로 변환
+        const economicList = Object.values(ecoGroupMap).map(g => ({
+          type:     'economic',
+          date:     g.date,
+          category: g.category,
+          // "FOMC - Waller, Powell, Barkin" 형식
+          title:    `${g.category} - ${g.names.join(', ')}`,
+        }));
 
-        const payload = JSON.stringify({ ok: true, from, to, events });
+        // ── 합산 + 날짜순 정렬
+        const events = [...earningsList, ...economicList]
+          .sort((a, b) => (a.date ?? '').localeCompare(b.date ?? ''));
+
+        const payload = JSON.stringify({ ok: true, from, to, events, screenedSymbols });
 
         // KV 캐시 저장 (1시간)
         try { await env.DEX_KV.put(cacheKey, payload, { expirationTtl: 3600 }); } catch {}
