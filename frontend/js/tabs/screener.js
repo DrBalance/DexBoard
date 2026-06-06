@@ -1025,8 +1025,7 @@ async function loadEvents(symbols = []) {
   body.innerHTML = '<div class="sc-events-loading">불러오는 중...</div>';
 
   try {
-    const symParam = symbols.join(',');
-    const res  = await fetch(`${CF_API}/api/events?days=14&symbols=${encodeURIComponent(symParam)}`);
+    const res  = await fetch(`${CF_API}/api/events?days=14`);
     const data = await res.json();
 
     if (!data.ok || !data.events?.length) {
@@ -1037,43 +1036,56 @@ async function loadEvents(symbols = []) {
     if (range) range.textContent = `${data.from} ~ ${data.to}`;
 
     const DAY = ['일','월','화','수','목','금','토'];
+    const screenedSet = new Set(data.screenedSymbols ?? []);
 
-    // ET ISO → KST 변환 (ET = UTC-5/UTC-4, KST = UTC+9)
-    // time_et는 worker에서 UTC ISO로 저장했으므로 그대로 KST로 변환
-    const toKST = (isoStr) => {
-      if (!isoStr) return null;
-      return new Date(isoStr); // JS Date는 내부적으로 UTC, 표시만 로컬
+    const fmtDate = (dateStr) => {
+      if (!dateStr) return '-';
+      const d = new Date(dateStr + 'T00:00:00Z');
+      return `${d.getUTCMonth()+1}/${d.getUTCDate()}(${DAY[d.getUTCDay()]})`;
     };
-    const fmtKSTDate = (dt) => {
-      if (!dt) return '-';
-      // KST = UTC+9
-      const kst = new Date(dt.getTime() + 9 * 60 * 60 * 1000);
-      return `${kst.getUTCMonth()+1}/${kst.getUTCDate()}(${DAY[kst.getUTCDay()]})`;
-    };
-    const fmtKSTTime = (dt) => {
-      if (!dt) return null;
-      const kst = new Date(dt.getTime() + 9 * 60 * 60 * 1000);
-      const hh  = String(kst.getUTCHours()).padStart(2, '0');
-      const mm  = String(kst.getUTCMinutes()).padStart(2, '0');
-      return `${hh}:${mm} KST`;
+
+    // 카테고리별 색상
+    const ECO_COLOR = {
+      FOMC:   '#6366f1',
+      CPI:    '#f97316',
+      NFP:    '#22c55e',
+      GDP:    '#3b82f6',
+      RETAIL: '#a78bfa',
     };
 
     const rows = data.events.map(e => {
-      // earnings only (economic 제거)
-      const dtKST    = toKST(e.time_et);
-      const dateStr  = fmtKSTDate(dtKST);
-      const timeStr  = fmtKSTTime(dtKST);
-      const timingLabel = e.timing === 'BMO' ? '장전' : e.timing === 'AMC' ? '장후' : '-';
-      const timingCls   = e.timing === 'BMO' ? 'bmo' : e.timing === 'AMC' ? 'amc' : '';
-      const eps         = e.eps_estimate != null ? `EPS 예상 $${e.eps_estimate}` : '-';
-      const timeDisplay = timeStr ? `${timeStr}` : timingLabel;
+      const dateStr = fmtDate(e.date);
+
+      if (e.type === 'economic') {
+        // 경제 이벤트 행
+        const color = ECO_COLOR[e.category] ?? '#94a3b8';
+        return `
+          <tr class="sc-ev-row-eco">
+            <td class="sc-ev-date">${dateStr}</td>
+            <td colspan="3">
+              <span class="sc-ev-type-dot" style="background:${color}"></span>
+              <span class="sc-ev-title" style="color:${color}">${e.title}</span>
+            </td>
+            <td></td>
+          </tr>`;
+      }
+
+      // earnings 행
+      const isScreened  = screenedSet.has(e.symbol);
+      const symClass     = isScreened ? 'sc-ev-symbol screened' : 'sc-ev-symbol';
+      const rowClass     = isScreened ? 'sc-ev-row-screened' : '';
+      const eps          = e.eps_estimate != null ? `EPS 예상 $${e.eps_estimate}` : '-';
+      const timingLabel  = e.timing === 'BMO' ? '장전' : e.timing === 'AMC' ? '장후' : '-';
+      const timingCls    = e.timing === 'BMO' ? 'bmo' : e.timing === 'AMC' ? 'amc' : '';
+      const screenedBadge = isScreened ? ' <span class="sc-ev-badge">●</span>' : '';
+
       return `
-        <tr>
+        <tr class="sc-ev-row ${rowClass}">
           <td class="sc-ev-date">${dateStr}</td>
           <td><span class="sc-ev-type-dot earnings"></span><span class="sc-ev-title">실적발표</span></td>
-          <td class="sc-ev-symbol">${e.symbol ?? '-'}</td>
+          <td class="${symClass}">${e.symbol ?? '-'}${screenedBadge}</td>
           <td class="sc-ev-meta">${eps}</td>
-          <td><span class="sc-ev-hour ${timingCls}">${timingLabel}</span><span class="sc-ev-time-kst">${timeStr ?? ''}</span></td>
+          <td><span class="sc-ev-hour ${timingCls}">${timingLabel}</span></td>
         </tr>`;
     }).join('');
 
@@ -1082,11 +1094,11 @@ async function loadEvents(symbols = []) {
         <table class="sc-events-tbl">
           <thead>
             <tr>
-              <th>날짜 (KST)</th>
+              <th>날짜</th>
               <th>이벤트</th>
               <th>종목</th>
               <th>세부</th>
-              <th>시간 (KST)</th>
+              <th>시간</th>
             </tr>
           </thead>
           <tbody>${rows}</tbody>
