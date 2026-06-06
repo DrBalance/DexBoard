@@ -515,15 +515,18 @@ export default {
     // - screenedSymbols 목록도 함께 반환 (프론트 강조용)
     if (request.method === "GET" && path === "/api/events") {
       const days     = Math.min(parseInt(url.searchParams.get("days") ?? "14"), 30);
+      const force    = url.searchParams.get("force") === "1";
       const cacheKey = `events:finnhub:${days}`;
 
-      // KV 캐시 확인 (1시간)
-      try {
-        const cached = await env.DEX_KV.get(cacheKey);
-        if (cached) {
-          return new Response(cached, { headers: { ...corsHeaders, "Content-Type": "application/json", "X-Cache": "HIT" } });
-        }
-      } catch {}
+      // KV 캐시 확인 (force=1이면 스킵)
+      if (!force) {
+        try {
+          const cached = await env.DEX_KV.get(cacheKey);
+          if (cached) {
+            return new Response(cached, { headers: { ...corsHeaders, "Content-Type": "application/json", "X-Cache": "HIT" } });
+          }
+        } catch {}
+      }
 
       const today  = new Date();
       const toDate = new Date(today);
@@ -541,13 +544,21 @@ export default {
         screenedSymbols = (rows.results ?? []).map(r => r.symbol);
       } catch {}
 
-      // watchlist 심볼 목록 조회 (earnings 필터용)
+      // watchlist 심볼 목록 + 메타데이터 조회 (earnings 필터 및 기업정보용)
       let watchlistSymbols = new Set();
+      let watchlistMeta = {}; // ticker → { company, beta, short_float }
       try {
         const rows = await env.DB.prepare(
-          `SELECT DISTINCT ticker FROM watchlist`
+          `SELECT ticker, company, beta, short_float FROM watchlist`
         ).all();
-        (rows.results ?? []).forEach(r => watchlistSymbols.add(r.ticker));
+        (rows.results ?? []).forEach(r => {
+          watchlistSymbols.add(r.ticker);
+          watchlistMeta[r.ticker] = {
+            company:     r.company ?? null,
+            beta:        r.beta ?? null,
+            short_float: r.short_float ?? null,
+          };
+        });
       } catch {}
 
       try {
@@ -560,11 +571,14 @@ export default {
         const earningsList = (earningsData.earningsCalendar ?? [])
           .filter(e => watchlistSymbols.has(e.symbol))
           .map(e => ({
-            type:         'earnings',
-            date:         e.date,
-            symbol:       e.symbol,
+            type:        'earnings',
+            date:        e.date,
+            symbol:      e.symbol,
+            company:     watchlistMeta[e.symbol]?.company ?? null,
+            beta:        watchlistMeta[e.symbol]?.beta ?? null,
+            short_float: watchlistMeta[e.symbol]?.short_float ?? null,
             eps_estimate: e.epsEstimate ?? null,
-            timing:       null,
+            timing:      e.hour?.toUpperCase() ?? null, // 'bmo'→'BMO', 'amc'→'AMC'
           }));
 
         // ── ② Finnhub economic calendar (화이트리스트 필터 + 그룹핑)
@@ -626,8 +640,8 @@ export default {
 
         const payload = JSON.stringify({ ok: true, from, to, events, screenedSymbols });
 
-        // KV 캐시 저장 (1시간)
-        try { await env.DEX_KV.put(cacheKey, payload, { expirationTtl: 3600 }); } catch {}
+        // KV 캐시 저장 (24시간)
+        try { await env.DEX_KV.put(cacheKey, payload, { expirationTtl: 86400 }); } catch {}
 
         return new Response(payload, { headers: { ...corsHeaders, "Content-Type": "application/json" } });
 
