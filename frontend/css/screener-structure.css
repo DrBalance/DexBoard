@@ -874,7 +874,6 @@
 .sc-events-sub {
   font-size: 11px;
   color: var(--text3);
-  margin-left: auto;
 }
 .sc-events-scroll {
   max-height: 185px; /* 행높이 ~34px × 5행 + 여유 */
@@ -963,3 +962,52 @@
 .sc-ev-row-eco:hover td {
   background: rgba(255,255,255,0.05) !important;
 }
+
+.sc-events-refresh-btn {
+  margin-left: auto;
+  padding: 3px 10px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text3);
+  background: rgba(255,255,255,0.06);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.sc-events-refresh-btn:hover {
+  background: rgba(255,255,255,0.12);
+  color: var(--text);
+}
+.sc-events-refresh-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.sc-events-split {
+  display: grid;
+  grid-template-columns: 1fr 1.6fr;
+  gap: 12px;
+  align-items: start;
+}
+.sc-events-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.sc-events-panel-title {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--text3);
+  letter-spacing: 0.05em;
+  padding: 0 2px;
+}
+.sc-ev-company {
+  font-size: 11px;
+  color: var(--text3);
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sc-ev-meta.red   { color: #ef4444; }
+.sc-ev-meta.amber { color: #f59e0b; }
