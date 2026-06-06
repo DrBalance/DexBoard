@@ -877,7 +877,7 @@
   margin-left: auto;
 }
 .sc-events-scroll {
-  max-height: 175px; /* 5줄 기준 */
+  max-height: 185px; /* 행높이 ~34px × 5행 + 여유 */
   overflow-y: auto;
   overflow-x: hidden;
 }
@@ -936,4 +936,30 @@
   padding: 16px;
   font-size: 12px;
   color: var(--text3);
+}
+
+/* screened 종목 강조 */
+.sc-ev-row-screened td {
+  background: rgba(59,130,246,0.06);
+}
+.sc-ev-row-screened:hover td {
+  background: rgba(59,130,246,0.12) !important;
+}
+.sc-ev-symbol.screened {
+  color: #60a5fa;
+}
+.sc-ev-badge {
+  font-size: 8px;
+  color: #60a5fa;
+  vertical-align: middle;
+  margin-left: 3px;
+}
+
+/* 경제 이벤트 행 */
+.sc-ev-row-eco td {
+  background: rgba(255,255,255,0.02);
+  border-bottom: 1px solid rgba(255,255,255,0.04);
+}
+.sc-ev-row-eco:hover td {
+  background: rgba(255,255,255,0.05) !important;
 }
