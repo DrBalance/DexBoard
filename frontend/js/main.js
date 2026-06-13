@@ -7,6 +7,7 @@ import { startClock }         from './clock.js';
 import { initTabs, bindToggle } from './tabs.js';
 import { INTERVAL_SNAP, INTERVAL_FULL } from './config.js';
 import { initLive }           from './tabs/live.js';
+import { initWorkbench }      from './tabs/workbench.js';
 
 // ── clock.js 가 찾는 id와 index.html id 브리지 ────────────
 // clock.js: market-state-badge / market-state-dot / market-state-label
@@ -129,6 +130,7 @@ startClock();
 
 // live 탭 초기화 → tick 콜백 등록까지 완료 후 나머지 실행
 (async () => {
-  await initLive();  // registerTickCallback 등록까지 보장
-  fetchAndRender();  // 최초 1회 무조건 로드 (장 상태 무관)
+  await initLive();      // registerTickCallback 등록까지 보장
+  initWorkbench();       // Workbench 탭 전환 이벤트 등록
+  fetchAndRender();      // 최초 1회 무조건 로드 (장 상태 무관)
 })();
