@@ -1294,7 +1294,7 @@ export default {
         ts, date, spot,
         total_gex, total_vanna, total_charm, total_dex,
         total_call_volume, total_put_volume,
-        pcr, flip_zone,
+        pcr, flip_zone, max_pain,
         strikes,
       } = payload;
 
@@ -1308,11 +1308,11 @@ export default {
             (ts, date, spot,
              total_gex, total_vanna, total_charm, total_dex,
              total_call_volume, total_put_volume,
-             pcr, flip_zone,
+             pcr, flip_zone, max_pain,
              strike, call_oi, put_oi, call_oi_15m, put_oi_15m,
              call_volume, put_volume,
              dex, gex, vanna, charm)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         `).bind(
           ts, date, spot ?? null,
           total_gex ?? null, total_vanna ?? null, total_charm ?? null, total_dex ?? null,
@@ -1323,11 +1323,67 @@ export default {
           s.call_oi_15m ?? null, s.put_oi_15m ?? null,
           s.call_volume ?? null, s.put_volume ?? null,
           s.dex ?? null, s.gex ?? null, s.vanna ?? null, s.charm ?? null,
+          max_pain ?? null,
         )
       );
 
       await env.DB.batch(stmts);
       return json({ ok: true, inserted: stmts.length }, 200, corsHeaders);
+    }
+
+    // ── POST /d1/spy-daily-close ─────────────────────────────────
+    // 장마감 후 일별 종가 + 최종 옵션 지표 저장 (가설 검증용)
+    if (request.method === "POST" && path === "/d1/spy-daily-close") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      const {
+        date, close, max_pain, flip_zone,
+        put_wall, call_wall, pcr,
+        total_gex, total_vanna, total_charm, total_dex,
+        vix_close, saved_at,
+      } = await request.json();
+
+      if (!date || !close) {
+        return json({ error: "date, close 필수" }, 400, corsHeaders);
+      }
+
+      await env.DB.prepare(`
+        INSERT OR REPLACE INTO spy_daily_close
+          (date, close, max_pain, flip_zone,
+           put_wall, call_wall, pcr,
+           total_gex, total_vanna, total_charm, total_dex,
+           vix_close, saved_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+      `).bind(
+        date,
+        close        ?? null,
+        max_pain     ?? null,
+        flip_zone    ?? null,
+        put_wall     ?? null,
+        call_wall    ?? null,
+        pcr          ?? null,
+        total_gex    ?? null,
+        total_vanna  ?? null,
+        total_charm  ?? null,
+        total_dex    ?? null,
+        vix_close    ?? null,
+        saved_at     ?? new Date().toISOString(),
+      ).run();
+
+      return json({ ok: true, date }, 200, corsHeaders);
+    }
+
+    // ── GET /d1/spy-daily-close ──────────────────────────────────
+    // 일별 종가 + 지표 조회 (최근 60일)
+    if (request.method === "GET" && path === "/d1/spy-daily-close") {
+      const rows = await env.DB.prepare(`
+        SELECT * FROM spy_daily_close
+        ORDER BY date DESC
+        LIMIT 60
+      `).all();
+      return json({ ok: true, rows: rows.results ?? [] }, 200, corsHeaders);
     }
 
     // ── POST /d1/screener-scores ────────────────────────────────
