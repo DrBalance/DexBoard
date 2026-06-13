@@ -1171,12 +1171,17 @@ signal:  AbortSignal.timeout(5000),
 try {
   const bufRes = await fetch(`${CF_WORKER_URL}/kv-read?key=ts%3Amarket`, {
     headers: { 'x-kv-secret': CF_KV_SECRET },
-    signal: AbortSignal.timeout(4000),
+    signal: AbortSignal.timeout(8000),  // 4000 → 8000: KV 간헐적 지연 대응
   });
   let buf = [];
   if (bufRes.ok) {
     const bufData = await bufRes.json();
-    if (bufData.value) buf = JSON.parse(bufData.value);
+    try {
+      if (bufData.value) buf = JSON.parse(bufData.value);
+    } catch {
+      console.warn('[snapshot] 링버퍼 JSON 파싱 실패 — 빈 배열로 초기화');
+      buf = [];
+    }
   }
   buf.push({
     ts,
@@ -1503,8 +1508,10 @@ if (session === 'REGULAR') {
   fetchSnapshot();
 
   // 5분마다 웹훅 수신 여부 확인 → 미수신 시 Yahoo fallback
+  // _lastWebhookTs가 null(재시작 직후)이면 staleSec 계산 생략 — 이미 위에서 즉시 fetchSnapshot() 실행
   snapshotTimer = setInterval(async () => {
-    const lastTs  = _cache._lastWebhookTs ? new Date(_cache._lastWebhookTs).getTime() : 0;
+    if (!_cache._lastWebhookTs) return; // 재시작 직후 null → 오해성 로그 방지
+    const lastTs   = new Date(_cache._lastWebhookTs).getTime();
     const staleSec = (Date.now() - lastTs) / 1000;
     if (staleSec > 5 * 60) {
       console.warn(`[scheduler] 웹훅 ${Math.round(staleSec / 60)}분 미수신 → Yahoo fallback`);
@@ -1521,8 +1528,10 @@ if (session === 'REGULAR') {
   fetchSnapshot();
 
   // 5분마다 웹훅 수신 여부 확인 → 미수신 시 Yahoo fallback
+  // _lastWebhookTs가 null(재시작 직후)이면 staleSec 계산 생략 — 이미 위에서 즉시 fetchSnapshot() 실행
   snapshotTimer = setInterval(async () => {
-    const lastTs   = _cache._lastWebhookTs ? new Date(_cache._lastWebhookTs).getTime() : 0;
+    if (!_cache._lastWebhookTs) return; // 재시작 직후 null → 오해성 로그 방지
+    const lastTs   = new Date(_cache._lastWebhookTs).getTime();
     const staleSec = (Date.now() - lastTs) / 1000;
     if (staleSec > 5 * 60) {
       console.warn(`[scheduler] 웹훅 ${Math.round(staleSec / 60)}분 미수신 → Yahoo fallback`);
@@ -1610,6 +1619,113 @@ if (session !== lastSession) {
     console.log('[scheduler] 장 마감 → prevClose 저장 완료 (수집은 ET 17:30에 처리)');
   }
 }  // if (session !== lastSession)
+
+// 평일 ET 16:30 — 장마감 30분 후 일별 종가 + 최종 옵션 지표 저장
+if (isWeekday() && h === 16 && new Date().getMinutes() === 30) {
+  (async () => {
+    try {
+      console.log('[scheduler] ET 16:30 — spy_daily_close 저장 시작');
+
+      // KV에서 최종 옵션체인 읽기
+      const kvRes = await fetch(`${CF_WORKER_URL}/kv-read?key=dex%3Aspy%3A0dte`, {
+        headers: { 'x-kv-secret': CF_KV_SECRET },
+        signal: AbortSignal.timeout(8000),
+      });
+      if (!kvRes.ok) throw new Error(`KV read 실패: ${kvRes.status}`);
+      const kvData = await kvRes.json();
+      const parsed = kvData.value ? JSON.parse(kvData.value) : null;
+      const strikes = parsed?.strikes ?? [];
+      if (!strikes.length) throw new Error('strikes 없음');
+
+      // 집계
+      const sum = (field) => strikes.reduce((a, s) => a + (s[field] ?? 0), 0);
+      const totalGex   = sum('gex');
+      const totalVanna = sum('vanna');
+      const totalCharm = sum('charm');
+      const totalDex   = sum('dex');
+      const totalCallOI = sum('callOI');
+      const totalPutOI  = sum('putOI');
+      const pcr = totalCallOI > 0 ? totalPutOI / totalCallOI : null;
+
+      // flip_zone (GEX zero cross)
+      const byStrike = {};
+      for (const s of strikes) {
+        const k = s.strike;
+        if (!byStrike[k]) byStrike[k] = 0;
+        byStrike[k] += s.gex ?? 0;
+      }
+      const sorted = Object.entries(byStrike).map(([k, g]) => ({ k: +k, g })).sort((a, b) => a.k - b.k);
+      let flipZone = null, cum = 0;
+      for (const { k, g } of sorted) {
+        const prev = cum; cum += g;
+        if ((prev < 0 && cum >= 0) || (prev > 0 && cum <= 0)) { flipZone = k; break; }
+      }
+
+      // put_wall / call_wall (spot 기준 ±10%)
+      const spot = _cache.spy.price;
+      let putWall = null, callWall = null;
+      if (spot) {
+        const near = strikes.filter(s => Math.abs(s.strike - spot) / spot < 0.10);
+        const putMap = {}, callMap = {};
+        for (const s of near) {
+          putMap[s.strike]  = (putMap[s.strike]  ?? 0) + (s.putOI  ?? 0);
+          callMap[s.strike] = (callMap[s.strike] ?? 0) + (s.callOI ?? 0);
+        }
+        putWall  = Object.entries(putMap).sort((a, b)  => b[1] - a[1])[0]?.[0] ?? null;
+        callWall = Object.entries(callMap).sort((a, b) => b[1] - a[1])[0]?.[0] ?? null;
+        if (putWall)  putWall  = +putWall;
+        if (callWall) callWall = +callWall;
+      }
+
+      // max_pain
+      const mp = {};
+      for (const s of strikes) {
+        const k = Number(s.strike);
+        if (!mp[k]) mp[k] = { callOI: 0, putOI: 0 };
+        mp[k].callOI += s.callOI ?? 0;
+        mp[k].putOI  += s.putOI  ?? 0;
+      }
+      const ks = Object.keys(mp).map(Number).sort((a, b) => a - b);
+      let maxPain = null, minPain = Infinity;
+      for (const expiry of ks) {
+        let pain = 0;
+        for (const k of ks) {
+          if (expiry > k) pain += (expiry - k) * mp[k].callOI;
+          if (expiry < k) pain += (k - expiry) * mp[k].putOI;
+        }
+        if (pain < minPain) { minPain = pain; maxPain = expiry; }
+      }
+
+      const payload = {
+        date:        getTodayET(),
+        close:       _cache.spy.price,
+        max_pain:    maxPain,
+        flip_zone:   flipZone,
+        put_wall:    putWall,
+        call_wall:   callWall,
+        pcr:         pcr != null ? +pcr.toFixed(4) : null,
+        total_gex:   +totalGex.toFixed(4),
+        total_vanna: +totalVanna.toFixed(4),
+        total_charm: +totalCharm.toFixed(4),
+        total_dex:   +totalDex.toFixed(4),
+        vix_close:   _cache.vix.price,
+        saved_at:    new Date().toISOString(),
+      };
+
+      const saveRes = await fetch(`${CF_WORKER_URL}/d1/spy-daily-close`, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
+        body:    JSON.stringify(payload),
+        signal:  AbortSignal.timeout(10000),
+      });
+      if (!saveRes.ok) throw new Error(`D1 저장 실패: ${saveRes.status}`);
+      console.log(`[scheduler] spy_daily_close 저장 완료 — ${payload.date} close=${payload.close} max_pain=${payload.max_pain}`);
+
+    } catch (e) {
+      console.error('[scheduler] spy_daily_close 저장 오류:', e.message);
+    }
+  })();
+}
 
 // 평일 ET 18:00 — 전체 watchlist 스캔 자동 실행
 if (isWeekday() && h === 18 && new Date().getMinutes() === 0) {

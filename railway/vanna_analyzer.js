@@ -9,6 +9,7 @@
 const CBOE_BASE    = process.env.CBOE_BASE    || "https://cdn.cboe.com/api/global/delayed_quotes/options";
 const CF_KV_URL    = process.env.CF_KV_URL;
 const CF_KV_SECRET = process.env.CF_KV_SECRET || "";
+const CRON_SECRET  = process.env.CRON_SECRET  || "";
 const TWELVE_KEY   = process.env.TWELVE_KEY   || "";
 
 // ─────────────────────────────────────────────────────────────────
@@ -905,6 +906,28 @@ if (CF_KV_URL) {
     // flip_zone: expirations[nextTradingDate].flip_strike
     const flipZone = expirations[nextTradingDate]?.flip_strike ?? null;
 
+
+    // max_pain: 옵션 매수자 총 페이오프 최소 스트라이크
+    let maxPain = null;
+    {
+      const mp = {};
+      for (const s of zeroStrikes) {
+        const k = Number(s.strike);
+        if (!mp[k]) mp[k] = { callOI: 0, putOI: 0 };
+        mp[k].callOI += s.callOI ?? 0;
+        mp[k].putOI  += s.putOI  ?? 0;
+      }
+      const ks = Object.keys(mp).map(Number).sort((a, b) => a - b);
+      let minPain = Infinity;
+      for (const expiry of ks) {
+        let pain = 0;
+        for (const k of ks) {
+          if (expiry > k) pain += (expiry - k) * mp[k].callOI;
+          if (expiry < k) pain += (k - expiry) * mp[k].putOI;
+        }
+        if (pain < minPain) { minPain = pain; maxPain = expiry; }
+      }
+    }
     // 스트라이크별 데이터 구성 (newStrikes 기반 — oi15m 포함)
     const snapshotStrikes = newStrikes.map(s => ({
       strike:      s.strike,
@@ -932,6 +955,7 @@ if (CF_KV_URL) {
       total_put_volume:  totalPutVolume,
       pcr:               pcr != null ? +pcr.toFixed(4) : null,
       flip_zone:         flipZone,
+      max_pain:          maxPain ?? null,
       strikes:           snapshotStrikes,
     };
 
@@ -939,7 +963,7 @@ if (CF_KV_URL) {
       method:  'POST',
       headers: {
         'Content-Type':  'application/json',
-        'x-cron-secret': CF_KV_SECRET,
+        'x-cron-secret': CRON_SECRET,
       },
       body:   JSON.stringify(snapshotPayload),
       signal: AbortSignal.timeout(15000),
