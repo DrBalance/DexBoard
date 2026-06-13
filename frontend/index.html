@@ -25,6 +25,7 @@
       <button class="tab-btn" data-tab="structure">Structure</button>
       <button class="tab-btn" data-tab="screener">Screener</button>
       <button class="tab-btn" data-tab="chart">Chart</button>
+      <button class="tab-btn" data-tab="workbench">Workbench</button>
     </nav>
 
     <div class="header-right">
@@ -540,6 +541,78 @@
       </div>
 
     </div><!-- /tab-chart -->
+
+    <!-- ══ Tab 6: Workbench ═══════════════════════════════════ -->
+    <div class="tab-panel" id="tab-workbench">
+
+      <!-- 메트릭 카드 -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Dealer Unwind Hypothesis</span>
+          <span class="ts" id="wb-updated">—</span>
+        </div>
+        <div class="metrics-row">
+          <div class="metric">
+            <div class="metric-label">최근 Gap</div>
+            <div class="metric-value" id="wb-gap">—</div>
+            <div class="metric-sub" id="wb-gap-sub">close − max pain</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">방향 일치율</div>
+            <div class="metric-value" id="wb-hit-rate">—</div>
+            <div class="metric-sub" id="wb-hit-rate-sub">가설 지지도</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">누적 샘플</div>
+            <div class="metric-value" id="wb-samples">—</div>
+            <div class="metric-sub">ES 야간 데이터 있는 날</div>
+          </div>
+          <div class="metric">
+            <div class="metric-label">평균 Gap</div>
+            <div class="metric-value" id="wb-avg-gap">—</div>
+            <div class="metric-sub">절대값 평균</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 차트 -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">Gap vs ES 야간 세션</span>
+        </div>
+        <div style="position:relative; height:220px;">
+          <canvas id="wb-chart-gap"></canvas>
+        </div>
+      </div>
+
+      <!-- 상세 테이블 -->
+      <div class="card">
+        <div class="card-header">
+          <span class="card-title">일별 상세</span>
+        </div>
+        <div style="overflow-x:auto;">
+          <table class="data-table">
+            <thead>
+              <tr>
+                <th>날짜</th>
+                <th>종가</th>
+                <th>Max Pain</th>
+                <th>Gap</th>
+                <th>DEX</th>
+                <th>ES 야간 저가</th>
+                <th>ES 야간 고가</th>
+                <th>방향 일치</th>
+                <th>저장 (KST)</th>
+              </tr>
+            </thead>
+            <tbody id="wb-tbody">
+              <tr><td colspan="9" style="text-align:center; padding:2rem; color:var(--text-muted)">데이터 로딩 중...</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+    </div><!-- /tab-workbench -->
 
   </main>
 </div>
