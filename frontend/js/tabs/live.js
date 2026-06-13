@@ -36,6 +36,9 @@ const _state = {
   callWall: null,
   flipZone: null,
   pcr:      null,
+  maxPain:     null,
+  totalCallOI: null,
+  totalPutOI:  null,
 };
 
 // OI 차트 인스턴스 (탭 재방문 시 재생성 방지)
@@ -182,6 +185,16 @@ async function fetchKV({ fullUpdate = true } = {}) {
         _state.callWall = _calcCallWall(strikes, spot);
         _state.flipZone = _calcFlipZone(strikes);
         _state.pcr      = _calcPCR(strikes);
+        _state.maxPain  = _calcMaxPain(strikes);
+
+        // PCR 계산 시 계약수도 함께 저장
+        let totalCall = 0, totalPut = 0;
+        for (const s of strikes) {
+          totalCall += s.callOI ?? 0;
+          totalPut  += s.putOI  ?? 0;
+        }
+        _state.totalCallOI = totalCall;
+        _state.totalPutOI  = totalPut;
       }
     }
 
@@ -342,6 +355,40 @@ function renderPCR() {
           :            (COLOR.amber ?? 'var(--amber)');
   }
   setEl('m-pcr', v != null ? v.toFixed(2) : '—', color);
+
+  // 계약수 sub: C 12.3k / P 15.1k
+  const c = _state.totalCallOI;
+  const p = _state.totalPutOI;
+  if (c != null && p != null) {
+    const fmt = n => n >= 1000 ? (n / 1000).toFixed(1) + 'k' : String(n);
+    setEl('m-pcr-sub', `C ${fmt(c)} / P ${fmt(p)}`, COLOR.muted);
+  } else {
+    setEl('m-pcr-sub', 'put/call ratio', COLOR.muted);
+  }
+}
+
+function renderMaxPain() {
+  const v    = _state.maxPain;
+  const spot = _state.spyLive ?? _state.spy.price ?? null;
+  let color  = COLOR.amber ?? 'var(--amber)';
+
+  // spot 대비 방향으로 색상 구분
+  if (v != null && spot != null) {
+    const diff = v - spot;
+    if (diff > 0.5)       color = COLOR.green ?? 'var(--green)';  // 위쪽 → 가격 끌어올림 압력
+    else if (diff < -0.5) color = COLOR.red   ?? 'var(--red)';    // 아래쪽 → 가격 눌림 압력
+  }
+
+  setEl('m-max-pain', v != null ? `$${v.toFixed(0)}` : '—', color);
+
+  // sub: spot 대비 거리 표시
+  if (v != null && spot != null) {
+    const diff = (v - spot).toFixed(1);
+    const sign = diff > 0 ? '+' : '';
+    setEl('m-max-pain-sub', `spot 대비 ${sign}${diff}`, COLOR.muted);
+  } else {
+    setEl('m-max-pain-sub', 'max pain', COLOR.muted);
+  }
 }
 
 function renderDEX() {
@@ -369,6 +416,7 @@ function renderCards() {
   renderCallWall();
   renderFlipZone();
   renderPCR();
+  renderMaxPain();
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -508,6 +556,47 @@ function _calcPCR(strikes) {
     totalPut  += s.putOI  ?? 0;
   }
   return totalCall > 0 ? totalPut / totalCall : null;
+}
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// Max Pain 계산
+//   각 스트라이크를 만기 가격으로 가정했을 때,
+//   전체 옵션 보유자(매수자)가 받는 총 페이오프가 최소인 스트라이크
+//   = 딜러(매도자) 입장 손실 최소 → 시장 중력점
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+function _calcMaxPain(strikes) {
+  if (!strikes?.length) return null;
+
+  // 스트라이크별 집계 (동일 스트라이크 행이 여러 개일 경우 합산)
+  const map = {};
+  for (const s of strikes) {
+    const k = Number(s.strike);
+    if (!map[k]) map[k] = { callOI: 0, putOI: 0 };
+    map[k].callOI += s.callOI ?? 0;
+    map[k].putOI  += s.putOI  ?? 0;
+  }
+
+  const ks = Object.keys(map).map(Number).sort((a, b) => a - b);
+  if (!ks.length) return null;
+
+  let minPain = Infinity;
+  let maxPainStrike = null;
+
+  for (const expiry of ks) {
+    let totalPain = 0;
+    for (const k of ks) {
+      // call 보유자 페이오프: max(expiry - k, 0) × callOI
+      if (expiry > k) totalPain += (expiry - k) * map[k].callOI;
+      // put 보유자 페이오프: max(k - expiry, 0) × putOI
+      if (expiry < k) totalPain += (k - expiry) * map[k].putOI;
+    }
+    if (totalPain < minPain) {
+      minPain = totalPain;
+      maxPainStrike = expiry;
+    }
+  }
+
+  return maxPainStrike;
 }
 
 // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
