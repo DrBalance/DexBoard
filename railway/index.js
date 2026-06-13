@@ -545,6 +545,52 @@ if (req.method === "POST" && req.url === "/webhook/prevclose") {
   return sendJSON(res, 200, { ok: true, spy: data.spy, vix: data.vix, qqq: data.qqq, iwm: data.iwm });
 }
 
+// ── POST /webhook/es-overnight ──────────────────────────────────
+// TradingView ES1! 야간 세션 Alert → spy_daily_close UPDATE
+// 한국시간 01:00 (ET 01:00) 기준 16:15~01:00 구간 저가/고가 수신
+// payload: { es_low, es_high, time }
+if (req.method === "POST" && req.url === "/webhook/es-overnight") {
+  const body = await readBody(req);
+  const esLow  = parseFloat(body.es_low);
+  const esHigh = parseFloat(body.es_high);
+
+  if (isNaN(esLow) || isNaN(esHigh)) {
+    return sendJSON(res, 400, { ok: false, error: "es_low, es_high 필수" });
+  }
+
+  const ts = getNowTimestamps();
+
+  // 대상 날짜 = 전날 ET 날짜 (ET 16:30에 저장된 레코드)
+  // ET 01:00 시점에서 getTodayET()은 이미 '다음날'을 반환하므로 하루 빼야 함
+  // 예: ET 2026-06-13 01:00 → targetDate = '2026-06-12'
+  const etYesterday = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  etYesterday.setDate(etYesterday.getDate() - 1);
+  const targetDate = etYesterday.toLocaleDateString('sv', { timeZone: 'America/New_York' });
+
+  try {
+    const patchRes = await fetch(`${CF_WORKER_URL}/d1/spy-daily-close`, {
+      method:  'PATCH',
+      headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
+      body: JSON.stringify({
+        date:            targetDate,
+        es_session_low:  esLow,
+        es_session_high: esHigh,
+        es_session_et:   ts.et,
+        es_session_kst:  ts.kst,
+        es_session_utc:  ts.utc,
+      }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const patchData = await patchRes.json();
+    if (!patchRes.ok) throw new Error(`D1 PATCH 실패: ${patchRes.status}`);
+    console.log(`[webhook] ES overnight 저장 완료 — ${targetDate} low=${esLow} high=${esHigh}`);
+    return sendJSON(res, 200, { ok: true, date: targetDate });
+  } catch (e) {
+    console.error('[webhook] ES overnight 저장 실패:', e.message);
+    return sendJSON(res, 500, { ok: false, error: e.message });
+  }
+}
+
 // ── POST /webhook/tradingview ────────────────────────────────────
 // TradingView Alert → SPY / QQQ / IWM / VIX / VOLD 수신 → _cache 갱신 → KV 저장
 // payload 구조: { spy:{price, prev}, qqq:{price, prev}, iwm:{price, prev}, vix:{price, prev}, vold, time }
@@ -1696,20 +1742,23 @@ if (isWeekday() && h === 16 && new Date().getMinutes() === 30) {
         if (pain < minPain) { minPain = pain; maxPain = expiry; }
       }
 
+      const ts = getNowTimestamps();
       const payload = {
-        date:        getTodayET(),
-        close:       _cache.spy.price,
-        max_pain:    maxPain,
-        flip_zone:   flipZone,
-        put_wall:    putWall,
-        call_wall:   callWall,
-        pcr:         pcr != null ? +pcr.toFixed(4) : null,
-        total_gex:   +totalGex.toFixed(4),
-        total_vanna: +totalVanna.toFixed(4),
-        total_charm: +totalCharm.toFixed(4),
-        total_dex:   +totalDex.toFixed(4),
-        vix_close:   _cache.vix.price,
-        saved_at:    new Date().toISOString(),
+        date:         getTodayET(),
+        close:        _cache.spy.price,
+        max_pain:     maxPain,
+        flip_zone:    flipZone,
+        put_wall:     putWall,
+        call_wall:    callWall,
+        pcr:          pcr != null ? +pcr.toFixed(4) : null,
+        total_gex:    +totalGex.toFixed(4),
+        total_vanna:  +totalVanna.toFixed(4),
+        total_charm:  +totalCharm.toFixed(4),
+        total_dex:    +totalDex.toFixed(4),
+        vix_close:    _cache.vix.price,
+        saved_at_et:  ts.et,
+        saved_at_kst: ts.kst,
+        saved_at_utc: ts.utc,
       };
 
       const saveRes = await fetch(`${CF_WORKER_URL}/d1/spy-daily-close`, {
