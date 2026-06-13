@@ -1342,7 +1342,8 @@ export default {
         date, close, max_pain, flip_zone,
         put_wall, call_wall, pcr,
         total_gex, total_vanna, total_charm, total_dex,
-        vix_close, saved_at,
+        vix_close,
+        saved_at_et, saved_at_kst, saved_at_utc,
       } = await request.json();
 
       if (!date || !close) {
@@ -1354,22 +1355,60 @@ export default {
           (date, close, max_pain, flip_zone,
            put_wall, call_wall, pcr,
            total_gex, total_vanna, total_charm, total_dex,
-           vix_close, saved_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+           vix_close,
+           saved_at_et, saved_at_kst, saved_at_utc)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
       `).bind(
         date,
-        close        ?? null,
-        max_pain     ?? null,
-        flip_zone    ?? null,
-        put_wall     ?? null,
-        call_wall    ?? null,
-        pcr          ?? null,
-        total_gex    ?? null,
-        total_vanna  ?? null,
-        total_charm  ?? null,
-        total_dex    ?? null,
-        vix_close    ?? null,
-        saved_at     ?? new Date().toISOString(),
+        close         ?? null,
+        max_pain      ?? null,
+        flip_zone     ?? null,
+        put_wall      ?? null,
+        call_wall     ?? null,
+        pcr           ?? null,
+        total_gex     ?? null,
+        total_vanna   ?? null,
+        total_charm   ?? null,
+        total_dex     ?? null,
+        vix_close     ?? null,
+        saved_at_et   ?? null,
+        saved_at_kst  ?? null,
+        saved_at_utc  ?? new Date().toISOString(),
+      ).run();
+
+      return json({ ok: true, date }, 200, corsHeaders);
+    }
+
+    // ── PATCH /d1/spy-daily-close ────────────────────────────────
+    // ES 야간 세션 데이터 업데이트 (ET 01:00 웹훅 수신 시)
+    if (request.method === "PATCH" && path === "/d1/spy-daily-close") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      const {
+        date,
+        es_session_low, es_session_high,
+        es_session_et, es_session_kst, es_session_utc,
+      } = await request.json();
+
+      if (!date) return json({ error: "date 필수" }, 400, corsHeaders);
+
+      await env.DB.prepare(`
+        UPDATE spy_daily_close
+        SET es_session_low  = ?,
+            es_session_high = ?,
+            es_session_et   = ?,
+            es_session_kst  = ?,
+            es_session_utc  = ?
+        WHERE date = ?
+      `).bind(
+        es_session_low  ?? null,
+        es_session_high ?? null,
+        es_session_et   ?? null,
+        es_session_kst  ?? null,
+        es_session_utc  ?? null,
+        date,
       ).run();
 
       return json({ ok: true, date }, 200, corsHeaders);
