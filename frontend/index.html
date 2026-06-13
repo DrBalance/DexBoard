@@ -578,10 +578,15 @@
       <!-- 차트 -->
       <div class="card">
         <div class="card-header">
-          <span class="card-title">Gap vs ES 야간 세션</span>
+          <span class="card-title">Gap &amp; ES 야간 밴드 (0 = 당일 종가)</span>
         </div>
-        <div style="position:relative; height:220px;">
-          <canvas id="wb-chart-gap"></canvas>
+        <div style="display:flex;gap:16px;font-size:11px;color:var(--text-muted);margin-bottom:8px;flex-wrap:wrap;align-items:center;">
+          <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#1D9E75;margin-right:4px;vertical-align:middle"></span>Gap 양수 (max pain 위)</span>
+          <span><span style="display:inline-block;width:10px;height:10px;border-radius:2px;background:#E24B4A;margin-right:4px;vertical-align:middle"></span>Gap 음수 (max pain 아래)</span>
+          <span><span style="display:inline-block;width:18px;height:9px;border-radius:2px;background:rgba(55,138,221,0.12);border-top:1.5px solid #378ADD;border-bottom:1.5px dashed #E24B4A;margin-right:4px;vertical-align:middle"></span>ES 야간 밴드</span>
+        </div>
+        <div style="position:relative; height:240px;">
+          <canvas id="wb-chart-gap" role="img" aria-label="Gap 막대와 ES 야간 밴드 비교 차트">Gap과 ES 야간 밴드</canvas>
         </div>
       </div>
 
