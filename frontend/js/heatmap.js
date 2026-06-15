@@ -544,3 +544,255 @@ export function updateHeatmapSpot(containerId, spotPrice) {
     cell.style.background = _markerBg(r.dVanna, r.dCharm, maxAbsDVanna);
   });
 }
+
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+// renderVannaHeatmap — Vanna 2D 히트맵 (만기 × 스트라이크)
+//
+// 호출: renderVannaHeatmap(containerId, strikesPerExpiry, spotPrice)
+//
+// strikesPerExpiry: [
+//   { expiry: 'YYYY-MM-DD', dte: N, strikes: [ { strike, vanna, dex, ... } ] },
+//   ...
+// ]
+//
+// 색상:
+//   양수 Vanna → 초록 (VIX 하락 시 딜러 매수압력)
+//   음수 Vanna → 빨강 (VIX 하락 시 딜러 매도압력)
+//   크기 비례 투명도
+//
+// 현재가 위의 첫 번째 Vanna 집중 스트라이크(vannaFlipUp) 표시
+// ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+const VANNA_COL_W   = 56;
+const VANNA_LBL_W   = 64;
+const VANNA_ROW_H   = 26;
+const VANNA_HEADER_H = 24;
+
+export function renderVannaHeatmap(containerId, strikesPerExpiry, spotPrice) {
+  const el = typeof containerId === 'string'
+    ? document.getElementById(containerId)
+    : containerId;
+  if (!el) return;
+  if (!strikesPerExpiry?.length || !spotPrice) {
+    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">데이터 없음</div>';
+    return;
+  }
+
+  // ── 1. 전체 스트라이크 목록 수집 (현재가 ±20% 범위만) ──
+  const rangeMin = spotPrice * 0.80;
+  const rangeMax = spotPrice * 1.20;
+
+  const strikeSet = new Set();
+  for (const exp of strikesPerExpiry) {
+    for (const s of (exp.strikes ?? [])) {
+      if (s.strike >= rangeMin && s.strike <= rangeMax) {
+        strikeSet.add(s.strike);
+      }
+    }
+  }
+  const allStrikes = [...strikeSet].sort((a, b) => a - b);
+  if (!allStrikes.length) {
+    el.innerHTML = '<div style="color:var(--text3);font-size:12px;padding:8px">범위 내 데이터 없음</div>';
+    return;
+  }
+
+  // ── 2. 만기 정렬 (DTE 오름차순) ────────────────────────
+  const expiries = [...strikesPerExpiry]
+    .filter(e => e.dte > 0)
+    .sort((a, b) => a.dte - b.dte);
+
+  // ── 3. Vanna 절대값 최대치 (색상 스케일 기준) ──────────
+  let maxAbsVanna = 0;
+  for (const exp of expiries) {
+    for (const s of (exp.strikes ?? [])) {
+      if (Math.abs(s.vanna ?? 0) > maxAbsVanna) maxAbsVanna = Math.abs(s.vanna);
+    }
+  }
+  if (maxAbsVanna === 0) maxAbsVanna = 1;
+
+  // ── 4. vannaFlipUp 계산 ─────────────────────────────────
+  // 현재가 위 스트라이크 중 양수 Vanna 합산이 최대인 스트라이크
+  // (만기 전체 합산 기준)
+  const vannaAboveMap = {};
+  for (const exp of expiries) {
+    for (const s of (exp.strikes ?? [])) {
+      if (s.strike <= spotPrice) continue;
+      if ((s.vanna ?? 0) <= 0) continue;
+      vannaAboveMap[s.strike] = (vannaAboveMap[s.strike] ?? 0) + s.vanna;
+    }
+  }
+  let vannaFlipUp = null;
+  let maxVannaAbove = 0;
+  for (const [strike, total] of Object.entries(vannaAboveMap)) {
+    if (total > maxVannaAbove) {
+      maxVannaAbove = total;
+      vannaFlipUp = Number(strike);
+    }
+  }
+
+  // ── 5. 색상 함수 ────────────────────────────────────────
+  function vannaColor(vanna) {
+    if (vanna == null || vanna === 0) return 'transparent';
+    const intensity = Math.min(Math.abs(vanna) / maxAbsVanna, 1);
+    const MIN_OP = 0.12, MAX_OP = 0.90;
+    const op = (MIN_OP + intensity * (MAX_OP - MIN_OP)).toFixed(2);
+    return vanna > 0
+      ? `rgba(34,197,94,${op})`   // 초록: 딜러 매수압력
+      : `rgba(239,68,68,${op})`;  // 빨강: 딜러 매도압력
+  }
+
+  // ── 6. 현재가 스트라이크 인덱스 ────────────────────────
+  const spotIdx = allStrikes.reduce((best, s, i) =>
+    Math.abs(s - spotPrice) < Math.abs(allStrikes[best] - spotPrice) ? i : best, 0);
+
+  // ── 7. HTML 조립 ────────────────────────────────────────
+  const totalW = VANNA_LBL_W + allStrikes.length * VANNA_COL_W;
+  const scrollId = `vanna-hm-scroll-${containerId}`;
+
+  // 헤더행 (스트라이크)
+  const headerCells = allStrikes.map((s, i) => {
+    const isSpot      = i === spotIdx;
+    const isFlipUp    = vannaFlipUp !== null && s === vannaFlipUp;
+    const color = isFlipUp ? '#22c55e' : isSpot ? '#f59e0b' : 'var(--text3)';
+    const borderBottom = isFlipUp ? 'border-bottom:2px solid #22c55e' : '';
+    return `<th style="
+      width:${VANNA_COL_W}px;min-width:${VANNA_COL_W}px;
+      height:${VANNA_HEADER_H}px;padding:0;
+      font-size:10px;font-weight:${isSpot||isFlipUp?'700':'400'};
+      color:${color};text-align:center;
+      background:${isSpot?'rgba(245,158,11,0.08)':'transparent'};
+      ${borderBottom};
+      border-right:1px solid rgba(255,255,255,0.04);
+    ">${s % 1 === 0 ? s : s.toFixed(1)}</th>`;
+  }).join('');
+
+  // 데이터행 (만기별)
+  const dataRows = expiries.map(exp => {
+    const strikeMap = {};
+    for (const s of (exp.strikes ?? [])) strikeMap[s.strike] = s;
+
+    const cells = allStrikes.map((strike, i) => {
+      const s       = strikeMap[strike];
+      const vanna   = s?.vanna ?? null;
+      const isSpot  = i === spotIdx;
+      const isFlip  = vannaFlipUp !== null && strike === vannaFlipUp;
+      const bg      = vannaColor(vanna);
+      const border  = isFlip ? 'border-left:2px solid rgba(34,197,94,0.6);' : '';
+
+      return `<td style="
+        width:${VANNA_COL_W}px;min-width:${VANNA_COL_W}px;
+        height:${VANNA_ROW_H}px;padding:0;
+        background:${bg};
+        ${isSpot ? 'outline:1px solid rgba(245,158,11,0.4);outline-offset:-1px;' : ''}
+        ${border}
+        border-right:1px solid rgba(255,255,255,0.04);
+        border-bottom:1px solid rgba(255,255,255,0.04);
+      " title="${strike} / Vanna: ${vanna != null ? (vanna*1e6).toFixed(0) : '-'}"></td>`;
+    }).join('');
+
+    const dteLabel = `D-${exp.dte}`;
+    const dateLabel = (exp.expiry ?? '').slice(5);
+
+    return `<tr>
+      <td style="
+        position:sticky;left:0;z-index:2;
+        width:${VANNA_LBL_W}px;min-width:${VANNA_LBL_W}px;
+        height:${VANNA_ROW_H}px;padding:0 6px;
+        background:var(--bg1,#0f172a);
+        border-right:2px solid rgba(255,255,255,0.12);
+        border-bottom:1px solid rgba(255,255,255,0.04);
+        font-size:10px;color:var(--text2);white-space:nowrap;
+      ">
+        <span style="color:#60a5fa;font-weight:600">${dateLabel}</span>
+        <span style="color:var(--text3);margin-left:3px">${dteLabel}</span>
+      </td>
+      ${cells}
+    </tr>`;
+  }).join('');
+
+  // 합산행
+  const sumCells = allStrikes.map((strike, i) => {
+    const total = expiries.reduce((sum, exp) => {
+      const s = (exp.strikes ?? []).find(s => s.strike === strike);
+      return sum + (s?.vanna ?? 0);
+    }, 0);
+    const isSpot = i === spotIdx;
+    const isFlip = vannaFlipUp !== null && strike === vannaFlipUp;
+    return `<td style="
+      width:${VANNA_COL_W}px;min-width:${VANNA_COL_W}px;
+      height:${VANNA_ROW_H}px;padding:0;
+      background:${vannaColor(total)};
+      ${isSpot ? 'outline:1px solid rgba(245,158,11,0.4);outline-offset:-1px;' : ''}
+      ${isFlip ? 'border-left:2px solid rgba(34,197,94,0.8);' : ''}
+      border-right:1px solid rgba(255,255,255,0.04);
+      font-size:9px;color:rgba(255,255,255,0.5);text-align:center;
+    " title="${strike} / 합산 Vanna: ${(total*1e6).toFixed(0)}"></td>`;
+  }).join('');
+
+  // vannaFlipUp 정보 배지
+  const flipBadge = vannaFlipUp != null
+    ? `<span style="
+        display:inline-flex;align-items:center;gap:5px;
+        padding:2px 8px;border-radius:3px;font-size:10px;
+        background:rgba(34,197,94,0.1);color:#22c55e;border:1px solid rgba(34,197,94,0.3);
+      ">
+        ▲ Vanna 집중 $${vannaFlipUp}
+        <span style="color:var(--text3)">
+          (+${((vannaFlipUp - spotPrice) / spotPrice * 100).toFixed(1)}%)
+        </span>
+      </span>`
+    : '';
+
+  el.innerHTML = `
+    <div style="padding:4px 0 6px;display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <span style="font-size:11px;color:var(--text3)">
+        <span style="color:#22c55e">■</span> 딜러 매수압력 (VIX↓)
+        &nbsp;<span style="color:#ef4444">■</span> 딜러 매도압력 (VIX↑)
+        &nbsp;<span style="color:#f59e0b">|</span> 현재가
+      </span>
+      ${flipBadge}
+    </div>
+    <div id="${scrollId}" style="overflow-x:auto;overflow-y:hidden;border-top:1px solid var(--border)">
+      <table style="border-collapse:collapse;table-layout:fixed;width:${totalW}px">
+        <thead>
+          <tr>
+            <th style="
+              position:sticky;left:0;z-index:3;
+              width:${VANNA_LBL_W}px;min-width:${VANNA_LBL_W}px;
+              height:${VANNA_HEADER_H}px;
+              background:var(--bg1,#0f172a);
+              border-right:2px solid rgba(255,255,255,0.12);
+              border-bottom:1px solid rgba(255,255,255,0.08);
+              font-size:10px;color:var(--text3);padding:0 6px;text-align:left;
+            ">만기</th>
+            ${headerCells}
+          </tr>
+        </thead>
+        <tbody>
+          ${dataRows}
+          <tr>
+            <td style="
+              position:sticky;left:0;z-index:2;
+              width:${VANNA_LBL_W}px;min-width:${VANNA_LBL_W}px;
+              height:${VANNA_ROW_H}px;padding:0 6px;
+              background:var(--bg1,#0f172a);
+              border-right:2px solid rgba(255,255,255,0.12);
+              border-top:1px solid rgba(255,255,255,0.15);
+              font-size:10px;color:#a78bfa;font-weight:600;
+            ">합산</td>
+            ${sumCells}
+          </tr>
+        </tbody>
+      </table>
+    </div>`;
+
+  // 현재가 중앙 스크롤
+  requestAnimationFrame(() => {
+    const scrollEl = document.getElementById(scrollId);
+    if (!scrollEl) return;
+    const colOffset  = VANNA_LBL_W + spotIdx * VANNA_COL_W;
+    const containerW = scrollEl.clientWidth;
+    scrollEl.scrollLeft = colOffset - containerW / 2 + VANNA_COL_W / 2;
+    _attachDragScroll(scrollEl);
+  });
+}

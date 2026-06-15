@@ -6,6 +6,7 @@
 import { state } from '../state.js';
 import { CF_API, RAILWAY_URL, CRON_SECRET } from '../config.js';
 import { fmt } from '../fmt.js';
+import { renderVannaHeatmap } from '../heatmap.js';
 import {
   isMonthlyExpiry,
   classifyExpiry,
@@ -188,6 +189,15 @@ function renderShell() {
         <span class="panel-sub">만기 × 구간별 딜러 헤징 압력 · Monthly 강조</span>
       </div>
       <div id="struct-heatmap"></div>
+    </div>
+
+    <!-- 섹션 8b: Vanna 히트맵 -->
+    <div class="struct-panel">
+      <div class="struct-panel-title">
+        <span class="panel-icon">◈</span> Vanna 히트맵
+        <span class="panel-sub">만기 × 스트라이크 · VIX 하락 시 딜러 헤징 압력</span>
+      </div>
+      <div id="struct-vanna-heatmap"></div>
     </div>
 
     <!-- 섹션 9: 주간 OI 분포 선택기 -->
@@ -1776,6 +1786,18 @@ function _stRenderHeatmapSection(expirations, spot, symbol) {
   _stRenderHeatmap(expirations, weighted, spot);
   _stRenderEM(weighted, spot);
 
+  // Vanna 히트맵 — expirations → strikesPerExpiry 변환
+  const strikesPerExpiry = Object.entries(expirations)
+    .map(([expiry, val]) => {
+      const dte = Math.round(
+        (new Date(expiry) - new Date(new Date().toDateString())) / 86400000
+      );
+      return { expiry, dte, strikes: val.strikes ?? [] };
+    })
+    .filter(e => e.dte >= 0)
+    .sort((a, b) => a.dte - b.dte);
+  renderVannaHeatmap('struct-vanna-heatmap', strikesPerExpiry, spot);
+
   // 버튼 이벤트 (최초 1회만)
   const applyBtn = document.getElementById('st-apply-btn');
   const allBtn   = document.getElementById('st-all-btn');
@@ -1787,6 +1809,7 @@ function _stRenderHeatmapSection(expirations, spot, symbol) {
       const w2 = _stBuildWeighted(expirations);
       _stRenderHeatmap(expirations, w2, spot);
       _stRenderEM(w2, spot);
+      renderVannaHeatmap('struct-vanna-heatmap', strikesPerExpiry, spot);
     });
   }
   if (allBtn && !allBtn._bound) {
