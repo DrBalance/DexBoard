@@ -108,6 +108,15 @@ function renderShell() {
       <div id="struct-verdict"></div>
     </div>
 
+    <!-- 섹션 3b: Vanna 히트맵 -->
+    <div class="struct-panel">
+      <div class="struct-panel-title">
+        <span class="panel-icon">◈</span> Vanna 히트맵
+        <span class="panel-sub">만기 × 스트라이크 · VIX 하락 시 딜러 헤징 압력</span>
+      </div>
+      <div id="struct-vanna-heatmap"></div>
+    </div>
+
     <!-- 섹션 4: 만기별 DEX 히트맵 + EM 차트 -->
     <div class="struct-panel">
       <div class="struct-panel-title" style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
@@ -189,15 +198,6 @@ function renderShell() {
         <span class="panel-sub">만기 × 구간별 딜러 헤징 압력 · Monthly 강조</span>
       </div>
       <div id="struct-heatmap"></div>
-    </div>
-
-    <!-- 섹션 8b: Vanna 히트맵 -->
-    <div class="struct-panel">
-      <div class="struct-panel-title">
-        <span class="panel-icon">◈</span> Vanna 히트맵
-        <span class="panel-sub">만기 × 스트라이크 · VIX 하락 시 딜러 헤징 압력</span>
-      </div>
-      <div id="struct-vanna-heatmap"></div>
     </div>
 
     <!-- 섹션 9: 주간 OI 분포 선택기 -->
