@@ -923,11 +923,13 @@ if (req.method === "POST" && req.url === "/analyze-symbol") {
 
     // save:true 면 DB에도 저장
     if (save && analyzed) {
-      const { rows, callWall, upside, squeeze, spot } = analyzed;
+      const { rows, callWall, upside, squeeze, spot, vannaMetrics } = analyzed;
       const updatedAt = new Date().toISOString();
+      console.log(`[analyze-symbol] ${symbol} vannaMetrics:`, JSON.stringify(vannaMetrics));
+      console.log(`[analyze-symbol] ${symbol} spot: ${spot}, callWall:`, JSON.stringify(callWall));
       try {
         await saveSymbolRows(CF_WORKER_URL, CRON_SECRET, symbol, rows, updatedAt);
-        await updateScreenedTicker(CF_WORKER_URL, CRON_SECRET, symbol, spot, callWall, upside, rows, squeeze);
+        await updateScreenedTicker(CF_WORKER_URL, CRON_SECRET, symbol, spot, callWall, upside, rows, squeeze, vannaMetrics);
       } catch (e) {
         console.warn(`[analyze-symbol] ${symbol} DB 저장 실패:`, e.message);
       }

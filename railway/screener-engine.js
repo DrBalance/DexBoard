@@ -77,14 +77,15 @@ function calcVannaMetrics(rows, spot, callWallStrike) {
 
   // 전체 만기의 _strikeRows를 합산하여 strike별 vanna, call_dex 집계
   const strikeMap = {};
+  let strikeRowsCount = 0;
   for (const row of rows) {
     const strikeRows = row._strikeRows;
     if (!strikeRows?.length) continue;
+    strikeRowsCount += strikeRows.length;
     for (const s of strikeRows) {
       if (s.strike == null) continue;
       if (!strikeMap[s.strike]) strikeMap[s.strike] = { vanna: 0, call_dex: 0 };
       strikeMap[s.strike].vanna += s.vanna ?? 0;
-      // 순수 콜 DEX: call_oi x call_delta (풋 영향 제거)
       if (s.strike > spot && (s.call_oi ?? 0) > 0 && (s.call_delta ?? 0) > 0) {
         strikeMap[s.strike].call_dex += (s.call_oi * s.call_delta * 100) / 1e6;
       }
@@ -97,6 +98,11 @@ function calcVannaMetrics(rows, spot, callWallStrike) {
     .filter(s => s.strike > spot)
     .sort((a, b) => a.strike - b.strike);
 
+  console.log(`[calcVannaMetrics] spot=${spot}, rows=${rows.length}, strikeRows총=${strikeRowsCount}, aboveStrikes=${aboveStrikes.length}`);
+  if (aboveStrikes.length > 0) {
+    console.log(`[calcVannaMetrics] 상위 5개:`, JSON.stringify(aboveStrikes.slice(0, 5)));
+  }
+
   if (!aboveStrikes.length) return {};
 
   // VIX 하락 기준 양의 Vanna가 연속되는 한계점 탐색
@@ -108,6 +114,8 @@ function calcVannaMetrics(rows, spot, callWallStrike) {
     vannaLimit = s.strike;
     vannaSum  += s.vanna;
   }
+
+  console.log(`[calcVannaMetrics] vannaLimit=${vannaLimit}, 5%기준=${spot * 1.05}`);
 
   if (vannaLimit === null) return {};
 
