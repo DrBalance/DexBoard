@@ -811,6 +811,7 @@ export default {
           d.peak_call_dex_strike, d.peak_call_dex_value,
           st.target_strike, st.concentration_count, st.upside,
           st.squeeze_stars, st.squeeze_flags,
+          st.vanna_limit, st.vanna_coverage, st.call_dex_sum,
           d.updated_at,
           w.company, w.sector, w.market_cap, w.short_float, w.beta,
           GROUP_CONCAT(DISTINCT st.group_code) as groups,
