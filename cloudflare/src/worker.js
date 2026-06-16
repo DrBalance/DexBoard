@@ -1149,14 +1149,14 @@ export default {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
       try {
-        const { ticker } = await request.json();
+        const { ticker, group_code = 'WATCHLIST' } = await request.json();
         if (!ticker) return json({ error: "ticker 필요" }, 400, corsHeaders);
         const sym = ticker.toUpperCase();
 
-        // 1. WATCHLIST 그룹에서 제거
+        // 1. 해당 그룹에서 제거
         await env.DB.prepare(
-          "DELETE FROM screened_tickers WHERE ticker = ? AND group_code = 'WATCHLIST'"
-        ).bind(sym).run();
+          "DELETE FROM screened_tickers WHERE ticker = ? AND group_code = ?"
+        ).bind(sym, group_code).run();
 
         // 2. 다른 그룹에 남아있는지 확인
         const remaining = await env.DB.prepare(
@@ -1164,12 +1164,10 @@ export default {
         ).bind(sym).first();
 
         if ((remaining?.cnt ?? 0) > 0) {
-          // 다른 그룹에 있음: is_watchlist = 0만
           await env.DB.prepare(
             "UPDATE watchlist SET is_watchlist = 0 WHERE ticker = ?"
           ).bind(sym).run();
         } else {
-          // 고아: is_watchlist = 0 + daily_screener 데이터 삭제
           await env.DB.batch([
             env.DB.prepare("UPDATE watchlist SET is_watchlist = 0 WHERE ticker = ?").bind(sym),
             env.DB.prepare("DELETE FROM daily_screener WHERE ticker = ?").bind(sym),

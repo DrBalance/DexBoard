@@ -743,39 +743,20 @@ export async function pruneWatchlistGroup(cfWorkerUrl, cronSecret) {
     const groupCode  = row.group_code;
     const count      = row.concentration_count ?? 0;
 
-    // vanna_limit 5% 미만이 아니면 패스
-    const isTooClose = vannaLimit == null || ((vannaLimit - spot) / spot) < 0.05;
-    if (!isTooClose) {
-      kept.push(row.ticker);
-      continue;
-    }
-
-    // vanna_limit 5% 미만 → 근월물 제외 vanna_limit 재계산
     try {
       const { vannaMetrics, vannaMetricsEx } = await analyzeSymbol(row.ticker);
-
       const vannaLimitFull = vannaMetrics?.vanna_limit ?? null;
       const vannaLimitEx   = vannaMetricsEx?.vanna_limit ?? null;
 
-      // 조건 1: 합산 vanna_limit <= 근월물 제외 vanna_limit 이거나 집중도 3 미만 → 삭제
-      const shouldRemove =
-        count < 3 ||
-        vannaLimitFull == null ||
-        vannaLimitEx == null ||
-        vannaLimitFull <= vannaLimitEx;
+      if (groupCode === 'WATCHLIST') {
+        // WATCHLIST: 집중도 3 이상 + 근월물 제외 vanna_limit이 더 높으면 MONITOR로 이동
+        const shouldPromote =
+          count >= 3 &&
+          vannaLimitFull != null &&
+          vannaLimitEx != null &&
+          vannaLimitEx > vannaLimitFull;
 
-      if (shouldRemove) {
-        await fetch(`${cfWorkerUrl}/api/watchlist/prune`, {
-          method:  'POST',
-          headers,
-          body:    JSON.stringify({ ticker: row.ticker }),
-          signal:  AbortSignal.timeout(10000),
-        });
-        removed.push({ symbol: row.ticker, group: groupCode, count, reason: count < 3 ? 'low_count' : 'fading_vanna' });
-        console.log(`[prune] 제거: ${row.ticker} (${groupCode}, 집중도:${count}, vanna_limit:${vannaLimitFull} → ex:${vannaLimitEx})`);
-      } else {
-        // 조건 2: WATCHLIST → MONITOR 이동 / MONITOR → 유지
-        if (groupCode === 'WATCHLIST') {
+        if (shouldPromote) {
           await fetch(`${cfWorkerUrl}/api/watchlist/move-to-monitor`, {
             method:  'POST',
             headers,
@@ -787,7 +768,31 @@ export async function pruneWatchlistGroup(cfWorkerUrl, cronSecret) {
         } else {
           kept.push(row.ticker);
         }
+
+      } else if (groupCode === 'MONITOR') {
+        // MONITOR: vanna_limit 2% 미만 + 근월물 제외 vanna_limit이 더 낮으면 삭제
+        const isTooClose = vannaLimitFull == null || ((vannaLimitFull - spot) / spot) < 0.02;
+        const isFading =
+          isTooClose && (
+            vannaLimitEx == null ||
+            vannaLimitFull == null ||
+            vannaLimitEx <= vannaLimitFull
+          );
+
+        if (isFading) {
+          await fetch(`${cfWorkerUrl}/api/watchlist/prune`, {
+            method:  'POST',
+            headers,
+            body:    JSON.stringify({ ticker: row.ticker, group_code: 'MONITOR' }),
+            signal:  AbortSignal.timeout(10000),
+          });
+          removed.push({ symbol: row.ticker, vanna_limit: vannaLimitFull, reason: 'monitor_fading' });
+          console.log(`[prune] MONITOR 제거: ${row.ticker} (vanna_limit:${vannaLimitFull} → ex:${vannaLimitEx})`);
+        } else {
+          kept.push(row.ticker);
+        }
       }
+
     } catch (e) {
       console.warn(`[prune] ${row.ticker} 분석 실패:`, e.message);
       kept.push(row.ticker);
