@@ -417,7 +417,7 @@ function showOneTimePrompt(symbol) {
   });
 }
 
-async function loadOneTime(symbol) {
+async function loadOneTime(ticker) {
   const btn     = document.getElementById('st-onetime-btn');
   const msg     = document.getElementById('st-onetime-msg');
   const addChk  = document.getElementById('st-add-to-screener');
@@ -433,33 +433,18 @@ async function loadOneTime(symbol) {
         'Content-Type':  'application/json',
         'x-cron-secret': CRON_SECRET,
       },
-      body: JSON.stringify({ symbol, save: addToScreener }),
+      // save:true 전달 시 Railway에서 symbols/add(INSERT) → saveSymbolRows → updateScreenedTicker 순으로 처리
+      body: JSON.stringify({ symbol: ticker, save: addToScreener }),
       signal: AbortSignal.timeout(30000),
     });
 
     const data = await res.json();
     if (!res.ok || !data.ok) throw new Error(data.error ?? `HTTP ${res.status}`);
 
-    // 스크리너 추가 요청
-    if (addToScreener) {
-      try {
-        await fetch(`${CF_API}/api/symbols/add`, {
-          method:  'POST',
-          headers: {
-            'Content-Type':  'application/json',
-            'x-cron-secret': CRON_SECRET,
-          },
-          body: JSON.stringify({ symbol, group: 'CHECK' }),
-        });
-      } catch (e) {
-        console.warn('[structure] 스크리너 추가 실패:', e.message);
-      }
-    }
-
     // 결과로 페이지 구성
     // scoreRow 형태로 변환
     const scoreRow = {
-      symbol,
+      symbol:      ticker,
       name:        data.symbol,
       spot_price:  data.spot_price,
       net_gex:     data.net_gex,
@@ -469,7 +454,7 @@ async function loadOneTime(symbol) {
       date:        data.date,
     };
 
-    currentData = { symbol, scoreRow, monthly: data.rows ?? [], weekly: null, context: null };
+    currentData = { symbol: ticker, scoreRow, monthly: data.rows ?? [], weekly: null, context: null };
     renderContent(currentData);
 
     // 스트라이크 데이터 → 히트맵
@@ -489,7 +474,7 @@ async function loadOneTime(symbol) {
           putOI:  s.put_oi  ?? 0,
         });
       });
-      _stRenderHeatmapSection(strikesExpirations, data.spot_price, symbol);
+      _stRenderHeatmapSection(strikesExpirations, data.spot_price, ticker);
     }
 
   } catch (err) {

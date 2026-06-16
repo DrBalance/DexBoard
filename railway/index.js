@@ -898,9 +898,9 @@ if (req.method === "POST" && req.url === "/analyze-symbol") {
     body = JSON.parse(raw || '{}');
   } catch { body = {}; }
 
-  const symbol = body.symbol?.toUpperCase();
+  const ticker = body.symbol?.toUpperCase();
   const save   = body.save === true;
-  if (!symbol) {
+  if (!ticker) {
     sendJSON(res, 400, { error: "symbol 필요" });
     return;
   }
@@ -909,15 +909,15 @@ if (req.method === "POST" && req.url === "/analyze-symbol") {
     const date = getTodayET();
 
     const [collectResult, analyzeResult] = await Promise.allSettled([
-      collectSymbol(symbol, date),
-      analyzeSymbol(symbol),
+      collectSymbol(ticker, date),
+      analyzeSymbol(ticker),
     ]);
 
     const collected = collectResult.status === 'fulfilled' ? collectResult.value : null;
     const analyzed  = analyzeResult.status  === 'fulfilled' ? analyzeResult.value  : null;
 
     if (!collected && !analyzed) {
-      sendJSON(res, 404, { ok: false, error: `${symbol} 데이터를 가져올 수 없습니다` });
+      sendJSON(res, 404, { ok: false, error: `${ticker} 데이터를 가져올 수 없습니다` });
       return;
     }
 
@@ -926,16 +926,32 @@ if (req.method === "POST" && req.url === "/analyze-symbol") {
       const { rows, callWall, upside, squeeze, spot, vannaMetrics } = analyzed;
       const updatedAt = new Date().toISOString();
       try {
-        await saveSymbolRows(CF_WORKER_URL, CRON_SECRET, symbol, rows, updatedAt);
-        await updateScreenedTicker(CF_WORKER_URL, CRON_SECRET, symbol, spot, callWall, upside, rows, squeeze, vannaMetrics);
+        // 1. screened_tickers에 행 먼저 생성 (INSERT OR IGNORE — 없으면 추가, 있으면 무시)
+        //    updateScreenedTicker는 UPDATE 전용이므로 행이 없으면 아무 효과가 없음
+        const addRes = await fetch(`${CF_WORKER_URL}/api/symbols/add`, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json', 'x-cron-secret': CRON_SECRET },
+          body:    JSON.stringify({ symbol: ticker, group: 'CHECK' }),
+          signal:  AbortSignal.timeout(10000),
+        });
+        if (!addRes.ok) {
+          const addErr = await addRes.json().catch(() => ({}));
+          console.warn(`[analyze-symbol] ${ticker} screened_tickers INSERT 실패:`, addErr.error ?? addRes.status);
+        }
+
+        // 2. daily_screener 저장
+        await saveSymbolRows(CF_WORKER_URL, CRON_SECRET, ticker, rows, updatedAt);
+
+        // 3. screened_tickers 집계값 업데이트 (행이 존재하므로 UPDATE 정상 작동)
+        await updateScreenedTicker(CF_WORKER_URL, CRON_SECRET, ticker, spot, callWall, upside, rows, squeeze, vannaMetrics);
       } catch (e) {
-        console.warn(`[analyze-symbol] ${symbol} DB 저장 실패:`, e.message);
+        console.warn(`[analyze-symbol] ${ticker} DB 저장 실패:`, e.message);
       }
     }
 
     sendJSON(res, 200, {
       ok: true,
-      symbol,
+      symbol: ticker,
       date,
       // screener 카드용
       spot_price:   analyzed?.spot_price   ?? collected?.spot ?? null,
@@ -949,7 +965,7 @@ if (req.method === "POST" && req.url === "/analyze-symbol") {
     });
 
   } catch (err) {
-    console.error(`[analyze-symbol] ${symbol} 오류:`, err.message);
+    console.error(`[analyze-symbol] ${ticker} 오류:`, err.message);
     sendJSON(res, 500, { ok: false, error: err.message });
   }
 
