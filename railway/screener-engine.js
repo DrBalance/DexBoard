@@ -145,7 +145,7 @@ function calcVannaMetrics(rows, spot, callWallStrike) {
   // call_dex_sum: 현재가 -> callWallStrike(콜월) 전체 구간 합산
   let callDexSum = 0;
   const limitStrike = callWallStrike ?? vannaLimit;
-  for (const s of aboveStrikes) {
+  for (const s of allStrikes.filter(s => s.strike > spot)) {
     if (s.strike > limitStrike) break;
     callDexSum += s.call_dex;
   }
