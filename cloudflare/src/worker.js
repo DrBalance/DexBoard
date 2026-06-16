@@ -903,18 +903,22 @@ export default {
         return json({ error: "Unauthorized" }, 401, corsHeaders);
       }
       try {
-        const { ticker, spot_price, upside, concentration_count, target_strike, total_gex, atm_iv, flip_strike, squeeze_stars, squeeze_flags } = await request.json();
+        const { ticker, spot_price, upside, concentration_count, target_strike, total_gex, atm_iv, flip_strike, squeeze_stars, squeeze_flags, vanna_limit, vanna_sum, call_dex_sum, vanna_power, vanna_coverage } = await request.json();
         if (!ticker) return json({ ok: false, error: "ticker 필요" }, 400, corsHeaders);
         await env.DB.prepare(`
           UPDATE screened_tickers
           SET spot_price = ?, upside = ?, concentration_count = ?,
               target_strike = ?, total_gex = ?, atm_iv = ?, flip_strike = ?,
-              squeeze_stars = ?, squeeze_flags = ?
+              squeeze_stars = ?, squeeze_flags = ?,
+              vanna_limit = ?, vanna_sum = ?, call_dex_sum = ?,
+              vanna_power = ?, vanna_coverage = ?
           WHERE ticker = ?
         `).bind(
           spot_price ?? null, upside ?? null, concentration_count ?? null,
           target_strike ?? null, total_gex ?? null, atm_iv ?? null, flip_strike ?? null,
           squeeze_stars ?? 0, squeeze_flags ?? null,
+          vanna_limit ?? null, vanna_sum ?? null, call_dex_sum ?? null,
+          vanna_power ?? null, vanna_coverage ?? null,
           ticker.toUpperCase()
         ).run();
         return json({ ok: true, ticker: ticker.toUpperCase() }, 200, corsHeaders);

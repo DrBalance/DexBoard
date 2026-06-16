@@ -66,6 +66,76 @@ async function fetchCBOEChain(symbol) {
 //   3. 최다 등장 스트라이크 + 카운트 반환
 //   4. concentration_count >= 4 이면 Call Wall로 판정
 // ============================================
+// ============================================
+// Vanna 메트릭 계산
+// 현재가 위로 VIX↓ 기준 양의 Vanna가 연속되는 한계점 탐색
+// 입력: rows (with _strikeRows), spot
+// 출력: vanna_limit, vanna_sum, call_dex_sum, vanna_power, vanna_coverage
+// ============================================
+function calcVannaMetrics(rows, spot, callWallStrike) {
+  if (!rows?.length || !spot) return {};
+
+  // 전체 만기의 _strikeRows를 합산하여 strike별 vanna, call_dex 집계
+  const strikeMap = {};
+  for (const row of rows) {
+    const strikeRows = row._strikeRows;
+    if (!strikeRows?.length) continue;
+    for (const s of strikeRows) {
+      if (s.strike == null) continue;
+      if (!strikeMap[s.strike]) strikeMap[s.strike] = { vanna: 0, call_dex: 0 };
+      strikeMap[s.strike].vanna    += s.vanna ?? 0;
+      // 콜 DEX: dex > 0 && strike > spot인 경우만 (콜 포지션)
+      if ((s.dex ?? 0) > 0 && s.strike > spot) {
+        strikeMap[s.strike].call_dex += s.dex;
+      }
+    }
+  }
+
+  // 현재가 위 스트라이크만, 오름차순 정렬
+  const aboveStrikes = Object.entries(strikeMap)
+    .map(([strike, v]) => ({ strike: Number(strike), ...v }))
+    .filter(s => s.strike > spot)
+    .sort((a, b) => a.strike - b.strike);
+
+  if (!aboveStrikes.length) return {};
+
+  // VIX↓ 기준 양의 Vanna가 연속되는 한계점 탐색
+  // 첫번째로 vanna <= 0이 되는 직전 스트라이크가 vanna_limit
+  let vannaLimit   = null;
+  let vannaSum     = 0;
+  let callDexSum   = 0;
+
+  for (const s of aboveStrikes) {
+    if (s.vanna <= 0) break;  // 연속이 끊기는 지점
+    vannaLimit  = s.strike;
+    vannaSum   += s.vanna;
+    callDexSum += s.call_dex;
+  }
+
+  if (vannaLimit === null) return {};
+
+  // vanna_power: vanna 합계 / 콜 DEX 합계
+  const vannaPower = callDexSum > 0 ? +(vannaSum / callDexSum).toFixed(4) : null;
+
+  // vanna_coverage: (한계점 - 현재가) / (콜월 - 현재가) × 100
+  let vannaCoverage = null;
+  if (callWallStrike && callWallStrike > spot) {
+    const range = callWallStrike - spot;
+    const reach = vannaLimit - spot;
+    vannaCoverage = reach >= range
+      ? 100
+      : +((reach / range) * 100).toFixed(1);
+  }
+
+  return {
+    vanna_limit:    vannaLimit,
+    vanna_sum:      +vannaSum.toFixed(6),
+    call_dex_sum:   +callDexSum.toFixed(6),
+    vanna_power:    vannaPower,
+    vanna_coverage: vannaCoverage,
+  };
+}
+
 function calcCallWall(rows, spot) {
   if (!rows?.length || !spot) return { target_strike: null, concentration_count: 0, distance_pct: null };
 
@@ -256,6 +326,9 @@ export async function analyzeSymbol(symbol) {
   // 스퀴즈 계산 (_strikeRows 사용 전에 계산)
   const squeeze = calcSqueeze(rows, callWall.target_strike);
 
+  // Vanna 메트릭 계산 (_strikeRows 사용 전에 계산)
+  const vannaMetrics = calcVannaMetrics(rows, spot, callWall.target_strike);
+
   const dbRows = rows.map(r => {
     const strikeData = r._strikeRows?.length
       ? JSON.stringify(r._strikeRows.map(s => ({
@@ -302,7 +375,7 @@ export async function analyzeSymbol(symbol) {
   // upside: distance_pct 부호 반전 (목표가 > 현재가이면 양수)
   const upside = callWall.distance_pct != null ? -callWall.distance_pct : null;
 
-  return { symbol, spot, rows: dbRows, callWall, upside, squeeze };
+  return { symbol, spot, rows: dbRows, callWall, upside, squeeze, vannaMetrics };
 }
 
 // ============================================
@@ -333,7 +406,7 @@ export async function saveSymbolRows(cfWorkerUrl, cronSecret, symbol, rows, upda
 // ============================================
 // screened_tickers 집계값 업데이트
 // ============================================
-export async function updateScreenedTicker(cfWorkerUrl, cronSecret, symbol, spot, callWall, upside, rows, squeeze) {
+export async function updateScreenedTicker(cfWorkerUrl, cronSecret, symbol, spot, callWall, upside, rows, squeeze, vannaMetrics = {}) {
   const totalGex = rows.reduce((s, r) => s + (r.net_gex ?? 0), 0);
   const firstRow = rows[0] ?? {};
   const atmIv    = rows.filter(r => r.atm_iv).reduce((s, r, _, a) => s + r.atm_iv / a.length, 0) || null;
@@ -357,6 +430,11 @@ export async function updateScreenedTicker(cfWorkerUrl, cronSecret, symbol, spot
         flip_strike:         nearestFlip,
         squeeze_stars:       squeeze?.squeeze_stars ?? 0,
         squeeze_flags:       squeeze?.squeeze_flags ?? null,
+        vanna_limit:         vannaMetrics.vanna_limit    ?? null,
+        vanna_sum:           vannaMetrics.vanna_sum      ?? null,
+        call_dex_sum:        vannaMetrics.call_dex_sum   ?? null,
+        vanna_power:         vannaMetrics.vanna_power    ?? null,
+        vanna_coverage:      vannaMetrics.vanna_coverage ?? null,
       }),
       signal: AbortSignal.timeout(10000),
     });
@@ -400,12 +478,12 @@ export async function runScreenerCollection(cfWorkerUrl, cronSecret, symbols, on
     const sym = typeof symbols[i] === 'string' ? symbols[i] : symbols[i].symbol ?? symbols[i];
 
     try {
-      const { rows, callWall, upside, squeeze, spot } = await analyzeSymbol(sym);
+      const { rows, callWall, upside, squeeze, spot, vannaMetrics } = await analyzeSymbol(sym);
       const saveResult = await saveSymbolRows(cfWorkerUrl, cronSecret, sym, rows, updatedAt);
 
       if (saveResult.ok) {
         // screened_tickers 집계값 업데이트
-        await updateScreenedTicker(cfWorkerUrl, cronSecret, sym, spot, callWall, upside, rows, squeeze);
+        await updateScreenedTicker(cfWorkerUrl, cronSecret, sym, spot, callWall, upside, rows, squeeze, vannaMetrics);
 
         results.push({ symbol: sym, rows: rows.length, callWall });
         console.log(
