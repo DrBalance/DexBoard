@@ -728,6 +728,36 @@ export default {
       return json({ candidates: rows.results ?? [] }, 200, corsHeaders);
     }
 
+    // ── GET /api/screener/monitor-tickers ───────────────────────
+    // pruneWatchlistGroup에서 사용: MONITOR 그룹 종목 전체 조회
+    if (request.method === "GET" && path === "/api/screener/monitor-tickers") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      const rows = await env.DB.prepare(`
+        SELECT ticker, spot_price, vanna_limit
+        FROM screened_tickers
+        WHERE group_code = 'MONITOR'
+      `).all();
+      return json({ tickers: rows.results ?? [] }, 200, corsHeaders);
+    }
+
+    // ── GET /api/screener/all-active-tickers ────────────────────
+    // pruneWatchlistGroup에서 사용: WATCHLIST + MONITOR 전체 조회
+    if (request.method === "GET" && path === "/api/screener/all-active-tickers") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      const rows = await env.DB.prepare(`
+        SELECT ticker, spot_price, vanna_limit, concentration_count, group_code
+        FROM screened_tickers
+        WHERE group_code IN ('WATCHLIST', 'MONITOR')
+      `).all();
+      return json({ tickers: rows.results ?? [] }, 200, corsHeaders);
+    }
+
     // ── POST /api/watchlist/sync-is-watchlist ───────────────────
     // screened_tickers 기준으로 is_watchlist 동기화
     if (request.method === "POST" && path === "/api/watchlist/sync-is-watchlist") {
