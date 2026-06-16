@@ -925,8 +925,6 @@ if (req.method === "POST" && req.url === "/analyze-symbol") {
     if (save && analyzed) {
       const { rows, callWall, upside, squeeze, spot, vannaMetrics } = analyzed;
       const updatedAt = new Date().toISOString();
-      console.log(`[analyze-symbol] ${symbol} vannaMetrics:`, JSON.stringify(vannaMetrics));
-      console.log(`[analyze-symbol] ${symbol} spot: ${spot}, callWall:`, JSON.stringify(callWall));
       try {
         await saveSymbolRows(CF_WORKER_URL, CRON_SECRET, symbol, rows, updatedAt);
         await updateScreenedTicker(CF_WORKER_URL, CRON_SECRET, symbol, spot, callWall, upside, rows, squeeze, vannaMetrics);

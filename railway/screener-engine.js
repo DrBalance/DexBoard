@@ -77,11 +77,9 @@ function calcVannaMetrics(rows, spot, callWallStrike) {
 
   // 전체 만기의 _strikeRows를 합산하여 strike별 vanna, call_dex 집계
   const strikeMap = {};
-  let strikeRowsCount = 0;
   for (const row of rows) {
     const strikeRows = row._strikeRows;
     if (!strikeRows?.length) continue;
-    strikeRowsCount += strikeRows.length;
     for (const s of strikeRows) {
       if (s.strike == null) continue;
       if (!strikeMap[s.strike]) strikeMap[s.strike] = { vanna: 0, call_dex: 0 };
@@ -92,35 +90,57 @@ function calcVannaMetrics(rows, spot, callWallStrike) {
     }
   }
 
-  // 현재가 위 스트라이크만, 오름차순 정렬
-  const aboveStrikes = Object.entries(strikeMap)
+  // 전체 스트라이크 오름차순 정렬
+  const allStrikes = Object.entries(strikeMap)
     .map(([strike, v]) => ({ strike: Number(strike), ...v }))
-    .filter(s => s.strike > spot)
     .sort((a, b) => a.strike - b.strike);
 
-  console.log(`[calcVannaMetrics] spot=${spot}, rows=${rows.length}, strikeRows총=${strikeRowsCount}, aboveStrikes=${aboveStrikes.length}`);
-  if (aboveStrikes.length > 0) {
-    console.log(`[calcVannaMetrics] 상위 5개:`, JSON.stringify(aboveStrikes.slice(0, 5)));
-  }
+  if (!allStrikes.length) return {};
 
-  if (!aboveStrikes.length) return {};
+  // 현재가에 가장 가까운 스트라이크 찾기
+  const atmStrike = allStrikes.reduce((best, s) =>
+    Math.abs(s.strike - spot) < Math.abs(best.strike - spot) ? s : best
+  );
+  const atmIdx = allStrikes.indexOf(atmStrike);
 
-  // VIX 하락 기준 양의 Vanna가 연속되는 한계점 탐색
   let vannaLimit = null;
   let vannaSum   = 0;
 
-  for (const s of aboveStrikes) {
-    if (s.vanna <= 0) break;
-    vannaLimit = s.strike;
-    vannaSum  += s.vanna;
+  if (atmStrike.vanna > 0) {
+    // 현재가가 초록색(양수) → 위쪽으로 연속 양수 탐색
+    for (let i = atmIdx; i < allStrikes.length; i++) {
+      if (allStrikes[i].vanna <= 0) break;
+      vannaLimit = allStrikes[i].strike;
+      vannaSum  += allStrikes[i].vanna;
+    }
+  } else {
+    // 현재가가 빨간색(음수) → 위쪽으로 3칸 확인
+    const above3 = allStrikes.slice(atmIdx + 1, atmIdx + 4);
+    const redAbove = above3.filter(s => s.vanna <= 0).length;
+
+    if (redAbove >= 3) {
+      // 위쪽 3칸 이상 빨간색 → 아래쪽에서 양수 구간 상단 탐색
+      for (let i = atmIdx - 1; i >= 0; i--) {
+        if (allStrikes[i].vanna <= 0) break;
+        vannaLimit = allStrikes[i].strike;
+        vannaSum  += allStrikes[i].vanna;
+      }
+    } else {
+      // 위쪽 3칸 미만 빨간색 → 위쪽에서 초록색 구간 상단 탐색
+      for (let i = atmIdx + 1; i < allStrikes.length; i++) {
+        if (allStrikes[i].vanna <= 0) continue;
+        // 초록색 구간 시작점부터 연속 탐색
+        for (let j = i; j < allStrikes.length; j++) {
+          if (allStrikes[j].vanna <= 0) break;
+          vannaLimit = allStrikes[j].strike;
+          vannaSum  += allStrikes[j].vanna;
+        }
+        break;
+      }
+    }
   }
 
-  console.log(`[calcVannaMetrics] vannaLimit=${vannaLimit}, 5%기준=${spot * 1.05}`);
-
   if (vannaLimit === null) return {};
-
-  // 5% 미만이면 의미없음 -> 조기 종료
-  if ((vannaLimit - spot) / spot < 0.05) return {};
 
   // call_dex_sum: 현재가 -> callWallStrike(콜월) 전체 구간 합산
   let callDexSum = 0;
@@ -602,7 +622,9 @@ export async function runWatchlistScan(cfWorkerUrl, cronSecret, onProgress) {
     try {
       const { rows, callWall, upside, squeeze, spot, vannaMetrics } = await analyzeSymbol(sym);
       // 편입 기준: concentration_count >= 2 AND vanna_limit >= spot x 1.05
-      const isCallWall = callWall.concentration_count >= 2 && vannaMetrics.vanna_limit != null;
+      const isCallWall = callWall.concentration_count >= 2 &&
+        vannaMetrics.vanna_limit != null &&
+        vannaMetrics.vanna_limit >= spot * 1.05;
 
       scanned.push({ symbol: sym, concentration_count: callWall.concentration_count, vanna_limit: vannaMetrics.vanna_limit ?? null });
 
