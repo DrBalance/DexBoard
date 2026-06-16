@@ -640,7 +640,7 @@ export async function runWatchlistScan(cfWorkerUrl, cronSecret, onProgress) {
         }).catch(e => console.warn(`[watchlist] ${sym} 그룹 편입 실패:`, e.message));
 
         // screened_tickers 집계값 업데이트
-        await updateScreenedTicker(cfWorkerUrl, cronSecret, sym, spot, callWall, upside, rows, squeeze)
+        await updateScreenedTicker(cfWorkerUrl, cronSecret, sym, spot, callWall, upside, rows, squeeze, vannaMetrics)
           .catch(e => console.warn(`[watchlist] ${sym} screened_tickers 업데이트 실패:`, e.message));
 
       } else {
