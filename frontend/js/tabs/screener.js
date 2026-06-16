@@ -994,14 +994,17 @@ function buildRollupSparkline(events) {
 
   // 반나리미트
   const vannaLimitStr = r.vanna_limit != null
-    ? `<span style="color:#a78bfa">$${r.vanna_limit.toFixed(0)}</span>`
+    ? (() => {
+        const color = r.vanna_limit >= r.spot_price ? '#22c55e' : '#ef4444';
+        return `<span style="color:${color}">$${r.vanna_limit.toFixed(0)}</span>`;
+      })()
     : '<span class="muted">-</span>';
 
   // 반나커버리지
   const vannaCoverageStr = r.vanna_coverage != null
     ? (() => {
         const pct = r.vanna_coverage;
-        const color = pct >= 80 ? '#22c55e' : pct >= 50 ? '#eab308' : '#ef4444';
+        const color = pct >= 0 ? '#22c55e' : '#ef4444';
         return `<span style="color:${color}">${pct.toFixed(0)}%</span>`;
       })()
     : '<span class="muted">-</span>';
