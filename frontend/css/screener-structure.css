@@ -413,12 +413,12 @@
 .legend-dot.flash { background: var(--orange); }
 
 /* ── 테이블 */
-.sc-table-wrap { overflow-x: auto; }
+.sc-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 .sc-tbl {
   width: 100%;
   border-collapse: collapse;
   font-size: 13px;
-  min-width: 800px;
+  min-width: 700px;
 }
 .sc-th {
   text-align: left;
@@ -735,6 +735,19 @@
   .bb-hm-sym   { width: 40px; font-size: 10px; }
   .bb-hm-score { width: 34px; font-size: 10px; }
   .bb-hm-cell  { height: 22px; }
+
+  /* 스크리너 테이블 모바일 최적화 */
+  .screener-container { padding: 8px 0; }
+  .sc-tbl { font-size: 11px; min-width: 600px; }
+  .sc-th { padding: 7px 8px; font-size: 10px; }
+  .sc-row td { padding: 7px 8px; }
+  .sc-td-sym { padding: 6px 8px; }
+  .sc-sym { font-size: 12px; }
+  .sc-td-price { font-size: 11px; }
+  .sc-filter-bar { flex-wrap: wrap; gap: 4px; padding: 8px; }
+  .sc-summary { padding: 8px; gap: 8px; }
+  .sc-summary-card { min-width: 70px; padding: 8px 10px; }
+  .sc-collect-panel { padding: 10px 12px; }
 }
 
 /* ── 유틸리티 색상 클래스 ───────────────────────────── */

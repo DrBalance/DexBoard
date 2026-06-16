@@ -108,7 +108,7 @@ nav {
 /* ── 메인 컨테이너 ───────────────────────────── */
 main {
   position: relative;   /* 탭 패널 position:absolute 기준점 */
-  overflow: hidden;     /* 오프스크린 패널 스크롤바 방지 */
+  overflow: clip;       /* 오프스크린 패널 스크롤바 방지 + 모바일 width 정상 */
   flex: 1;
   padding: 16px 20px;
 }
@@ -141,4 +141,62 @@ main {
   visibility: visible;
   pointer-events: auto;
   opacity: 1;
+}
+
+/* ── 모바일 대응 ─────────────────────────────── */
+@media (max-width: 768px) {
+  header {
+    padding: 0 12px;
+    gap: 8px;
+    flex-wrap: nowrap;
+    height: auto;
+    min-height: var(--header-h);
+  }
+
+  .logo {
+    font-size: 13px;
+    flex-shrink: 0;
+  }
+
+  nav {
+    flex: 1;
+    overflow-x: auto;
+    overflow-y: hidden;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    gap: 1px;
+    padding: 6px 0;
+  }
+  nav::-webkit-scrollbar { display: none; }
+
+  .tab-btn {
+    padding: 4px 10px;
+    font-size: 11px;
+    white-space: nowrap;
+    flex-shrink: 0;
+  }
+
+  .header-right {
+    gap: 8px;
+    flex-shrink: 0;
+  }
+
+  .clock {
+    font-size: 10px;
+  }
+
+  /* ET 시계 숨기기 (공간 절약) */
+  .clock-sep,
+  #clock-et {
+    display: none;
+  }
+
+  main {
+    padding: 8px 10px;
+    overflow: visible;
+  }
+
+  .tab-panel {
+    width: 100%;
+  }
 }

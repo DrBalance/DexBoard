@@ -563,6 +563,9 @@ function aggregateBySymbol(rows) {
         upside:              r.upside,          // screened_tickers에서 직접
         squeeze_stars:       r.squeeze_stars ?? 0,
         squeeze_flags:       r.squeeze_flags ?? null,
+        vanna_limit:         r.vanna_limit    ?? null,
+        vanna_coverage:      r.vanna_coverage ?? null,
+        call_dex_sum:        r.call_dex_sum   ?? null,
         updated_at:          r.updated_at,
         groups,
         group_names,
@@ -710,16 +713,14 @@ function renderTable(filter = 'all') {
         <th class="sc-th sortable" data-col="spot_price">현재가</th>
         <th class="sc-th sortable" data-col="target_strike">목표가</th>
         <th class="sc-th sortable" data-col="upside">상승여력</th>
+        <th class="sc-th sortable" data-col="vanna_limit">반나리미트</th>
+        <th class="sc-th sortable" data-col="vanna_coverage">반나커버</th>
         <th class="sc-th sortable" data-col="concentration_count">집중도</th>
-        <th class="sc-th sortable" data-col="bet_strength">베팅강도</th>
         <th class="sc-th sortable" data-col="squeeze_stars">스퀴즈</th>
-        <th class="sc-th">롤업</th>
+        <th class="sc-th sortable" data-col="call_dex_sum">콜덱스</th>
         <th class="sc-th">히트맵</th>
         <th class="sc-th">분석</th>
-        <th class="sc-th sortable" data-col="dist_pct">플립존 거리</th>
-        <th class="sc-th sortable" data-col="flip_strike">플립존</th>
-        <th class="sc-th sortable" data-col="total_gex">Net GEX</th>
-        <th class="sc-th sortable" data-col="atm_iv">ATM IV</th>
+        <th class="sc-th">롤업</th>
       </tr>
     </thead>`;
 
@@ -991,6 +992,29 @@ function buildRollupSparkline(events) {
   </svg>`;
 }
 
+  // 반나리미트
+  const vannaLimitStr = r.vanna_limit != null
+    ? `<span style="color:#a78bfa">$${r.vanna_limit.toFixed(0)}</span>`
+    : '<span class="muted">-</span>';
+
+  // 반나커버리지
+  const vannaCoverageStr = r.vanna_coverage != null
+    ? (() => {
+        const pct = r.vanna_coverage;
+        const color = pct >= 80 ? '#22c55e' : pct >= 50 ? '#eab308' : '#ef4444';
+        return `<span style="color:${color}">${pct.toFixed(0)}%</span>`;
+      })()
+    : '<span class="muted">-</span>';
+
+  // 콜덱스 (×1000, 단위 k)
+  const callDexStr = r.call_dex_sum != null
+    ? (() => {
+        const val = r.call_dex_sum * 1000;
+        const color = val >= 50 ? '#22c55e' : val >= 10 ? '#4ade80' : '#94a3b8';
+        return `<span style="color:${color}">${val.toFixed(1)}k</span>`;
+      })()
+    : '<span class="muted">-</span>';
+
   return `
     <tr class="sc-row${callCount >= 4 ? ' sc-row-callwall' : ''}" data-sym="${r.symbol}">
       <td class="sc-td-sym">${symStr}</td>
@@ -998,20 +1022,18 @@ function buildRollupSparkline(events) {
       <td class="sc-td-price">${spot ? '$' + spot.toFixed(2) : '-'}</td>
       <td class="sc-td-price">${targetStr}</td>
       <td class="sc-td-dist">${upsideStr}</td>
+      <td class="sc-td-price">${vannaLimitStr}</td>
+      <td class="sc-td-price">${vannaCoverageStr}</td>
       <td class="sc-td-cw">${concentrationStr}</td>
-      <td class="sc-td-cw" style="text-align:center">${betStrengthStr}</td>
       <td class="sc-td-squeeze">${'★'.repeat(r.squeeze_stars ?? 0) || '<span class="muted">-</span>'}</td>
-      <td style="padding:6px 10px;vertical-align:middle">${buildRollupSparkline(rollupMap[r.symbol])}</td>
+      <td class="sc-td-price">${callDexStr}</td>
       <td>
         <button class="sc-heatmap-btn" data-sym="${r.symbol}" data-strike="${r.target_strike ?? ''}" title="콜월 히트맵">▦</button>
       </td>
       <td>
         <button class="sc-drill-btn" data-sym="${r.symbol}" title="Structure 탭에서 분석">▶</button>
       </td>
-      <td class="sc-td-dist">${distStr}</td>
-      <td class="sc-td-price">${flipStr}</td>
-      <td class="sc-td-gex">${gexStr}</td>
-      <td class="sc-td-iv">${ivStr}</td>
+      <td style="padding:6px 10px;vertical-align:middle">${buildRollupSparkline(rollupMap[r.symbol])}</td>
     </tr>
   `;
 }
