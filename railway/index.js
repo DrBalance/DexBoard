@@ -1055,6 +1055,20 @@ startScheduler();
 });
 
 // ─────────────────────────────────────────────────────────────────
+// 타임스탬프 유틸
+// ─────────────────────────────────────────────────────────────────
+function getNowTimestamps() {
+  const now = new Date();
+  const fmtTZ = (tz) =>
+    now.toLocaleString('sv', { timeZone: tz }).replace(' ', 'T');
+  return {
+    utc: now.toISOString(),
+    et:  fmtTZ('America/New_York'),
+    kst: fmtTZ('Asia/Seoul'),
+  };
+}
+
+// ─────────────────────────────────────────────────────────────────
 // 시장 시간 유틸 (ET 기준)
 // ─────────────────────────────────────────────────────────────────
 function getETHour() {
