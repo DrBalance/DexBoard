@@ -1024,3 +1024,100 @@
 }
 .sc-ev-meta.red   { color: #ef4444; }
 .sc-ev-meta.amber { color: #f59e0b; }
+
+/* ── Radar 탭 ─────────────────────────────────────────────── */
+.radar-wrap { padding: 16px; }
+
+.radar-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+.radar-title { font-size: 18px; font-weight: 700; color: var(--text); }
+.radar-meta  { font-size: 12px; color: var(--text3); flex: 1; }
+.radar-refresh-btn {
+  font-size: 12px; padding: 4px 10px;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: none; color: var(--text2); cursor: pointer;
+}
+.radar-refresh-btn:hover { border-color: var(--blue); color: var(--blue); }
+
+.radar-section-title {
+  font-size: 12px; font-weight: 600; color: var(--text3);
+  text-transform: uppercase; letter-spacing: .05em;
+  margin: 16px 0 6px;
+}
+.radar-table-wrap { overflow-x: auto; }
+.radar-table      { min-width: 900px; }
+.radar-table td   { white-space: nowrap; }
+.radar-reason     { font-size: 11px; color: var(--text3); white-space: normal !important; }
+.radar-win        { font-size: 10px; color: var(--text3); margin-left: 3px; }
+
+.radar-row { cursor: pointer; }
+.radar-row:hover td { background: var(--bg3); }
+.radar-row.selected td { background: rgba(88,166,255,.08); }
+
+.radar-badge {
+  display: inline-block; font-size: 10px; padding: 1px 5px;
+  border-radius: 3px; margin-left: 3px; vertical-align: middle;
+}
+.radar-badge--my     { background: rgba(88,166,255,.2);  color: #58a6ff; }
+.radar-badge--struct { background: rgba(63,185,80,.2);   color: #3fb950; }
+.radar-badge--warn   { background: rgba(240,136,62,.2);  color: #f0883e; }
+
+.radar-empty  { color: var(--text3); font-size: 13px; padding: 12px 0; }
+.radar-status { padding: 24px; color: var(--text3); font-size: 13px; }
+.radar-status--error { color: var(--red); }
+
+.radar-excluded {
+  margin-top: 20px; font-size: 12px; color: var(--text3);
+}
+.radar-excluded summary { cursor: pointer; color: var(--text2); }
+.radar-exc-group { margin-top: 8px; }
+.radar-exc-sym {
+  display: inline-block; padding: 2px 6px; margin: 2px;
+  border: 1px solid var(--border); border-radius: 3px;
+  font-size: 11px; font-family: var(--mono); color: var(--text2);
+  cursor: pointer;
+}
+.radar-exc-sym:hover { border-color: var(--blue); color: var(--blue); }
+
+/* 상세 패널 */
+.radar-detail {
+  margin-top: 20px; border: 1px solid var(--border);
+  border-radius: 6px; padding: 16px; background: var(--bg2);
+}
+.radar-detail-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 14px;
+}
+.radar-detail-title { font-size: 15px; font-weight: 700; color: var(--text); }
+.radar-close-btn {
+  font-size: 12px; padding: 4px 10px;
+  border: 1px solid var(--border); border-radius: 4px;
+  background: none; color: var(--text2); cursor: pointer;
+}
+.radar-close-btn:hover { border-color: var(--red); color: var(--red); }
+
+.radar-detail-body {
+  display: flex; gap: 20px; flex-wrap: wrap; margin-bottom: 16px;
+}
+.radar-detail-col { min-width: 160px; }
+.radar-detail-col--wide { flex: 1; min-width: 300px; }
+
+.radar-section-label {
+  font-size: 11px; font-weight: 600; color: var(--text3);
+  text-transform: uppercase; margin-bottom: 8px;
+}
+.radar-ladder { font-family: var(--mono); font-size: 12px; }
+.radar-ladder-row {
+  display: flex; justify-content: space-between; gap: 16px;
+  padding: 3px 0; border-bottom: 1px solid var(--border);
+}
+.radar-ladder--spot .radar-ladder-val { color: #58a6ff; font-weight: 700; }
+.radar-ladder-label { color: var(--text3); }
+.radar-ladder-val   { color: var(--text); }
+
+.radar-detail-map { margin-top: 12px; }

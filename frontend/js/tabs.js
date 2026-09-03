@@ -14,6 +14,7 @@ import { initMarket,    refreshMarket }    from './tabs/market.js';
 import { initStructure, refreshStructure } from './tabs/structure.js';
 import { initScreener,  refreshScreener }  from './tabs/screener.js';
 import { initChart,     refreshChart }     from './tabs/chart.js';
+import { initRadar,     refreshRadar }     from './tabs/radar.js';
 
 const TAB_HANDLERS = {
   live:      { init: initLive,      refresh: refreshLive      },
@@ -21,10 +22,11 @@ const TAB_HANDLERS = {
   structure: { init: initStructure, refresh: refreshStructure },
   screener:  { init: initScreener,  refresh: refreshScreener  },
   chart:     { init: initChart,     refresh: refreshChart     },
+  radar:     { init: initRadar,     refresh: refreshRadar     },
 };
 
 const _initialized = {
-  live: false, market: false, structure: false, screener: false, chart: false,
+  live: false, market: false, structure: false, screener: false, chart: false, radar: false,
 };
 
 let _activeTab = 'live';

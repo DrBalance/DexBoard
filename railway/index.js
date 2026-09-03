@@ -1418,6 +1418,19 @@ async function runCollect(symbols, date) {
       console.warn('[Screener] market-snapshot 저장 실패 (계속 진행):', e.message);
     }
 
+    // 트리거 5: 90일 초과 hist 보관 삭제
+    try {
+      const retRes = await fetch(`${CF_WORKER_URL}/d1/hist-retention`, {
+        method:  'POST',
+        headers: { 'x-cron-secret': CRON_SECRET },
+        signal:  AbortSignal.timeout(10000),
+      });
+      const retData = await retRes.json();
+      console.log(`[Screener] hist-retention 완료 — 삭제 ${retData.deleted ?? 0}행`);
+    } catch (e) {
+      console.warn('[Screener] hist-retention 실패 (계속 진행):', e.message);
+    }
+
   } catch (err) {
     console.error("[Screener] 수집 중 치명적 오류:", err.message);
     collectState = {

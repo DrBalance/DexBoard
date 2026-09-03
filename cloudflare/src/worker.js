@@ -894,8 +894,185 @@ export default {
           r.peak_call_dex_value  ?? null,
           updated_at      ?? new Date().toISOString()
         ));
-        await env.DB.batch([deleteStmt, ...insertStmts]);
+        // hist INSERT: updated_at → ET 날짜로 변환 후 daily_screener_hist에 동일 행 저장
+        const etDate = new Date(updated_at ?? new Date().toISOString())
+          .toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+        const spotRow = await env.DB.prepare(
+          'SELECT spot_price FROM screened_tickers WHERE ticker = ? LIMIT 1'
+        ).bind(ticker).first();
+        const histSpot = spotRow?.spot_price ?? null;
+        const histInsertStmts = rows.map(r => env.DB.prepare(`
+          INSERT OR REPLACE INTO daily_screener_hist (
+            ticker, date, expiry_date, dte, expiry_type,
+            net_gex, flip_strike, atm_iv, call_oi, put_oi, pcr_oi,
+            dex, vanna, charm, call_vol, put_vol,
+            iv_skew, otm_call_iv, otm_put_iv,
+            strike_data, peak_call_dex_strike, peak_call_dex_value,
+            spot_price, updated_at
+          ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        `).bind(
+          ticker, etDate,
+          r.expiry_date ?? null, r.dte ?? null, r.expiry_type ?? null,
+          r.net_gex     ?? null, r.flip_strike ?? null, r.atm_iv ?? null,
+          r.call_oi     ?? null, r.put_oi      ?? null, r.pcr_oi ?? null,
+          r.dex         ?? null, r.vanna       ?? null, r.charm  ?? null,
+          r.call_vol    ?? null, r.put_vol     ?? null,
+          r.iv_skew     ?? null, r.otm_call_iv ?? null, r.otm_put_iv ?? null,
+          r.strike_data ?? null,
+          r.peak_call_dex_strike ?? null, r.peak_call_dex_value ?? null,
+          histSpot, updated_at ?? new Date().toISOString()
+        ));
+        await env.DB.batch([deleteStmt, ...insertStmts, ...histInsertStmts]);
         return json({ ok: true, inserted: rows.length }, 200, corsHeaders);
+      } catch (err) {
+        return json({ ok: false, error: err.message }, 500, corsHeaders);
+      }
+    }
+
+    // ── GET /api/v2/chains ────────────────────────────────────────
+    // Radar 탭용. 인증 없음. daily_screener + screened_tickers + watchlist + price_indicators JOIN
+    if (request.method === "GET" && (path === "/api/v2/chains" || path.startsWith("/api/v2/chains"))) {
+      const symbolFilter = url.searchParams.get("symbol")?.toUpperCase() ?? null;
+      const daysParam    = parseInt(url.searchParams.get("days") ?? "0", 10);
+
+      const whereClause = symbolFilter ? "WHERE d.ticker = ?" : "";
+      const binds = symbolFilter ? [symbolFilter] : [];
+
+      const rows = await env.DB.prepare(`
+        WITH latest_pi AS (
+          SELECT symbol, MAX(date) as max_date FROM price_indicators GROUP BY symbol
+        )
+        SELECT
+          d.ticker as symbol, d.expiry_date, d.dte, d.expiry_type,
+          d.atm_iv, d.call_oi, d.put_oi, d.flip_strike, d.strike_data,
+          GROUP_CONCAT(DISTINCT st.group_code) as groups,
+          MAX(st.spot_price) as spot_price,
+          w.company, w.market_cap,
+          p.close as bb_close, p.bb_upper2, p.bb_lower2, p.bb_position
+        FROM daily_screener d
+        LEFT JOIN screened_tickers st ON st.ticker = d.ticker
+        LEFT JOIN watchlist w ON w.ticker = d.ticker
+        LEFT JOIN latest_pi lpi ON lpi.symbol = d.ticker
+        LEFT JOIN price_indicators p ON p.symbol = d.ticker AND p.date = lpi.max_date
+        ${whereClause}
+        GROUP BY d.ticker, d.expiry_date
+        ORDER BY d.ticker ASC, d.dte ASC
+      `).bind(...binds).all();
+
+      // 종목별로 그룹핑하고 strike_data에서 greeks 제거 (크기 절감)
+      const tickerMap = new Map();
+      for (const r of (rows.results ?? [])) {
+        if (!tickerMap.has(r.symbol)) {
+          tickerMap.set(r.symbol, {
+            symbol:     r.symbol,
+            company:    r.company    ?? null,
+            market_cap: r.market_cap ?? null,
+            groups:     r.groups     ?? "",
+            spot_price: r.spot_price ?? null,
+            bb: (r.bb_close != null) ? {
+              close:       r.bb_close,
+              bb_upper2:   r.bb_upper2,
+              bb_lower2:   r.bb_lower2,
+              bb_position: r.bb_position,
+            } : null,
+            expiries: [],
+          });
+        }
+        let strikes = [];
+        if (r.strike_data) {
+          try {
+            strikes = JSON.parse(r.strike_data).map(s => ({
+              strike:     s.strike,
+              call_iv:    s.call_iv    ?? null,
+              put_iv:     s.put_iv     ?? null,
+              avg_iv:     s.avg_iv     ?? null,
+              call_delta: s.call_delta ?? null,
+              call_oi:    s.call_oi    ?? null,
+              put_oi:     s.put_oi     ?? null,
+            }));
+          } catch (_) { strikes = []; }
+        }
+        tickerMap.get(r.symbol).expiries.push({
+          expiry_date: r.expiry_date,
+          dte:         r.dte,
+          expiry_type: r.expiry_type,
+          atm_iv:      r.atm_iv,
+          call_oi:     r.call_oi,
+          put_oi:      r.put_oi,
+          flip_strike: r.flip_strike,
+          strikes,
+        });
+      }
+
+      // 이력 데이터 (소진 판정용, ?days=N 시)
+      let history = {};
+      if (daysParam >= 1) {
+        const histRows = await env.DB.prepare(`
+          SELECT ticker, date, expiry_date, dte, expiry_type,
+                 atm_iv, call_oi, put_oi, flip_strike, strike_data,
+                 spot_price
+          FROM daily_screener_hist
+          WHERE date >= date('now', '-' || ? || ' days')
+          ${symbolFilter ? "AND ticker = ?" : ""}
+          ORDER BY ticker ASC, date ASC, dte ASC
+        `).bind(...(symbolFilter ? [daysParam, symbolFilter] : [daysParam])).all();
+
+        for (const r of (histRows.results ?? [])) {
+          if (!history[r.date]) history[r.date] = {};
+          if (!history[r.date][r.ticker]) {
+            history[r.date][r.ticker] = { symbol: r.ticker, spot_price: r.spot_price, expiries: [] };
+          }
+          let strikes = [];
+          if (r.strike_data) {
+            try {
+              strikes = JSON.parse(r.strike_data).map(s => ({
+                strike: s.strike, call_iv: s.call_iv ?? null, put_iv: s.put_iv ?? null,
+                avg_iv: s.avg_iv ?? null, call_delta: s.call_delta ?? null,
+                call_oi: s.call_oi ?? null, put_oi: s.put_oi ?? null,
+              }));
+            } catch (_) { strikes = []; }
+          }
+          history[r.date][r.ticker].expiries.push({
+            expiry_date: r.expiry_date, dte: r.dte, expiry_type: r.expiry_type,
+            atm_iv: r.atm_iv, call_oi: r.call_oi, put_oi: r.put_oi,
+            flip_strike: r.flip_strike, strikes,
+          });
+        }
+        // 날짜별 Map → 종목 배열로 변환
+        for (const date of Object.keys(history)) {
+          history[date] = Object.values(history[date]);
+        }
+      }
+
+      // KV에서 VIX 조회 (없으면 null)
+      let vix = null;
+      try {
+        const snap = await env.DEX_KV.get("snapshot:1min", { type: "json" });
+        vix = snap?.vix ?? null;
+      } catch (_) {}
+
+      const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+      const response = {
+        date:    today,
+        vix,
+        tickers: [...tickerMap.values()],
+        ...(daysParam >= 1 ? { history } : {}),
+      };
+      return json(response, 200, corsHeaders);
+    }
+
+    // ── POST /d1/hist-retention ───────────────────────────────────
+    // 90일 초과 daily_screener_hist 행 삭제. Railway 일일 크론에서 호출.
+    if (request.method === "POST" && path === "/d1/hist-retention") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      try {
+        const result = await env.DB.prepare(
+          "DELETE FROM daily_screener_hist WHERE date < date('now', '-90 days')"
+        ).run();
+        return json({ ok: true, deleted: result.meta?.changes ?? 0 }, 200, corsHeaders);
       } catch (err) {
         return json({ ok: false, error: err.message }, 500, corsHeaders);
       }
