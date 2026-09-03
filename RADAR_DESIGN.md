@@ -295,3 +295,46 @@ export function opexCalendar(today)                // → { opex, nextOpex, wind
 3. 단위 테스트 5개 통과
 4. Radar 탭에서 NVDA 클릭 시 사다리에 콜월 230, 상단 경계 ~300 표시
 5. MY 그룹 종목이 제외 사유가 있어도 상단에 표시
+
+---
+
+## 7. 기존 코드 알려진 문제 (Radar 작업 범위 밖 · 보고용 · 수정 여부는 별도 결정)
+
+2026-09-04 세션에서 발견. Radar 탭은 이 코드를 읽지 않으므로 Radar 작업에는 영향 없음.
+기존 탭을 손볼 때 참고. **Radar 작업 중에 이 항목들을 수정하지 말 것.**
+
+### 7-1. Vanna/Charm 부호 해석이 반대 (가장 큰 문제)
+- [vanna_analyzer.js:118](railway/vanna_analyzer.js:118) `calcGreeks`의 vanna = `φ(d1)·d2/σ`. 교과서 홀더 Vanna는 `−φ(d1)·d2/σ`.
+  netOI(callOI−putOI)와 곱하면 결과는 "IV 1단위 **상승** 시 딜러 매수량"이 됨. 즉 **음수 = IV 하락 시 딜러 매수(지지)**.
+- 그런데 아래 코드는 전부 **양수를 지지로 해석**함:
+  - [screener-engine.js:109](railway/screener-engine.js:109) `calcVannaMetrics` — 양수 연속 구간을 vanna_limit으로 잡음 (스크리너 등급·prune에 사용)
+  - [structure.js:851](frontend/js/tabs/structure.js:851) `vannaOk = vannaSum > 0`
+  - [options-charts.js:183](frontend/js/options-charts.js:183) `evaluateStatus` "Vanna 양수" 가점
+  - [structure.js:1149](frontend/js/tabs/structure.js:1149), [structure.js:1178](frontend/js/tabs/structure.js:1178) 만기 카드 색상
+  - [heatmap.js:69](frontend/js/heatmap.js:69) `_calcDGreeks` — Vanna 히트맵 색 전체
+  - [narrative.js:99](frontend/js/narrative.js:99) SPY 탭 문구
+- Charm도 같은 구조: 코드 charm 합계 음수 = 시간 경과 시 딜러 매수.
+- 수정안 A(권장): `calcGreeks`에서 부호를 뒤집어 "양수 = 지지"로 통일. 단 D1/KV 저장값 의미가 바뀌므로 배포 후 재수집 필요.
+  수정안 B: 위 해석 코드 6곳을 음수 기준으로 수정.
+
+### 7-2. iv_skew 정의가 4곳에서 다름
+| 위치 | 정의 | 부호 |
+|---|---|---|
+| [vanna_analyzer.js:360](railway/vanna_analyzer.js:360) `aggregateByExpiry` (DB 저장값) | (ATM콜IV − ATM풋IV)/ATM IV — 같은 스트라이크 콜/풋 차이라 스큐가 아니라 패리티 잔차 | Call 양수 |
+| [vanna_analyzer.js:802](railway/vanna_analyzer.js:802) SPY 경로 | (OTM콜IV − OTM풋IV)/ATM IV | Call 양수 |
+| [screener-v2.js:188](cloudflare/src/screener-v2.js:188) | OTM콜IV − OTM풋IV (정규화 없음) | Call 양수 |
+| [options-charts.js:125](frontend/js/options-charts.js:125) `calculateSkew` | OTM풋IV − OTM콜IV (정규화 없음) | Put 양수 |
+- 프론트 Skew 차트(Put 양수=빨강)와 만기 카드(DB iv_skew>0=빨강, 즉 Call 양수=빨강)의 색 의미가 같은 화면에서 반대.
+- [vanna_analyzer.js:360](railway/vanna_analyzer.js:360): OI 1,000 미만이면 null이 아니라 0 저장 → "균형"으로 오독.
+- OTM 범위가 ±5% 고정이라 고IV 종목은 거의 ATM → 스큐 과소 측정. (Radar는 1.5σ로 해결)
+
+### 7-3. structure.js 개별 버그
+- [structure.js:706](frontend/js/tabs/structure.js:706) `analyzeRes.json()` 이중 호출. 두 번째는 body 소비 후라 항상 null → peak 검증 메시지 블록이 실행되지 않음.
+- [structure.js:851](frontend/js/tabs/structure.js:851) `callWallStrike`는 만기별 flip_strike 최대값이지 콜월이 아님. 옵션 시나리오의 Bear Call Spread 스트라이크가 이 값으로 계산됨.
+- [options-charts.js:140](frontend/js/options-charts.js:140) `calculateExpectedMove` skewBias 보정이 상단 0.3배 / 하단 1배로 비대칭, 근거 불명.
+- Structure 탭 로드 시마다 `POST /analyze-symbol`로 CBOE를 실시간 호출 (저장 데이터와 별개). 비용·지연 원인.
+
+### 7-4. 데이터 파이프라인
+- `options_dex` 테이블(날짜별 이력)은 Railway에서 더 이상 쓰는 코드가 없어 비어 가는 중. `/api/options-dex/:symbol/history`는 이름과 달리 오늘 데이터만 반환.
+- `price_indicators.avg_volume` 컬럼은 있으나 Railway가 채우지 않음 (항상 null).
+- `calcScreenerScore`([vanna_analyzer.js:545](railway/vanna_analyzer.js:545))는 "콜 스큐 양수"를 필수 조건으로 요구 → 풋 스큐 기반 스퀴즈 후보를 걸러냄. (Radar에서는 반대로 풋 스큐가 1순위)
