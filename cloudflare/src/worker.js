@@ -948,7 +948,7 @@ export default {
           GROUP_CONCAT(DISTINCT st.group_code) as groups,
           MAX(st.spot_price) as spot_price,
           w.company, w.market_cap,
-          p.close as bb_close, p.bb_upper2, p.bb_lower2, p.bb_position
+          p.close as bb_close, p.bb_mid, p.bb_upper2, p.bb_lower2, p.bb_position, p.atr20
         FROM daily_screener d
         LEFT JOIN screened_tickers st ON st.ticker = d.ticker
         LEFT JOIN watchlist w ON w.ticker = d.ticker
@@ -971,9 +971,11 @@ export default {
             spot_price: r.spot_price ?? null,
             bb: (r.bb_close != null) ? {
               close:       r.bb_close,
+              bb_mid:      r.bb_mid,
               bb_upper2:   r.bb_upper2,
               bb_lower2:   r.bb_lower2,
               bb_position: r.bb_position,
+              atr20:       r.atr20,
             } : null,
             expiries: [],
           });
@@ -1051,10 +1053,21 @@ export default {
         vix = snap?.vix ?? null;
       } catch (_) {}
 
+      // VIX 일별 종가 최근 6일 (5일 방향 표시용), 오름차순
+      let vix_hist = [];
+      try {
+        const vh = await env.DB.prepare(`
+          SELECT date, vix_close FROM spy_daily_close
+          WHERE vix_close IS NOT NULL ORDER BY date DESC LIMIT 6
+        `).all();
+        vix_hist = (vh.results ?? []).reverse().map(r => ({ date: r.date, vix: r.vix_close }));
+      } catch (_) {}
+
       const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
       const response = {
         date:    today,
         vix,
+        vix_hist,
         tickers: [...tickerMap.values()],
         ...(daysParam >= 1 ? { history } : {}),
       };

@@ -4,7 +4,8 @@
 // ============================================
 import { CF_API } from '../config.js';
 import {
-  tickerMetrics, classify, sortCandidates, opexCalendar, reasonString, strikeSupport,
+  tickerMetrics, classify, sortCandidates, sortByOpinion, opinion,
+  opexCalendar, reasonString, strikeSupport,
 } from '../radar-engine.js';
 
 // ── 내부 상태 ────────────────────────────────────────────────────
@@ -13,6 +14,7 @@ let _metrics  = null;
 let _calendar = null;
 let _detail   = null;
 let _loading  = false;
+let _sort     = 'opinion'; // 'opinion' | 'skew'
 
 // ── 초기화 ───────────────────────────────────────────────────────
 export function initRadar() {
@@ -56,7 +58,9 @@ function _render() {
   const panel = document.getElementById('tab-radar');
   if (!panel) return;
 
-  const vix  = _data?.vix;
+  // KV snapshot의 vix는 {price, changePct, ...} 객체
+  const vixRaw = _data?.vix;
+  const vix  = (vixRaw != null && typeof vixRaw === 'object') ? vixRaw.price : vixRaw;
   const opex = _calendar?.opex ?? '—';
   const win  = _calendar?.window ?? '—';
   const dts  = _calendar?.daysToSupport;
@@ -76,6 +80,7 @@ function _render() {
     m._groups = groups;
     m._isMY   = isMY;
     m._cls    = cls;
+    m._op     = opinion(m, cls);
 
     if (isMY) {
       myList.push(m);
@@ -90,8 +95,23 @@ function _render() {
     }
   }
 
-  sortCandidates(myList);
-  sortCandidates(candidates);
+  const sortFn = _sort === 'opinion'
+    ? list => sortByOpinion(list, m => m._op.grade)
+    : sortCandidates;
+  const mySorted   = sortFn(myList);
+  const candSorted = sortFn(candidates);
+
+  // VIX 5일 방향: vix_hist 첫 값 대비 마지막 값
+  const vh = _data?.vix_hist ?? [];
+  let vixDirHtml = '';
+  if (vh.length >= 2) {
+    const first = vh[0].vix, last = vh[vh.length - 1].vix;
+    const chg = (last - first) / first * 100;
+    const cls = chg > 0 ? 'down' : 'up'; // VIX 상승은 모델에 불리 → 빨강
+    vixDirHtml = ` <span class="${cls}">${chg > 0 ? '▲' : '▼'}${Math.abs(chg).toFixed(1)}% (${vh.length - 1}일)</span>`;
+  }
+
+  const gradeCount = g => candSorted.filter(m => m._op.grade === g).length;
 
   panel.innerHTML = `
     <div class="radar-wrap">
@@ -101,19 +121,27 @@ function _render() {
           다음 OPEX: <b>${opex}</b>
           &nbsp;|&nbsp; 현재 창: <b>${win === 'B' ? '지지창 B' : '약세·재구축 A'}</b>
           ${dts != null ? `&nbsp;|&nbsp; 지지창 <b>D-${dts}</b>` : ''}
-          ${vix != null ? `&nbsp;|&nbsp; VIX: <b>${(+vix).toFixed(2)}</b>` : ''}
+          ${vix != null ? `&nbsp;|&nbsp; VIX: <b>${(+vix).toFixed(2)}</b>${vixDirHtml}` : ''}
+        </span>
+        <span class="radar-sort">
+          정렬:
+          <button class="radar-sort-btn${_sort === 'opinion' ? ' active' : ''}" data-sort="opinion">의견순</button>
+          <button class="radar-sort-btn${_sort === 'skew' ? ' active' : ''}" data-sort="skew">스큐순</button>
         </span>
         <button class="radar-refresh-btn" id="radar-refresh">↻ 새로고침</button>
       </div>
 
-      ${myList.length ? `
-        <div class="radar-section-title">MY 종목 (${myList.length})</div>
-        ${_renderTable(myList)}
+      ${mySorted.length ? `
+        <div class="radar-section-title">MY 종목 (${mySorted.length})</div>
+        ${_renderTable(mySorted)}
       ` : ''}
 
-      <div class="radar-section-title">후보 (${candidates.length})</div>
-      ${candidates.length
-        ? _renderTable(candidates)
+      <div class="radar-section-title">
+        후보 (${candSorted.length})
+        <span class="radar-grade-count">A ${gradeCount('A')} · B ${gradeCount('B')} · C ${gradeCount('C')}</span>
+      </div>
+      ${candSorted.length
+        ? _renderTable(candSorted)
         : '<div class="radar-empty">조건을 충족하는 종목 없음</div>'
       }
 
@@ -130,6 +158,15 @@ function _render() {
 
   document.getElementById('radar-refresh')?.addEventListener('click', () => {
     if (!_loading) _load();
+  });
+
+  panel.querySelectorAll('.radar-sort-btn[data-sort]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (_sort === btn.dataset.sort) return;
+      _sort = btn.dataset.sort;
+      _detail = null;
+      _render();
+    });
   });
 
   panel.querySelectorAll('.radar-row[data-sym]').forEach(row => {
@@ -161,6 +198,7 @@ function _renderTable(list) {
     return `
       <tr class="radar-row" data-sym="${m.symbol}">
         <td>${myBadge}${m.symbol}${warnBadges}${alignBadge}</td>
+        <td>${_renderOpinion(m)}</td>
         <td>${spot}</td>
         <td>${dKey} <span class="radar-win">${winKey}</span></td>
         <td class="${skewCls}">${skewTxt}</td>
@@ -178,13 +216,42 @@ function _renderTable(list) {
     <div class="radar-table-wrap">
       <table class="data-table radar-table">
         <thead><tr>
-          <th>종목</th><th>현재가</th><th>핵심만기</th>
+          <th>종목</th><th>의견</th><th>현재가</th><th>핵심만기</th>
           <th>skewRel</th><th>skewA/B</th><th>정렬수</th>
           <th>Vanna</th><th>집중도</th><th>콜월</th><th>BB</th><th>이유</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
     </div>`;
+}
+
+// ── 의견 셀: 등급 배지 + 4기둥 점 (스큐·연료·위치·타이밍) ──────────
+const GRADE_LABEL = { A: '매수 우선', B: '관심', C: '보류', X: '제외' };
+const EXCLUDE_LABEL = { call_skew: '콜 스큐', no_fuel: '연료 없음', exhausted: '소진' };
+const LEVEL_DOT = { 3: '●', 2: '◐', 1: '○' };
+
+function _renderOpinion(m) {
+  const op = m._op;
+  if (!op) return '—';
+  const p = op.pillars;
+  const k = m.keyExpiry;
+
+  const dot = (name, lv) =>
+    `<span class="radar-pillar radar-pillar--${lv ?? 0}" title="${name}">${LEVEL_DOT[lv] ?? '?'}</span>`;
+
+  const tip = [
+    `등급 ${op.grade} ${GRADE_LABEL[op.grade]}${op.exclude ? ` (${EXCLUDE_LABEL[op.exclude] ?? op.exclude})` : ''}`,
+    `스큐: ${k?.skewRel != null ? (k.skewRel * 100).toFixed(1) + '%' : '—'}`,
+    `연료: Vanna${(k?.vannaSupport ?? 0) > 0 ? '+' : '−'} Charm${(k?.charmSupport ?? 0) > 0 ? '+' : '−'}`,
+    `위치: %B ${m.bb?.bb_position != null ? (m.bb.bb_position * 100).toFixed(0) : '—'}`
+      + `${m.wallDistAtr != null ? ` · 콜월까지 ${m.wallDistAtr.toFixed(1)}ATR` : ''}`,
+    `타이밍: ${m.daysToKey != null ? `D-${m.daysToKey} 창${k?.window ?? '—'}` : '—'}`,
+  ].join('\n');
+
+  return `<span class="radar-opinion" title="${tip}">
+    <span class="radar-badge radar-badge--${op.grade.toLowerCase()}">${op.grade}</span>
+    ${dot('스큐', p.skew)}${dot('연료', p.fuel)}${dot('위치', p.position)}${dot('타이밍', p.timing)}
+  </span>`;
 }
 
 function _renderExcludedList(list) {
@@ -213,6 +280,7 @@ function _openDetail(symbol) {
   // 1. 가격 사다리
   const ladderItems = [
     { label: 'OI 하단 경계', val: m.oiLowerEdge,  dir: 'down' },
+    { label: 'BB 20일선',    val: m.bb?.bb_mid,    dir: ''     },
     { label: 'spot',         val: spot,            dir: 'spot' },
     { label: 'vannaReach',   val: m.vannaReach,   dir: 'up'   },
     { label: 'callWall',     val: m.callWall,     dir: 'up'   },

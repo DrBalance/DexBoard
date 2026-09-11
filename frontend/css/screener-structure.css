@@ -1067,6 +1067,28 @@
 .radar-badge--struct { background: rgba(63,185,80,.2);   color: #3fb950; }
 .radar-badge--warn   { background: rgba(240,136,62,.2);  color: #f0883e; }
 
+/* 의견 등급 */
+.radar-badge--a { background: rgba(63,185,80,.25);  color: #3fb950; font-weight: 700; margin-left: 0; }
+.radar-badge--b { background: rgba(88,166,255,.2);  color: #58a6ff; font-weight: 700; margin-left: 0; }
+.radar-badge--c { background: rgba(139,148,158,.2); color: var(--text3); font-weight: 700; margin-left: 0; }
+.radar-badge--x { background: rgba(248,81,73,.2);   color: #f85149; font-weight: 700; margin-left: 0; }
+
+.radar-opinion { display: inline-flex; align-items: center; gap: 4px; cursor: help; }
+.radar-pillar  { font-size: 11px; font-family: var(--mono); }
+.radar-pillar--3 { color: #3fb950; }
+.radar-pillar--2 { color: #d29922; }
+.radar-pillar--1 { color: #f85149; }
+.radar-pillar--0 { color: var(--text3); }
+
+.radar-sort { font-size: 12px; color: var(--text3); margin-left: auto; margin-right: 8px; }
+.radar-sort-btn {
+  font-size: 11px; padding: 2px 8px; margin-left: 2px;
+  border: 1px solid var(--border); border-radius: 3px;
+  background: none; color: var(--text2); cursor: pointer;
+}
+.radar-sort-btn.active { border-color: var(--blue); color: var(--blue); }
+.radar-grade-count { font-weight: 400; text-transform: none; letter-spacing: 0; margin-left: 8px; }
+
 .radar-empty  { color: var(--text3); font-size: 13px; padding: 12px 0; }
 .radar-status { padding: 24px; color: var(--text3); font-size: 13px; }
 .radar-status--error { color: var(--red); }

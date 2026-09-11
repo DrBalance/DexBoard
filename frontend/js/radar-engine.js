@@ -142,13 +142,14 @@ export function expiryMetrics(spot, expiry) {
 
 // ─── 달력 창 계산 ─────────────────────────────────────────────────
 // 셋째 금요일 = OPEX. 창 B: OPEX−14일~OPEX, 창 A: 나머지
+// 모든 날짜는 UTC 정오로 통일 (today·만기 문자열도 T12:00:00Z로 파싱) — 로컬 TZ 무관
 function thirdFriday(year, month) {
   // month: 0-based
   let count = 0;
   for (let d = 1; d <= 31; d++) {
-    const dt = new Date(year, month, d);
-    if (dt.getMonth() !== month) break;
-    if (dt.getDay() === 5) { count++; if (count === 3) return dt; }
+    const dt = new Date(Date.UTC(year, month, d, 12));
+    if (dt.getUTCMonth() !== month) break;
+    if (dt.getUTCDay() === 5) { count++; if (count === 3) return dt; }
   }
   return null;
 }
@@ -171,8 +172,8 @@ export function opexCalendar(today) {
   } else {
     opex     = opexNext;
     nextOpex = thirdFriday(
-      opexNext.getMonth() === 11 ? opexNext.getFullYear() + 1 : opexNext.getFullYear(),
-      (opexNext.getMonth() + 1) % 12
+      opexNext.getUTCMonth() === 11 ? opexNext.getUTCFullYear() + 1 : opexNext.getUTCFullYear(),
+      (opexNext.getUTCMonth() + 1) % 12
     );
   }
 
@@ -183,8 +184,7 @@ export function opexCalendar(today) {
     ? Math.ceil((opexMs - todayMs) / (24 * 3600 * 1000))
     : Math.ceil((windowStart - todayMs) / (24 * 3600 * 1000));
 
-  // toISOString()은 UTC 변환으로 날짜가 밀릴 수 있어 로컬 날짜 필드 직접 사용
-  const fmt = dt => `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
+  const fmt = dt => dt.toISOString().slice(0, 10);
 
   function windowOf(expiryDateStr) {
     const expMs = new Date(expiryDateStr + 'T12:00:00Z').getTime();
@@ -318,6 +318,10 @@ export function tickerMetrics(t, calendar) {
     else break;
   }
 
+  // wallDistAtr: 콜월까지 거리를 ATR20 단위로 (회귀 기대 폭)
+  const atr20 = t.bb?.atr20;
+  const wallDistAtr = (callWall != null && atr20 > 0) ? (callWall - spot) / atr20 : null;
+
   return {
     symbol:       t.symbol,
     spot_price:   spot,
@@ -334,6 +338,7 @@ export function tickerMetrics(t, calendar) {
     skewB,
     vannaTotal,
     vannaReach,
+    wallDistAtr,
   };
 }
 
@@ -367,15 +372,79 @@ export function classify(m, prev = null) {
 }
 
 // ─── 후보 목록 정렬 (2-6절) ──────────────────────────────────────
+function cmpCandidates(a, b) {
+  const skewDiff = (b.keyExpiry?.skewRel ?? -Infinity) - (a.keyExpiry?.skewRel ?? -Infinity);
+  if (Math.abs(skewDiff) > 1e-6) return skewDiff;
+  const alignDiff = (b.alignCount ?? 0) - (a.alignCount ?? 0);
+  if (alignDiff !== 0) return alignDiff;
+  const daysDiff = (a.daysToKey ?? 999) - (b.daysToKey ?? 999);
+  if (daysDiff !== 0) return daysDiff;
+  return (b.vannaTotal ?? 0) - (a.vannaTotal ?? 0);
+}
+
 export function sortCandidates(list) {
+  return [...list].sort(cmpCandidates);
+}
+
+// ─── 4기둥 채점과 의견 (병목 방식: 가장 약한 기둥이 등급을 정함) ───
+// 레벨: 3=강, 2=중, 1=약, null=판단 불가. 임계값은 잠정치.
+export const PILLAR_THRESHOLDS = {
+  skewStrong: 0.10, skewMid: 0.03,
+  bbStrong: 0.25,  bbMid: 0.50,       // %B ≤ 0.25 = 20일선 −1σ 이하
+  wallMinAtr: 0.6,                    // 콜월까지 < 0.6 ATR = 폭 부족
+  daysStrong: 14,  daysMid: 30,
+};
+
+export function pillars(m) {
+  const T = PILLAR_THRESHOLDS;
+  const k = m?.keyExpiry;
+
+  // 스큐 (방향)
+  const s = k?.skewRel;
+  const skew = (s == null || s <= 0) ? null
+    : s >= T.skewStrong ? 3 : s >= T.skewMid ? 2 : 1;
+
+  // 연료 (힘): keyExpiry의 Vanna·Charm 부호 일치
+  let fuel = null;
+  if (k) {
+    const n = ((k.vannaSupport ?? 0) > 0 ? 1 : 0) + ((k.charmSupport ?? 0) > 0 ? 1 : 0);
+    fuel = n === 2 ? 3 : n === 1 ? 2 : 1;
+  }
+
+  // 위치 (회귀 거리): %B + 콜월까지 ATR 폭
+  const bbPos = m?.bb?.bb_position;
+  let position = bbPos == null ? null
+    : bbPos <= T.bbStrong ? 3 : bbPos <= T.bbMid ? 2 : 1;
+  if (m?.wallDistAtr != null && m.wallDistAtr < T.wallMinAtr) position = 1;
+
+  // 타이밍
+  let timing = null;
+  if (k && m.daysToKey != null) {
+    timing = (k.window === 'B' && m.daysToKey <= T.daysStrong) ? 3
+      : m.daysToKey <= T.daysMid ? 2 : 1;
+  }
+
+  return { skew, fuel, position, timing };
+}
+
+// cls: classify() 반환값. grade: 'A' 매수 우선 | 'B' 관심 | 'C' 보류 | 'X' 제외
+export function opinion(m, cls) {
+  const p = pillars(m);
+  if (cls?.exclude) return { grade: 'X', pillars: p, exclude: cls.exclude };
+  // 판단 불가 기둥(null)은 중으로 간주 → A 불가, C 강제도 안 함
+  const levels = Object.values(p).map(v => v ?? 2);
+  const min = Math.min(...levels);
+  const grade = min === 3 ? 'A' : min === 2 ? 'B' : 'C';
+  return { grade, pillars: p, exclude: null };
+}
+
+const GRADE_RANK = { A: 0, B: 1, C: 2, X: 3 };
+
+// gradeOf: m → 'A'|'B'|'C'|'X'. 등급 → 기존 정렬 키 순
+export function sortByOpinion(list, gradeOf) {
   return [...list].sort((a, b) => {
-    const skewDiff = (b.keyExpiry?.skewRel ?? -Infinity) - (a.keyExpiry?.skewRel ?? -Infinity);
-    if (Math.abs(skewDiff) > 1e-6) return skewDiff;
-    const alignDiff = (b.alignCount ?? 0) - (a.alignCount ?? 0);
-    if (alignDiff !== 0) return alignDiff;
-    const daysDiff = (a.daysToKey ?? 999) - (b.daysToKey ?? 999);
-    if (daysDiff !== 0) return daysDiff;
-    return (b.vannaTotal ?? 0) - (a.vannaTotal ?? 0);
+    const g = (GRADE_RANK[gradeOf(a)] ?? 9) - (GRADE_RANK[gradeOf(b)] ?? 9);
+    return g !== 0 ? g : cmpCandidates(a, b);
   });
 }
 
@@ -392,5 +461,9 @@ export function reasonString(m) {
     parts.push(`Vanna ${m.vannaTotal.toFixed(1)}M`);
   if (m.concRatio != null)
     parts.push(`집중도 ${m.concRatio.toFixed(1)}x`);
+  if (m.bb?.bb_position != null)
+    parts.push(`%B ${(m.bb.bb_position * 100).toFixed(0)}`);
+  if (m.wallDistAtr != null)
+    parts.push(`폭 ${m.wallDistAtr.toFixed(1)}ATR`);
   return parts.join(' · ');
 }

@@ -1,2 +1,9 @@
 .DS_Store
 frontend/.DS_Store
+
+# dependencies / build
+node_modules/
+frontend/dist/
+
+# local tool settings
+.claude/
