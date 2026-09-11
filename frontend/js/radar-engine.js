@@ -66,6 +66,9 @@ export function strikeSupport(spot, s, dte) {
   return { vannaSupport, charmSupport, callDex };
 }
 
+// atm_iv가 이 값 미만이면 비유동 종목의 깨진 ATM 호가로 간주 → 스큐 무효 (DBRG 0.03 등)
+export const MIN_ATM_IV = 0.05;
+
 // ─── 만기별 지표 계산 ─────────────────────────────────────────────
 // expiry: { expiry_date, dte, expiry_type, atm_iv, call_oi, put_oi, flip_strike, strikes[] }
 // 반환: 2-3절 필드 전부
@@ -76,6 +79,7 @@ export function expiryMetrics(spot, expiry) {
       putOIBelow: 0, callOIAbove: 0, peakCallStrike: null,
       totalOI: 0, lowConf: false };
   }
+  const atmValid = atm_iv >= MIN_ATM_IV;
 
   // 1.5σ 밴드 계산
   const sigma = spot * atm_iv * Math.sqrt(dte / 365);
@@ -87,24 +91,25 @@ export function expiryMetrics(spot, expiry) {
   let callStrikes = strikes.filter(s => s.strike > spot     && s.strike <= callHigh);
   let lowConf = false;
 
-  // 밴드 내 스트라이크 2개 미만이면 가장 가까운 2개로 대체
+  // 밴드 내 스트라이크 2개 미만이면 가장 가까운 2개로 대체 (설계 2-2: 대체 시 lowConf)
   if (putStrikes.length < 2) {
-    const sorted = strikes.filter(s => s.strike < spot).sort((a, b) => b.strike - a.strike);
-    putStrikes = sorted.slice(0, 2);
-    if (sorted.length < 2) lowConf = true;
+    putStrikes = strikes.filter(s => s.strike < spot).sort((a, b) => b.strike - a.strike).slice(0, 2);
+    lowConf = true;
   }
   if (callStrikes.length < 2) {
-    const sorted = strikes.filter(s => s.strike > spot).sort((a, b) => a.strike - b.strike);
-    callStrikes = sorted.slice(0, 2);
-    if (sorted.length < 2) lowConf = true;
+    callStrikes = strikes.filter(s => s.strike > spot).sort((a, b) => a.strike - b.strike).slice(0, 2);
+    lowConf = true;
   }
 
-  // 정규화 스큐: (평균 풋IV − 평균 콜IV) / atm_iv
-  const avgPutIV  = putStrikes.length
-    ? putStrikes.reduce((s, x) => s + (x.put_iv ?? x.avg_iv ?? 0), 0) / putStrikes.length : 0;
-  const avgCallIV = callStrikes.length
-    ? callStrikes.reduce((s, x) => s + (x.call_iv ?? x.avg_iv ?? 0), 0) / callStrikes.length : 0;
-  const skewRel = atm_iv > 0 ? (avgPutIV - avgCallIV) / atm_iv : null;
+  // 정규화 스큐: (평균 풋IV − 평균 콜IV) / atm_iv. IV 없는 스트라이크는 평균에서 제외
+  const mean = arr => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null;
+  const putIVs  = putStrikes.map(x => x.put_iv  ?? x.avg_iv).filter(v => v > 0);
+  const callIVs = callStrikes.map(x => x.call_iv ?? x.avg_iv).filter(v => v > 0);
+  const avgPutIV  = mean(putIVs);
+  const avgCallIV = mean(callIVs);
+  const skewRel = (atmValid && avgPutIV != null && avgCallIV != null)
+    ? (avgPutIV - avgCallIV) / atm_iv : null;
+  if (!atmValid) lowConf = true;
 
   // 만기 내 전 스트라이크 Vanna/Charm 합
   let vannaSum = 0, charmSum = 0;
@@ -276,13 +281,16 @@ export function tickerMetrics(t, calendar) {
     ? Math.max(...w8.map(e => e.totalOI)) / ((oisValid[0] + oisValid[1]) / 2)
     : null;
 
+  // lowConf(밴드 부족·atm_iv 이상) 만기는 keyExpiry·창별 스큐에서 제외 (결정: 2026-09-12)
+  const reliable = w8.filter(e => !e.lowConf && e.skewRel != null);
+
   // keyExpiry: concRatio 최대 만기 중 skewRel > 0인 것
   //            없으면 skewRel × vannaSupport 최대 만기
-  const sorted_by_oi = [...w8].sort((a, b) => b.totalOI - a.totalOI);
+  const sorted_by_oi = [...reliable].sort((a, b) => b.totalOI - a.totalOI);
   const topConc = sorted_by_oi[0];
   let keyExpiry = (topConc?.skewRel ?? 0) > 0 ? topConc : null;
   if (!keyExpiry) {
-    keyExpiry = w8.reduce((best, e) => {
+    keyExpiry = reliable.reduce((best, e) => {
       const score = (e.skewRel ?? 0) * (e.vannaSupport ?? 0);
       const bestScore = (best?.skewRel ?? 0) * (best?.vannaSupport ?? 0);
       return score > bestScore ? e : best;
@@ -294,7 +302,7 @@ export function tickerMetrics(t, calendar) {
 
   // skewA / skewB: 창별 OI 가중 skewRel
   function weightedSkew(exps) {
-    const valid = exps.filter(e => e.skewRel != null && e.totalOI > 0);
+    const valid = exps.filter(e => !e.lowConf && e.skewRel != null && e.totalOI > 0);
     if (!valid.length) return null;
     const totalW = valid.reduce((s, e) => s + e.totalOI, 0);
     return valid.reduce((s, e) => s + e.skewRel * e.totalOI, 0) / totalW;
@@ -332,6 +340,7 @@ export function tickerMetrics(t, calendar) {
     oiUpperEdge,
     oiLowerEdge,
     concRatio,
+    reliableCount: reliable.length,
     keyExpiry,
     daysToKey,
     skewA,
@@ -344,12 +353,14 @@ export function tickerMetrics(t, calendar) {
 
 // ─── 제외/분류 판정 ───────────────────────────────────────────────
 // prev: 전일 tickerMetrics (소진 판정용, null이면 이력 없음)
-// exclude: null | 'call_skew' | 'no_fuel' | 'exhausted'
+// exclude: null | 'low_conf' | 'call_skew' | 'no_fuel' | 'exhausted'
 export function classify(m, prev = null) {
   if (!m) return { exclude: 'call_skew', badges: [] };
 
   const badges = [];
-  if (m.keyExpiry?.lowConf) badges.push('lowConf');
+
+  // 0. 신뢰 가능한 만기(밴드 내 스트라이크 충분, atm_iv 정상) 없음
+  if (!m.reliableCount) return { exclude: 'low_conf', badges };
 
   // 1. keyExpiry 없음 (풋 스큐 양수 만기 없음)
   if (!m.keyExpiry) return { exclude: 'call_skew', badges };

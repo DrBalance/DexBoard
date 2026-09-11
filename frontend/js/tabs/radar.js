@@ -70,6 +70,7 @@ function _render() {
   const excCallSkew  = [];
   const excNoFuel    = [];
   const excExhausted = [];
+  const excLowConf   = [];
 
   for (const m of Object.values(_metrics)) {
     const t      = (_data?.tickers ?? []).find(x => x.symbol === m.symbol);
@@ -90,6 +91,8 @@ function _render() {
       excCallSkew.push(m);
     } else if (cls.exclude === 'no_fuel') {
       excNoFuel.push(m);
+    } else if (cls.exclude === 'low_conf') {
+      excLowConf.push(m);
     } else {
       excExhausted.push(m);
     }
@@ -146,10 +149,11 @@ function _render() {
       }
 
       <details class="radar-excluded">
-        <summary>제외 종목 (${excExhausted.length + excNoFuel.length + excCallSkew.length})</summary>
+        <summary>제외 종목 (${excExhausted.length + excNoFuel.length + excCallSkew.length + excLowConf.length})</summary>
         ${excExhausted.length  ? `<div class="radar-exc-group"><b>소진</b><br>${_renderExcludedList(excExhausted)}</div>` : ''}
         ${excNoFuel.length     ? `<div class="radar-exc-group"><b>연료 없음</b><br>${_renderExcludedList(excNoFuel)}</div>` : ''}
         ${excCallSkew.length   ? `<div class="radar-exc-group"><b>압축 시 매도 구조</b><br>${_renderExcludedList(excCallSkew)}</div>` : ''}
+        ${excLowConf.length    ? `<div class="radar-exc-group"><b>신뢰도 낮음</b> (1.5σ 밴드 내 스트라이크 부족 · atm_iv 이상)<br>${_renderExcludedList(excLowConf)}</div>` : ''}
       </details>
 
       <div class="radar-detail" id="radar-detail" hidden></div>
@@ -227,7 +231,7 @@ function _renderTable(list) {
 
 // ── 의견 셀: 등급 배지 + 4기둥 점 (스큐·연료·위치·타이밍) ──────────
 const GRADE_LABEL = { A: '매수 우선', B: '관심', C: '보류', X: '제외' };
-const EXCLUDE_LABEL = { call_skew: '콜 스큐', no_fuel: '연료 없음', exhausted: '소진' };
+const EXCLUDE_LABEL = { call_skew: '콜 스큐', no_fuel: '연료 없음', exhausted: '소진', low_conf: '신뢰도 낮음' };
 const LEVEL_DOT = { 3: '●', 2: '◐', 1: '○' };
 
 function _renderOpinion(m) {

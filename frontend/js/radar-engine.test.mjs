@@ -2,7 +2,7 @@
 // 실행: node --input-type=module < frontend/js/radar-engine.test.mjs
 import {
   bsGreeks, strikeSupport, opexCalendar, expiryMetrics, tickerMetrics,
-  pillars, opinion, sortByOpinion,
+  pillars, opinion, sortByOpinion, classify,
 } from './radar-engine.js';
 
 let passed = 0, failed = 0;
@@ -134,6 +134,51 @@ function assert(label, cond, detail = '') {
 
   const t = pillars({ ...base, daysToKey: 20, keyExpiry: { ...base.keyExpiry, window: 'A' } });
   assert('D-20 창A → 타이밍 중', t.timing === 2, `timing=${t.timing}`);
+}
+
+// ── 테스트 6b: atm_iv 이상치 → skewRel null + lowConf
+{
+  console.log('\n[테스트 6b] atm_iv < 0.05 → 스큐 무효');
+  const strikes = [
+    { strike: 90,  call_iv: 0.40, put_iv: 0.50, avg_iv: 0.45, call_oi: 3000, put_oi: 8000 },
+    { strike: 95,  call_iv: 0.37, put_iv: 0.45, avg_iv: 0.41, call_oi: 4000, put_oi: 6000 },
+    { strike: 100, call_iv: 0.33, put_iv: 0.38, avg_iv: 0.355, call_oi: 5000, put_oi: 5000 },
+    { strike: 105, call_iv: 0.30, put_iv: 0.33, avg_iv: 0.315, call_oi: 2000, put_oi: 1500 },
+    { strike: 110, call_iv: 0.28, put_iv: 0.30, avg_iv: 0.29, call_oi: 2000, put_oi: 500 },
+  ];
+  const bad = expiryMetrics(100, { expiry_date: '2026-09-18', dte: 11, atm_iv: 0.03, strikes });
+  assert('skewRel null', bad.skewRel === null, `skewRel=${bad.skewRel}`);
+  assert('lowConf true', bad.lowConf === true);
+  assert('vannaSupport는 계속 계산', typeof bad.vannaSupport === 'number' && bad.vannaSupport !== 0);
+  // dte 46 → 1.5σ ≈ 18.6 → 밴드 안에 양쪽 2개씩 확보 (lowConf false)
+  const good = expiryMetrics(100, { expiry_date: '2026-10-23', dte: 46, atm_iv: 0.35, strikes });
+  assert('정상 atm_iv는 skewRel 계산', good.skewRel != null && good.lowConf === false, `skewRel=${good.skewRel} lowConf=${good.lowConf}`);
+  // 밴드 부족으로 대체 규칙 사용 시 lowConf true (설계 2-2)
+  const narrow = expiryMetrics(100, { expiry_date: '2026-09-18', dte: 11, atm_iv: 0.35, strikes });
+  assert('밴드 부족 → lowConf true', narrow.lowConf === true && narrow.skewRel != null);
+  // put_iv null인 스트라이크는 평균에서 제외 (0으로 계산 금지)
+  const nullIV = strikes.map(s => s.strike === 95 ? { ...s, put_iv: null, avg_iv: null } : s);
+  const n = expiryMetrics(100, { expiry_date: '2026-10-23', dte: 46, atm_iv: 0.35, strikes: nullIV });
+  assert('null IV 제외 → skewRel ≈ (0.50−0.29)/0.35', Math.abs(n.skewRel - (0.50 - 0.29) / 0.35) < 1e-9, `skewRel=${n.skewRel}`);
+}
+
+// ── 테스트 6c: lowConf 만기는 keyExpiry에서 제외, 신뢰 만기 없으면 classify → 'low_conf'
+{
+  console.log('\n[테스트 6c] lowConf 만기 제외');
+  const mk = (strike, civ, piv, coi, poi) => ({ strike, call_iv: civ, put_iv: piv, avg_iv: (civ + piv) / 2, call_oi: coi, put_oi: poi });
+  // 스트라이크 간격 $10 → dte 11(1.5σ≈9)에서는 밴드 부족(lowConf), dte 56(1.5σ≈21)에서는 충분
+  const strikes = [mk(80, .42, .55, 3000, 9000), mk(90, .38, .48, 4000, 7000), mk(100, .33, .38, 5000, 5000),
+    mk(110, .30, .32, 6000, 1500), mk(120, .28, .30, 2000, 500)];
+  const cal = opexCalendar('2026-09-07');
+  const nearOnly = tickerMetrics({ symbol: 'N', spot_price: 100, bb: null,
+    expiries: [{ expiry_date: '2026-09-18', dte: 11, atm_iv: 0.35, strikes }] }, cal);
+  assert('근월만(lowConf) → reliableCount 0, keyExpiry null', nearOnly.reliableCount === 0 && nearOnly.keyExpiry === null);
+  assert("classify → 'low_conf'", classify(nearOnly, null).exclude === 'low_conf');
+  const both = tickerMetrics({ symbol: 'B', spot_price: 100, bb: null,
+    expiries: [{ expiry_date: '2026-09-18', dte: 11, atm_iv: 0.35, strikes },
+               { expiry_date: '2026-11-02', dte: 56, atm_iv: 0.35, strikes }] }, cal);
+  assert('근월+차월 → keyExpiry는 차월(11-02)', both.keyExpiry?.expiry_date === '2026-11-02', `key=${both.keyExpiry?.expiry_date}`);
+  assert('classify 통과', classify(both, null).exclude === null, `exclude=${classify(both, null).exclude}`);
 }
 
 // ── 테스트 7: sortByOpinion — 등급 우선, 동률은 skewRel 내림차순

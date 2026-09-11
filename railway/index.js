@@ -1322,17 +1322,19 @@ console.error('[snapshotOpen] error:', e.message);
 // 스크리너 백그라운드 수집 (HTTP 핸들러·스케줄러 공용)
 // ─────────────────────────────────────────────────────────────────
 // BB맵 종목 가격 지표 일괄 수집
-async function collectBbMapIndicators() {
+// extraSymbols: BB맵 종목 외에 추가로 수집할 종목 (Radar용 스크리너 전체 등). 중복 제거.
+async function collectBbMapIndicators(extraSymbols = []) {
   const res = await fetch(`${CF_WORKER_URL}/api/bb-map-symbols`, {
     headers: { 'x-cron-secret': CRON_SECRET },
     signal: AbortSignal.timeout(10000),
   });
   if (!res.ok) throw new Error(`bb-map-symbols: ${res.status}`);
   const data = await res.json();
-  const symbols = (data.symbols ?? data ?? []).map(s => s.symbol ?? s);
+  const bbSymbols = (data.symbols ?? data ?? []).map(s => s.symbol ?? s);
+  const symbols = [...new Set([...bbSymbols, ...extraSymbols])];
   if (!symbols.length) { console.warn('[BB맵] 대상 심볼 없음'); return; }
 
-  console.log(`[BB맵] ${symbols.length}개 종목 가격 지표 수집 시작`);
+  console.log(`[BB맵] ${symbols.length}개 종목 가격 지표 수집 시작 (BB맵 ${bbSymbols.length} + 추가 ${extraSymbols.length})`);
   let ok = 0, fail = 0;
   for (const sym of symbols) {
     try {
@@ -1342,6 +1344,8 @@ async function collectBbMapIndicators() {
       console.warn(`[BB맵] ${sym} 실패:`, e.message);
       fail++;
     }
+    // Yahoo 연속 호출 완화
+    await new Promise(r => setTimeout(r, 150));
   }
   console.log(`[BB맵] 완료 — 성공: ${ok}, 실패: ${fail}`);
 }
@@ -1397,9 +1401,9 @@ async function runCollect(symbols, date) {
       console.warn('[Screener] prune 실패 (계속 진행):', e.message);
     }
 
-    // 트리거 3: BB맵 종목 가격 지표 수집
+    // 트리거 3: BB맵 종목 + 스크리너 전체 가격 지표 수집 (Radar 위치 기둥용)
     try {
-      await collectBbMapIndicators();
+      await collectBbMapIndicators(symList);
     } catch (e) {
       console.warn('[Screener] BB맵 수집 실패 (계속 진행):', e.message);
     }
