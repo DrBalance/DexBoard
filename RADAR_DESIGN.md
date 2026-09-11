@@ -1,6 +1,6 @@
 # Radar 탭 설계 문서 (테스트베드)
 
-> 상태: v0.3 (2026-09-04) — 최종 합의본. 코딩은 이 문서 기준으로 진행 (인계용 명세 §6 포함)
+> 상태: v0.4 (2026-09-12) — v0.3 구현 완료 후 의견 등급·신뢰도 가드·BB 수집 확대 반영. 변경 이력은 §8
 > 원칙: 기존 Screener / Structure 탭과 그 계산 코드는 손대지 않는다.
 > 저장된 옵션 데이터(daily_screener.strike_data)를 프론트에서 새 기준으로 재계산하는
 > 독립 탭을 만들어 테스트베드로 쓰고, 검증 후 한쪽을 폐기한다.
@@ -29,8 +29,9 @@ VIX(지수 변동성)가 압축되는 국면에서, 옵션 스큐가 크고 딜�
 | strike_data 항목 | strike, call_iv, put_iv, avg_iv, call_delta, call_oi, put_oi | IV·OI만 사용, 저장된 greeks는 무시 |
 | screened_tickers | spot_price, group_code | 현재가, 그룹 |
 | watchlist | company, market_cap, sector | 표시용 |
-| price_indicators (최신일) | close, bb_upper2, bb_position, avg_volume, atr20 | BB 상단·거래대금 정규화 |
-| KV snapshot:1min | vix | 체제 판단 |
+| price_indicators (최신일) | close, bb_mid, bb_upper2, bb_lower2, bb_position, atr20 | 위치 기둥(%B), 콜월까지 ATR 폭, 사다리 20일선 |
+| KV snapshot:1min | vix (객체: price, changePct, …) | 헤더 현재 VIX — `vix.price` 사용 |
+| spy_daily_close | date, vix_close (최근 6일) | 헤더 VIX 5일 방향 (표시만, 등급 미반영) |
 | KV dex:spy | expirations[*].otm_put_iv 등 | SPY 스큐·GEX (체제) — 2차 |
 
 ### 1-1. 신규 Worker 라우트 (읽기 전용, 1개)
@@ -63,6 +64,13 @@ VIX(지수 변동성)가 압축되는 국면에서, 옵션 스큐가 크고 딜�
 - 밴드 내 스트라이크가 2개 미만이면 가장 가까운 2개로 대체하고 `lowConf=true`
 - 만기별 정규화 스큐: `skewRel = (mean(put_iv in 풋밴드) − mean(call_iv in 콜밴드)) / atm_iv`
   - 양수 = 풋 스큐 (압축 시 상방), 음수 = 콜 스큐 (압축 시 하방/중립)
+  - IV가 null인 스트라이크는 평균에서 **제외** (0으로 넣으면 스큐가 ±100%로 폭발 — v0.4 수정)
+- **신뢰도 가드 (v0.4 결정)**
+  - `atm_iv < MIN_ATM_IV(0.05)` → 깨진 ATM 호가로 간주, `skewRel=null` + `lowConf`. (DBRG 0.030, CZR 0.027 사례)
+  - lowConf 만기는 keyExpiry 후보와 skewA/skewB 가중 평균에서 **제외**. Vanna/Charm/OI 집계는 계속 계산.
+  - 신뢰 만기(`reliableCount`)가 0인 종목은 후보에서 제외 → 제외 목록 "신뢰도 낮음".
+    이유: OPEX 근접 시 저가 종목은 1.5σ가 $0.2~0.4라 밴드가 비고, 대체 규칙 스큐는 잡음이다.
+    종목 수를 늘리는 것보다 상위권의 신뢰성이 우선 (사용자 결정). 실데이터: 373종목 중 40개 제외.
 
 ### 2-3. 만기별 지표
 
@@ -88,7 +96,9 @@ VIX(지수 변동성)가 압축되는 국면에서, 옵션 스큐가 크고 딜�
 - `skewA`, `skewB`: 창 A / 창 B에 만기가 있는 옵션들의 OI 가중 skewRel
 - `vannaTotal`: 전 만기 vannaSupport 합 ($M). 정규화 없음 (거래대금 데이터 없음)
 - `vannaReach`: spot부터 위로 vannaSupport > 0 스트라이크가 연속되는 상단 (기존 vanna_limit 대응)
-- `bbPos`: price_indicators.bb_position
+- `bbPos`: price_indicators.bb_position. **위치 기둥에 사용** (v0.4, 표시 전용에서 승격)
+- `wallDistAtr`: `(callWall − spot) / atr20`. 회귀 기대 폭. 0.6 미만이면 거래비용에 먹히는 폭 → 위치 기둥 약 (v0.4)
+- `reliableCount`: lowConf 아닌 만기 수. 0이면 제외 (v0.4)
 - `ivHv`: 보류 (HV는 Railway에만 있음, 2차)
 
 ### 2-5. 달력 창 (결정)
@@ -97,26 +107,54 @@ VIX(지수 변동성)가 압축되는 국면에서, 옵션 스큐가 크고 딜�
 - 창 B (지지): OPEX − 14일 ~ OPEX
 - 창 A (약세/재구축): OPEX + 1일 ~ 다음 지지창 시작 전날
 - 헤더에 "현재 창 · 다음 지지창까지 D-n" 표시. 종목 만기일도 같은 규칙으로 창 A/B 분류.
+- **구현 주의 (v0.4 버그 수정)**: OPEX·오늘·만기 날짜를 전부 UTC 정오로 통일한다. 로컬 자정(`new Date(y,m,d)`)과
+  UTC 정오(`'YYYY-MM-DDT12:00:00Z'`)를 섞으면 KST에서 OPEX 당일 만기가 창 A로 분류된다. 단위 테스트가 3개 TZ에서 검증.
 
 ### 2-6. 선별과 정렬 (결정: 점수 없음, 그룹 분리 없음)
 
 제외 트리 (순서대로, 걸리면 하단 별도 표시):
 ```
+0. reliableCount = 0 (신뢰 만기 없음, 2-2 가드)  → [신뢰도 낮음]   (v0.4)
 1. keyExpiry 없음 (풋 스큐 양수 만기 없음) → [압축 시 매도 구조 / 해당 없음]
 2. vannaReach 없음 (spot 바로 위 vannaSupport <= 0) → [연료 없음]
 3. 소진 (2-7) → [소진]
 ```
 
-후보 목록 정렬 키 (위에서부터):
+기본 정렬은 **의견순**(2-6c). 토글로 아래 **스큐순**(v0.3 정렬)도 선택 가능.
+스큐순 정렬 키 (위에서부터):
 1. `skewRel(keyExpiry)` 내림차순  — 스큐 크기가 1순위
 2. `alignCount` 내림차순          — 커버드콜 정렬이 2순위 (5 이상 "구조" 배지)
 3. `daysToKey` 오름차순           — 타이밍
 4. `vannaTotal` 내림차순          — 연료 크기
 
-각 행에 이유 문자열 노출 (예: "풋스큐 +12% · 정렬 7/9 · D-9 · Vanna 2.3M · 집중도 4.1x").
+각 행에 이유 문자열 노출 (예: "풋스큐 +12% · 정렬 7/9 · D-9 · Vanna 2.3M · 집중도 4.1x · %B 15 · 폭 1.8ATR").
 `concRatio`는 정렬 키가 아니라 컬럼이며 keyExpiry 선택에만 쓴다.
 
-경고 배지 (순위 불변): VIX 5일 상승 중, 실적일 창 내(2차), lowConf.
+경고 배지 (순위 불변): 실적일 창 내(2차). VIX 5일 방향은 헤더에만 표시하고 등급·순위에 반영하지 않는다
+(VIX 상승 국면은 모델 자체가 작동하지 않는 것이므로 사용자가 헤더를 보고 판단 — 2026-09-12 결정).
+lowConf는 배지가 아니라 제외 사유로 격상 (2-2).
+
+### 2-6c. 의견 등급 (v0.4 결정: 병목 방식, 점수 합산 없음)
+
+4개 기둥을 각각 강(3)/중(2)/약(1)으로 채점하고 **가장 약한 기둥이 등급을 정한다**. 판단 불가(null)는 중으로 간주해
+A는 막되 C로 떨어뜨리지도 않는다. 임계값은 `PILLAR_THRESHOLDS`에 상수로 두며 전부 **잠정치** — 실데이터 보고 조정.
+
+| 기둥 | 근거 | 강 | 중 | 약 |
+|---|---|---|---|---|
+| 스큐 (방향) | `keyExpiry.skewRel` | ≥ 10% | 3~10% | 0~3% |
+| 연료 (힘) | keyExpiry의 `vannaSupport`·`charmSupport` 부호 | 둘 다 양수 | 하나만 양수 | 둘 다 ≤ 0 |
+| 위치 (회귀 거리) | `bb_position` | ≤ 0.25 (20일선 −1σ 이하) | 0.25~0.5 (20일선 아래) | > 0.5 (20일선 위) |
+| | `wallDistAtr` | | | < 0.6이면 무조건 약 (폭 부족) |
+| 타이밍 | `daysToKey` + keyExpiry 창 | 창 B · D-14 이내 | D-30 이내 | 그 외 |
+
+- %B ↔ σ 환산: BB(20,2σ)에서 `가격 − 20일선 = (4·%B − 2)σ`. %B 0.25 = −1σ, 0.5 = 20일선.
+  20일선을 경계로 둔 이유: 평균회귀의 1차 타깃이 20일선이라 그 위는 "회귀"가 아니라 "돌파" 베팅.
+- 연료를 $M 절대값이 아니라 **부호 일치**로 보는 이유: 종목 규모 정규화 데이터가 없어 금액 컷은 대형주만 뽑는다.
+  금액(`vannaTotal`)은 동률 정렬에만 쓴다.
+- 등급: 모두 강 → **A 매수 우선** / 최약 중 → **B 관심** / 최약 약 → **C 보류** / 제외 → **X** (사유 표시).
+  MY 종목은 X여도 상단 고정.
+- 의견순 정렬: 등급(A→B→C→X) → 스큐순 4개 키.
+- 화면: 등급 배지 + 기둥 4개 점(● 강 / ◐ 중 / ○ 약 / ? 불가), 툴팁에 각 기둥의 원값.
 
 ### 2-6b. MY 그룹 (결정)
 
@@ -149,12 +187,12 @@ VIX(지수 변동성)가 압축되는 국면에서, 옵션 스큐가 크고 딜�
 ## 3. 화면 `frontend/js/tabs/radar.js`
 
 ### 3-1. 목록
-- 헤더: 오늘 날짜, 다음 OPEX, 현재 창(A/B/전환), VIX와 5일 방향
-- 섹션 순서: [MY 고정] → [후보 목록] → [제외: 소진 / 연료 없음 / 압축 시 매도 구조]
-- 컬럼: 종목, 현재가, keyExpiry(D-n), skewRel, skewA/skewB, vannaPerADV, 콜월, vannaReach, BB, 이유
+- 헤더: 다음 OPEX, 현재 창(A/B), 지지창 D-n, VIX(현재 + 5일 방향 ▲/▼%), 정렬 토글(의견순/스큐순), 새로고침
+- 섹션 순서: [MY 고정] → [후보 목록 + 등급 카운트 A·B·C] → [제외: 소진 / 연료 없음 / 압축 시 매도 구조 / 신뢰도 낮음]
+- 컬럼: 종목(MY·구조 배지), **의견**(등급 + 기둥 점), 현재가, 핵심만기(D-n·창), skewRel, skewA/B, 정렬수, Vanna, 집중도, 콜월, BB(%B), 이유
 
 ### 3-2. 상세 (행 클릭, 같은 탭 안 패널)
-1. 가격 사다리: oiLowerEdge, 풋 OI 최대 스트라이크, GEX 플립, spot, vannaReach, 콜월, BB 2σ 상단, oiUpperEdge, keyExpiry EM
+1. 가격 사다리: oiLowerEdge, BB 20일선, spot, vannaReach, 콜월, BB 2σ 상단, oiUpperEdge (풋 OI 최대·GEX 플립·EM은 미구현)
 2. 만기 표: 만기, DTE, 창, skewRel, vannaSupport, charmSupport, putOI↓, callOI↑, peakCallStrike, 총OI
 3. 맵: 만기 × 스트라이크 DEX 맵 + 만기별 콜 정점 마커 + 8주 합산 행. 합산 행에 콜월·oiUpperEdge·oiLowerEdge 세로선.
    Vanna 지원 레이어 토글 (양수 = 초록 딜러 매수, 음수 = 빨강). M/m/G 삼중 마커 없음.
@@ -167,8 +205,8 @@ VIX(지수 변동성)가 압축되는 국면에서, 옵션 스큐가 크고 딜�
 
 | 파일 | 변경 |
 |---|---|
-| cloudflare/src/worker.js | (1) `/d1/daily-screener`에 hist INSERT 추가 (2) `GET /api/v2/chains` 라우트 추가 (3) hist 보관 삭제 라우트 |
-| railway/index.js | 일일 크론 끝에 hist 보관 삭제 호출 1줄 |
+| cloudflare/src/worker.js | (1) `/d1/daily-screener`에 hist INSERT 추가 (2) `GET /api/v2/chains` 라우트 추가 (3) hist 보관 삭제 라우트 (4) v0.4: chains 응답에 `bb_mid`·`atr20`·`vix_hist` |
+| railway/index.js | 일일 크론 끝에 hist 보관 삭제 호출 1줄. v0.4: `collectBbMapIndicators(extraSymbols)` — 일일 수집 후 BB맵 종목 + 스크리너 전체(`symList`) 가격 지표 수집, 150ms 간격 |
 | frontend/js/radar-engine.js | 신규. 계산 전용, DOM 없음 |
 | frontend/js/tabs/radar.js | 신규. 목록 + 상세 렌더 |
 | frontend/js/tabs.js | TAB_HANDLERS에 radar 등록 |
@@ -200,19 +238,33 @@ VIX(지수 변동성)가 압축되는 국면에서, 옵션 스큐가 크고 딜�
 - [x] 소진 = 스큐 전환·소멸 + Vanna 변화. 콜월 도달은 미사용
 - [x] 이력 테이블 daily_screener_hist 1차 필수, 90일 보관
 
+### 결정됨 (v0.4 추가, 2026-09-12)
+- [x] 의견 등급 A/B/C/X: 4기둥(스큐·연료·위치·타이밍) 병목 방식, 점수 합산 없음. 기본 정렬 의견순, 스큐순 토글
+- [x] 위치 기둥: %B ≤ 0.25 강 / ≤ 0.5 중 / > 0.5 약. 콜월까지 < 0.6 ATR이면 약
+- [x] 연료 기둥: keyExpiry의 Vanna·Charm 부호 일치 (금액 아님)
+- [x] VIX 방향은 헤더 표시만, 등급 미반영 (상승 국면은 모델 자체가 비활성이라 판단은 사용자)
+- [x] 1.5σ 밴드 부족 시: 대체 규칙 + lowConf → **keyExpiry에서 제외**, 신뢰 만기 없으면 종목 제외. 종목 수보다 신뢰성 우선
+- [x] atm_iv < 0.05 만기는 스큐 무효
+- [x] IV null 스트라이크는 평균 제외
+- [x] BB/ATR 수집을 스크리너 전체로 확대 (Railway 일일 수집 후)
+- [x] 그록 리뷰 검토 결과 채택: 볼린저 극단을 별도 기둥으로 / 기대 폭 ATR 감점 / 레벨+변화 쌍(→ hist 필요) / SQZ 구분(제외 목록 세분화는 hist 이후).
+      기각: IV rank·HV·콘탱고(데이터 없음), 상태 머신, 이중 유니버스, 5버킷, 1년 분위수화. 오류 지적: MR_UP 타깃 `min(SMA20, put_wall)`은 풋월이 현재가 아래라 틀림 → 콜월 사용.
+      Positioning은 OI 개수 비율(그록)보다 Radar의 딜러 헷지 $M 계산이 더 정밀하므로 유지.
+
 ### 미결
 - [ ] 소진 판정의 Vanna 감소 임계 (이력 쌓인 뒤)
-- [ ] 1.5σ 밴드 스트라이크 부족 시 대체 규칙 (초안: 가장 가까운 2개 + lowConf)
+- [ ] 기둥 임계값(`PILLAR_THRESHOLDS`) 조정 — BB 373종목 수집 후 A/B/C 분포 보고 결정
+- [ ] "Vanna 여력" (VIX·IV가 더 빠질 공간) — IV 이력 필요. 그록 지적, hist 이후
 - [ ] SPY 체제 판단 소스 (VIX만 vs VIX + SPY GEX 부호)
 - [ ] 실적일 소스 (Finnhub)
 - [ ] hist 보관 기간 90일이 적정한지
+- [ ] 상세 사다리 미구현 항목 (풋 OI 최대, GEX 플립, keyExpiry EM), 90일 추이선
 
 ### 다음 작업
-1. worker.js: hist 테이블 생성 SQL + `/d1/daily-screener` hist INSERT → 배포 (데이터 누적 시작)
-2. worker.js: `GET /api/v2/chains` 라우트 → 배포 → 응답 크기 확인
-3. radar-engine.js 작성 + node 단위 테스트 (부호 검증: 콜 재고/풋 재고 모두 양수, NVDA 콜월 230·경계 ~300 재현)
-4. radar.js 목록 → 상세 순서로 구현
-5. 실데이터로 임계값 조정
+1. Railway 배포 확인 → 다음 거래일 수집 후 BB 커버리지(8 → 373) 확인, 위치 기둥 `?` 소멸 확인
+2. A/B/C 분포 보고 임계값 조정
+3. hist가 5일 이상 쌓이면: 소진 판정 실동작 확인, `iv_chg_5d`·`skew_chg_5d` 컬럼 검토
+4. 창별 5일·10일 선행 수익률 검증 (벤치마크: %B만 쓴 스크리너 — 그록 제안)
 
 
 ---
@@ -247,9 +299,10 @@ CREATE INDEX IF NOT EXISTS idx_dsh_date ON daily_screener_hist(date);
    date = `updated_at` → ET 날짜 변환 (기존 헬퍼 없으면 `new Date(updated_at).toLocaleDateString('en-CA',{timeZone:'America/New_York'})`).
 2. `GET /api/v2/chains[?symbol=XXX]` 신규. 인증 없음. 응답:
    ```
-   { date, vix: null, tickers: [ {
+   { date, vix: {price, changePct, ...} | null, vix_hist: [{date, vix}] (최근 6일, 오름차순),
+     tickers: [ {
        symbol, company, market_cap, groups: "MY,WATCHLIST", spot_price,
-       bb: { close, bb_upper2, bb_lower2, bb_position } | null,
+       bb: { close, bb_mid, bb_upper2, bb_lower2, bb_position, atr20 } | null,
        expiries: [ { expiry_date, dte, expiry_type, atm_iv, call_oi, put_oi, flip_strike,
                      strikes: [ {strike, call_iv, put_iv, avg_iv, call_delta, call_oi, put_oi} ] } ]
    } ] }
@@ -271,16 +324,24 @@ export function strikeSupport(spot, s, dte)
   //     callDex: delta*call_oi*100/1e6 }
 export function expiryMetrics(spot, expiry)        // → 2-3 필드 + skewRel(1.5σ) + lowConf + totalOI
 export function tickerMetrics(t, calendar)         // → 2-4 필드 전부 + expiries[]
-export function classify(m, prev /* 전일 tickerMetrics|null */) // → { exclude: null|'call_skew'|'no_fuel'|'exhausted', badges:[] }
-export function sortCandidates(list)               // 2-6 정렬 키
+export function classify(m, prev /* 전일 tickerMetrics|null */) // → { exclude: null|'low_conf'|'call_skew'|'no_fuel'|'exhausted', badges:[] }
+export function sortCandidates(list)               // 2-6 스큐순 정렬 키
 export function opexCalendar(today)                // → { opex, nextOpex, window:'B'|'A', daysToSupport, windowOf(expiryDate) }
+// v0.4
+export const MIN_ATM_IV = 0.05
+export const PILLAR_THRESHOLDS                     // 2-6c 임계값
+export function pillars(m)                         // → { skew, fuel, position, timing } 각 3|2|1|null
+export function opinion(m, cls)                    // → { grade:'A'|'B'|'C'|'X', pillars, exclude }
+export function sortByOpinion(list, gradeOf)       // 등급 → sortCandidates 키
 ```
-단위 테스트 (`node --input-type=module`로 실행, 파일 `frontend/js/radar-engine.test.mjs`):
+단위 테스트 (`node frontend/js/radar-engine.test.mjs`, 37개. `TZ=UTC`·`TZ=America/New_York`로도 통과해야 함):
 - S=100, K=110 콜 OI 1000 → vannaSupport > 0, charmSupport > 0
 - S=100, K=90 풋 OI 1000 → vannaSupport > 0, charmSupport > 0
 - S=100, K=110 풋 OI 1000 (딜러 롱풋 가정 하 매도) → vannaSupport < 0
-- opexCalendar('2026-09-04') → opex 2026-09-18, window 'B' (09-04는 OPEX-14일 이내)
-- 실데이터 회귀: NVDA 응답으로 callWall = 230, alignCount ≥ 5, oiUpperEdge ≈ 300 (±10)
+- opexCalendar('2026-09-04') → opex 2026-09-18, window 'B'. windowOf('2026-09-18')='B', ('2026-09-19')='A'. OPEX 당일 D-0
+- 병목 등급: 전부 강 → A, 위치 중 → B, 폭 0.3ATR → C, Vanna·Charm 음수 → C, BB 없음 → B, 제외 → X
+- atm_iv 0.03 → skewRel null·lowConf. null IV 평균 제외. 밴드 부족 → lowConf. lowConf만 있으면 'low_conf', 차월 있으면 차월이 keyExpiry
+- 실데이터 회귀: NVDA 응답으로 callWall = 230, alignCount ≥ 5, oiUpperEdge ≈ 300 (±10) — 미작성
 
 ### 6-4. `frontend/js/tabs/radar.js`
 - `initRadar()` / `refreshRadar()` export, tabs.js TAB_HANDLERS에 `radar` 추가, index.html 버튼(`data-tab="radar"`)과 `<div class="tab-panel" id="tab-radar">` 추가.
@@ -292,9 +353,16 @@ export function opexCalendar(today)                // → { opex, nextOpex, wind
 ### 6-5. 완료 기준
 1. hist INSERT 배포 후 다음 날 `SELECT COUNT(*) FROM daily_screener_hist` 가 종목 수 × 만기 수와 일치
 2. `/api/v2/chains` 응답 < 3MB(gzip 전), 200ms 내
-3. 단위 테스트 5개 통과
+3. 단위 테스트 전부 통과 (3개 TZ)
 4. Radar 탭에서 NVDA 클릭 시 사다리에 콜월 230, 상단 경계 ~300 표시
 5. MY 그룹 종목이 제외 사유가 있어도 상단에 표시
+6. (v0.4) 후보 목록에 |skewRel| > 100% 종목 없음. 제외 목록에 "신뢰도 낮음" 그룹 표시
+7. (v0.4) BB 수집 확대 배포 후 `withBB`가 스크리너 종목 수와 근접 (2026-09-12 시점 8/373)
+
+### 6-6. 로컬 실행
+- 프론트: `cd frontend && npm install && npm run dev` (Vite, :5173). `.claude/launch.json`에 등록됨 (`.gitignore` 대상)
+- Cloudflare 배포: `cd cloudflare && npx wrangler deploy`. Node 25 + macOS 13에서는 `NODE_OPTIONS=--use-bundled-ca` 필요
+  (Node 25 기본 `--use-system-ca`가 키체인에서 Google Trust Services 체인을 못 찾음). `~/.zshrc`에 추가해 둠.
 
 ---
 
@@ -338,3 +406,25 @@ export function opexCalendar(today)                // → { opex, nextOpex, wind
 - `options_dex` 테이블(날짜별 이력)은 Railway에서 더 이상 쓰는 코드가 없어 비어 가는 중. `/api/options-dex/:symbol/history`는 이름과 달리 오늘 데이터만 반환.
 - `price_indicators.avg_volume` 컬럼은 있으나 Railway가 채우지 않음 (항상 null).
 - `calcScreenerScore`([vanna_analyzer.js:545](railway/vanna_analyzer.js:545))는 "콜 스큐 양수"를 필수 조건으로 요구 → 풋 스큐 기반 스퀴즈 후보를 걸러냄. (Radar에서는 반대로 풋 스큐가 1순위)
+
+### 7-5. 2026-09-12 세션에서 추가 발견
+- [vanna_analyzer.js:355](railway/vanna_analyzer.js:355) `atmIV = (atmCallIV + atmPutIV)/2` — 비유동 종목에서 CBOE의 깨진 IV(DBRG 0.030, CZR 0.027)를 그대로 저장. Radar는 `MIN_ATM_IV` 가드로 방어했으나 기존 Screener 탭의 iv_skew·atm_iv 표시는 그대로.
+- `spy_daily_close`에 **휴장일 행**이 있음 (2026-09-07 노동절 vix_close 15.30). 크론이 휴장일에도 저장. Radar VIX 5일 방향에 1일 오차. hist 검증 시 휴장일 필터 필요.
+- KV `snapshot:1min`의 `vix`는 숫자가 아니라 객체 `{price, change, changePct, prevClose, series[]}` (series는 분봉 수백 개). `/api/v2/chains`가 이걸 그대로 전달해 응답이 불필요하게 큼 — `price`만 내려주도록 정리 검토.
+- `price_indicators`는 `/api/bb-map-symbols`(8종목)만 수집하고 있었음 → v0.4에서 스크리너 전체로 확대 (수정됨).
+
+---
+
+## 8. 변경 이력
+
+### v0.4 (2026-09-12) — 커밋 `3dd690f`, `2978423`
+- 의견 등급(A/B/C/X)·의견순 정렬·기둥 점 표시 (2-6c)
+- `wallDistAtr`, 위치 기둥(%B), 사다리 BB 20일선, 이유 문자열에 %B·폭
+- `/api/v2/chains`에 `bb_mid`·`atr20`·`vix_hist`. 헤더 VIX `.price` 사용(NaN 수정) + 5일 방향
+- `opexCalendar` UTC 정오 통일 (KST에서 OPEX 당일 만기 창 A 오분류 수정)
+- 스큐 신뢰도 가드: `MIN_ATM_IV`, null IV 제외, lowConf → keyExpiry 제외 → 신뢰 만기 없으면 'low_conf' 제외
+- Railway: BB/ATR 수집을 스크리너 전체로 확대
+- 단위 테스트 5 → 37개, 3개 TZ 검증
+
+### v0.3 (2026-09-04) — 커밋 `599d2a3`
+- 최초 구현: hist 테이블, `/api/v2/chains`, radar-engine.js, radar.js
