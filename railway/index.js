@@ -25,7 +25,7 @@ const YAHOO_CHART = 'https://query1.finance.yahoo.com/v8/finance/chart';
 
 async function collectPriceIndicators(symbol, cfWorkerUrl, cronSecret) {
 try {
-const url = `${YAHOO_CHART}/${encodeURIComponent(symbol)}?interval=1d&range=3mo`;
+const url = `${YAHOO_CHART}/${encodeURIComponent(symbol)}?interval=1d&range=1y`;  // v0.5: sma200 계산용 1y
 const res = await fetch(url, {
 headers: { 'User-Agent': 'Mozilla/5.0' },
 signal: AbortSignal.timeout(10000),
@@ -52,11 +52,13 @@ const candles = timestamps
 
 if (candles.length < 20) throw new Error('insufficient_data');
 
-const cls = candles.map(c => c.close);
+const cls    = candles.map(c => c.close);
+const logCls = cls.map(c => Math.log(c));   // v0.5: 로그 BB (사용자 TradingView 지표와 동일)
 
-// 캔들 전체에 대해 BB/ATR 계산 → 전체 행 생성 (INSERT OR IGNORE로 기존 보존)
+// 캔들 전체에 대해 BB/ATR 계산. 저장은 최근 30일 행만 (1y 전체를 매일 REPLACE하면 D1 쓰기 낭비)
+const SAVE_DAYS = 30;
 const rows = [];
-for (let i = 19; i < candles.length; i++) {
+for (let i = Math.max(19, candles.length - SAVE_DAYS); i < candles.length; i++) {
   const { date, close, high, low } = candles[i];
 
   // 볼린저밴드 (20일 rolling)
@@ -77,10 +79,29 @@ for (let i = 19; i < candles.length; i++) {
   const atr5  = atr(5);
   const atr20 = atr(20);
 
+  // v0.5: 로그 BB(20, 2σ) — basis = SMA20(ln close), dev = stdev20(ln close)
+  //   bb_log_pos     = 종가의 %B (로그 공간)
+  //   bb_log_low_pos = 저가의 %B (≤ 0 이면 하단 밴드 터치)
+  const lslice   = logCls.slice(i - 19, i + 1);
+  const lbasis   = lslice.reduce((a, b) => a + b, 0) / 20;
+  const ldev     = Math.sqrt(lslice.reduce((a, b) => a + (b - lbasis) ** 2, 0) / 20);
+  const lrange   = 4 * ldev;
+  const bbLogPos    = lrange > 0 ? (Math.log(close) - (lbasis - 2 * ldev)) / lrange : 0.5;
+  const bbLogLowPos = (lrange > 0 && low > 0) ? (Math.log(low) - (lbasis - 2 * ldev)) / lrange : null;
+
+  // v0.5: 단순이동평균 50/200 (추세 필터·사다리용). 데이터 부족 시 null
+  const smaN = (n) => i >= n - 1 ? cls.slice(i - n + 1, i + 1).reduce((a, b) => a + b, 0) / n : null;
+  const sma50  = smaN(50);
+  const sma200 = smaN(200);
+
   rows.push({
     date,
     symbol,
     close,
+    bb_log_pos:     +bbLogPos.toFixed(4),
+    bb_log_low_pos: bbLogLowPos != null ? +bbLogLowPos.toFixed(4) : null,
+    sma50:          sma50  != null ? +sma50.toFixed(4)  : null,
+    sma200:         sma200 != null ? +sma200.toFixed(4) : null,
     bb_mid:      +sma.toFixed(4),
     bb_upper1:   +(sma + std).toFixed(4),
     bb_lower1:   +(sma - std).toFixed(4),
@@ -1557,14 +1578,15 @@ async function processLivePrices(prices) {
 // ─────────────────────────────────────────────────────────────────
 function startScheduler() {
 let lastSession  = null;
-let screenerDone = false;  // 당일 스크리너 수집 여부
+let screenerDone = false;  // 당일 스크리너 수집 여부 (ET 17:30 트리거)
+let closeDone    = false;  // 당일 장 마감 prevClose 저장 여부 (v0.5: screenerDone과 분리)
 let openDone     = false;  // 당일 장 시작 스냅샷 여부
 let livePriceDone = false; // 당일 장중 가격 업데이트 여부 (자정 초기화)
 
 // 매일 자정 플래그 초기화
 setInterval(() => {
 const h = getETHour();
-if (h === 0) { screenerDone = false; openDone = false; livePriceDone = false; }
+if (h === 0) { screenerDone = false; closeDone = false; openDone = false; livePriceDone = false; }
 }, 60_000);
 
 // ─────────────────────────────────────────────────────────────────
@@ -1651,7 +1673,23 @@ if (session !== lastSession) {
     saveSnapshotOpen();
   }
 
+  // 장 마감(AFTER 첫 진입) → prevClose 저장만 (v0.5: closeDone 사용. screenerDone을 여기서 세우면 17:30 수집이 막힘)
+  if (session === 'AFTER' && !closeDone) {
+    closeDone = true;
+    savePrevClose({
+      spy:  _cache.spy.price,
+      qqq:  _cache.qqq?.price ?? null,
+      iwm:  _cache.iwm?.price ?? null,
+      vix:  _cache.vix.price,
+      date: getTodayET(),
+      ts:   new Date().toISOString(),
+    }).catch(e => console.error('[prevClose] 장 마감 저장 실패:', e.message));
+    console.log('[scheduler] 장 마감 → prevClose 저장 완료 (수집은 ET 17:30에 처리)');
+  }
+}  // if (session !== lastSession)
+
   // ET 17:30 — 스크리너 수집 자동 실행
+  // v0.5: 세션 변경 블록 밖에서 매분 평가 (기존엔 블록 안에 있어 사실상 실행되지 않았음 — RADAR_DESIGN §7-6)
   if (isWeekday() && h === 17 && new Date().getMinutes() === 30 && !screenerDone) {
     screenerDone = true;
     savePrevClose({
@@ -1697,21 +1735,6 @@ if (session !== lastSession) {
       }
     })();
   }
-
-  // 장 마감(AFTER 첫 진입) → prevClose 저장만
-  if (session === 'AFTER' && !screenerDone) {
-    screenerDone = true;
-    savePrevClose({
-      spy:  _cache.spy.price,
-      qqq:  _cache.qqq?.price ?? null,
-      iwm:  _cache.iwm?.price ?? null,
-      vix:  _cache.vix.price,
-      date: getTodayET(),
-      ts:   new Date().toISOString(),
-    }).catch(e => console.error('[prevClose] 장 마감 저장 실패:', e.message));
-    console.log('[scheduler] 장 마감 → prevClose 저장 완료 (수집은 ET 17:30에 처리)');
-  }
-}  // if (session !== lastSession)
 
 // 평일 ET 16:30 — 장마감 30분 후 일별 종가 + 최종 옵션 지표 저장
 if (isWeekday() && h === 16 && new Date().getMinutes() === 30) {

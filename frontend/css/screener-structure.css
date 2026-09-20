@@ -1143,3 +1143,47 @@
 .radar-ladder-val   { color: var(--text); }
 
 .radar-detail-map { margin-top: 12px; }
+
+/* ============================================
+   v0.5 — 지수 배지, 미니 시각화, 아코디언 상세
+   ============================================ */
+.radar-badge--index { background: rgba(163,113,247,.2); color: #a371f7; }
+
+/* 목록 셀 안의 미니 SVG 그래픽 */
+.radar-mini-cell { display: flex; align-items: center; gap: 6px; }
+.radar-mini-svg  { flex-shrink: 0; display: block; }
+.radar-mini-empty { font-size: 11px; color: var(--text3); }
+
+.radar-row.open td { background: rgba(88,166,255,.06); }
+
+/* 아코디언 행 (테이블 안, colspan 전체) */
+.radar-acc-row td { padding: 0 !important; background: var(--bg2); }
+.radar-acc { padding: 14px 16px; border-top: 1px solid var(--border); border-bottom: 2px solid var(--blue-dim, var(--border)); }
+.radar-acc-head {
+  display: flex; align-items: center; gap: 4px; margin-bottom: 12px; flex-wrap: wrap;
+}
+.radar-acc-title { font-size: 14px; font-weight: 700; color: var(--text); margin-right: 12px; }
+.radar-acc-tabs { display: flex; gap: 4px; margin-right: auto; }
+.radar-acc-tab {
+  font-size: 12px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 4px;
+  background: none; color: var(--text3); cursor: pointer;
+}
+.radar-acc-tab:hover  { color: var(--text); }
+.radar-acc-tab.active { border-color: var(--blue); color: var(--blue); background: var(--blue-dim); }
+.radar-acc-body { min-height: 60px; }
+.radar-acc-pane { white-space: normal; }
+.radar-acc-empty { padding: 16px; color: var(--text3); font-size: 12px; }
+
+.radar-acc-cols { display: flex; gap: 24px; flex-wrap: wrap; }
+.radar-acc-col   { min-width: 220px; flex: 1; }
+
+.radar-gate-row { font-size: 12px; color: var(--text2); margin-bottom: 4px; }
+.radar-gate-row b { color: var(--text); }
+
+.radar-pillars { margin-top: 10px; }
+.radar-pillar-row {
+  display: flex; align-items: center; gap: 8px; padding: 4px 0;
+  border-bottom: 1px solid var(--border); font-size: 12px;
+}
+.radar-pillar-name { color: var(--text3); min-width: 150px; }
+.radar-pillar-val  { color: var(--text); font-family: var(--mono); margin-left: auto; }

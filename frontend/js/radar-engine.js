@@ -53,7 +53,7 @@ export function strikeSupport(spot, s, dte) {
   const iv = s.strike > spot
     ? (s.call_iv ?? s.avg_iv ?? 0)
     : (s.put_iv  ?? s.avg_iv ?? 0);
-  if (!iv || !dte) return { vannaSupport: 0, charmSupport: 0, callDex: 0 };
+  if (!iv || !dte) return { vannaSupport: 0, charmSupport: 0, callDex: 0, dexNet: 0, gexNet: 0 };
 
   const g = bsGreeks(spot, s.strike, dte, iv);
   // vannaSupport = vannaHolder × netOI × 계약크기 × 현재가 / $1M
@@ -63,7 +63,40 @@ export function strikeSupport(spot, s, dte) {
   // callDex: 콜 포지션 델타 합 ($M)
   const callDex = g.delta * (s.call_oi ?? 0) * 100 / 1e6;
 
-  return { vannaSupport, charmSupport, callDex };
+  // v0.5: 차트 모듈(EM·히트맵) 입력용 순 DEX / GEX ($M). 콜은 call_iv, 풋은 put_iv로 각각 계산
+  //   dexNet = (콜델타×콜OI + 풋델타×풋OI) × 100 × spot / 1e6   — 콜 양수, 풋 음수
+  //   gexNet = (콜감마×콜OI − 풋감마×풋OI) × 100 × spot² × 0.01 / 1e6 — 딜러 롱콜(+)·숏풋(−)
+  const gc = bsGreeks(spot, s.strike, dte, s.call_iv ?? iv);
+  const gp = bsGreeks(spot, s.strike, dte, s.put_iv  ?? iv);
+  const callOI = s.call_oi ?? 0, putOI = s.put_oi ?? 0;
+  const dexNet = (gc.delta * callOI + (gp.delta - 1) * putOI) * 100 * spot / 1e6;
+  const gexNet = (gc.gamma * callOI - gp.gamma * putOI) * 100 * spot * spot * 0.01 / 1e6;
+
+  return { vannaSupport, charmSupport, callDex, dexNet, gexNet };
+}
+
+// ─── v0.5: 로그 볼린저밴드 (사용자 TradingView 지표 "Log BB + Inner Band"와 동일) ───
+// closes/lows: 오름차순 종가·저가 배열. 마지막 봉 기준 값 반환. Railway collectPriceIndicators와 같은 수식.
+//   basis = SMA(ln close, length), dev = stdev(ln close, length) (모집단), upper/lower = exp(basis ± mult·dev)
+//   pos = 종가 %B (로그 공간), lowPos = 저가 %B — ≤ 0 이면 하단 밴드 터치
+export function logBB(closes, lows = null, length = 20, mult = 2) {
+  if (!closes || closes.length < length) return null;
+  const n = closes.length;
+  const slice = closes.slice(n - length).map(c => Math.log(c));
+  const basis = slice.reduce((a, b) => a + b, 0) / length;
+  const dev   = Math.sqrt(slice.reduce((a, b) => a + (b - basis) ** 2, 0) / length);
+  const range = 2 * mult * dev;
+  const lowerLog = basis - mult * dev;
+  const close = closes[n - 1];
+  const low   = lows?.[n - 1] ?? null;
+  const pos    = range > 0 ? (Math.log(close) - lowerLog) / range : 0.5;
+  const lowPos = (range > 0 && low > 0) ? (Math.log(low) - lowerLog) / range : null;
+  return {
+    basis: Math.exp(basis),
+    upper: Math.exp(basis + mult * dev),
+    lower: Math.exp(lowerLog),
+    pos, lowPos,
+  };
 }
 
 // atm_iv가 이 값 미만이면 비유동 종목의 깨진 ATM 호가로 간주 → 스큐 무효 (DBRG 0.03 등)
@@ -330,10 +363,21 @@ export function tickerMetrics(t, calendar) {
   const atr20 = t.bb?.atr20;
   const wallDistAtr = (callWall != null && atr20 > 0) ? (callWall - spot) / atr20 : null;
 
+  // v0.5: 위치·추세 게이트 원값
+  const pg = positionGate(t);
+  const tg = trendGate(t);
+
   return {
     symbol:       t.symbol,
     spot_price:   spot,
     bb:           t.bb ?? null,
+    bb_hist:      t.bb_hist ?? [],
+    bbLogPos:     pg.logPos,
+    bbTouch5d:    pg.touch5d,
+    bbTouchDate:  pg.touchDate,
+    positionOk:   pg.ok,
+    trendOk:      tg.ok,
+    trendMissing: tg.missing,
     expiries,
     callWall,
     alignCount,
@@ -351,9 +395,44 @@ export function tickerMetrics(t, calendar) {
   };
 }
 
+// ─── v0.5: 위치 게이트 (로그 BB 하단 터치 + 아직 하단부) ─────────────
+// t: { bb: {bb_log_pos, bb_log_low_pos, ...}|null, bb_hist: [{date, bb_log_pos, bb_log_low_pos}] }
+// 반환: { ok, logPos, touch5d, touchDate, reason: null|'no_bb'|'position' }
+//   touch5d: 최근 5거래일(bb_hist 마지막 5개 + 당일) 중 저가 %B ≤ 0 인 날이 있음
+//   ok: touch5d && logPos ≤ PILLAR_THRESHOLDS.bbLogMax
+export function positionGate(t) {
+  const T = PILLAR_THRESHOLDS;
+  const bb = t?.bb;
+  const logPos = bb?.bb_log_pos ?? null;
+  if (logPos == null) return { ok: false, logPos: null, touch5d: null, touchDate: null, reason: 'no_bb' };
+
+  const hist = Array.isArray(t.bb_hist) ? t.bb_hist.slice(-T.touchDays) : [];
+  const days = [...hist];
+  // 당일 행이 bb_hist에 없으면 bb 자체를 추가 (chains는 보통 포함하지만 방어)
+  if (bb.date && !days.some(d => d.date === bb.date)) {
+    days.push({ date: bb.date, bb_log_pos: bb.bb_log_pos, bb_log_low_pos: bb.bb_log_low_pos });
+  }
+  let touchDate = null;
+  for (const d of days) {
+    if (d.bb_log_low_pos != null && d.bb_log_low_pos <= 0) touchDate = d.date ?? touchDate ?? '?';
+  }
+  const touch5d = touchDate != null;
+  const ok = touch5d && logPos <= T.bbLogMax;
+  return { ok, logPos, touch5d, touchDate, reason: ok ? null : 'position' };
+}
+
+// ─── v0.5: 추세 게이트 (종가 > 200일선). sma200 없으면 통과 + missing 표시 ───
+export function trendGate(t) {
+  const close  = t?.bb?.close ?? t?.spot_price ?? null;
+  const sma200 = t?.bb?.sma200 ?? null;
+  if (sma200 == null || close == null) return { ok: true, missing: true, reason: null };
+  const ok = close > sma200;
+  return { ok, missing: false, reason: ok ? null : 'trend' };
+}
+
 // ─── 제외/분류 판정 ───────────────────────────────────────────────
 // prev: 전일 tickerMetrics (소진 판정용, null이면 이력 없음)
-// exclude: null | 'low_conf' | 'call_skew' | 'no_fuel' | 'exhausted'
+// exclude: null | 'low_conf' | 'no_bb' | 'position' | 'trend' | 'call_skew' | 'no_fuel' | 'exhausted'
 export function classify(m, prev = null) {
   if (!m) return { exclude: 'call_skew', badges: [] };
 
@@ -362,13 +441,23 @@ export function classify(m, prev = null) {
   // 0. 신뢰 가능한 만기(밴드 내 스트라이크 충분, atm_iv 정상) 없음
   if (!m.reliableCount) return { exclude: 'low_conf', badges };
 
-  // 1. keyExpiry 없음 (풋 스큐 양수 만기 없음)
+  // 1. 로그 BB 없음 (v0.5)
+  if (m.bbLogPos == null) return { exclude: 'no_bb', badges };
+
+  // 2. 위치 부적합: 5일 내 하단 터치 + 로그 %B ≤ 0.25 아니면 제외 (v0.5)
+  if (!m.positionOk) return { exclude: 'position', badges };
+
+  // 3. 추세 부적합: 종가 ≤ 200일선 (v0.5). sma200 없으면 통과하되 배지
+  if (m.trendMissing) badges.push('200일선 없음');
+  else if (!m.trendOk) return { exclude: 'trend', badges };
+
+  // 4. keyExpiry 없음 (풋 스큐 양수 만기 없음)
   if (!m.keyExpiry) return { exclude: 'call_skew', badges };
 
-  // 2. vannaReach 없음
+  // 5. vannaReach 없음
   if (!m.vannaReach) return { exclude: 'no_fuel', badges };
 
-  // 3. 소진 판정 (이력이 있는 경우)
+  // 6. 소진 판정 (이력이 있는 경우)
   if (prev?.keyExpiry) {
     const prevSkew = prev.keyExpiry.skewRel ?? 0;
     const curSkew  = m.keyExpiry.skewRel ?? 0;
@@ -397,13 +486,19 @@ export function sortCandidates(list) {
   return [...list].sort(cmpCandidates);
 }
 
-// ─── 4기둥 채점과 의견 (병목 방식: 가장 약한 기둥이 등급을 정함) ───
+// ─── 기둥 채점과 의견 (병목 방식: 가장 약한 기둥이 등급을 정함) ───
 // 레벨: 3=강, 2=중, 1=약, null=판단 불가. 임계값은 잠정치.
+// v0.5: 위치는 기둥이 아니라 게이트(positionGate·trendGate → classify). 등급은 스큐·연료·타이밍·폭.
+export const ENGINE_VER = '0.5.0';
+
 export const PILLAR_THRESHOLDS = {
   skewStrong: 0.10, skewMid: 0.03,
-  bbStrong: 0.25,  bbMid: 0.50,       // %B ≤ 0.25 = 20일선 −1σ 이하
-  wallMinAtr: 0.6,                    // 콜월까지 < 0.6 ATR = 폭 부족
+  bbLogMax:   0.25,                   // 위치 게이트: 로그 %B ≤ 0.25 (20일선 −1σ 이하) — 사용자 결정 2026-09-20
+  touchDays:  5,                      // 위치 게이트: 최근 5거래일 내 저가가 로그 하단 2σ 밴드 이하
+  wallMinAtr: 0.6,                    // 콜월까지 < 0.6 ATR = 폭 부족 → C
   daysStrong: 14,  daysMid: 30,
+  aReliableMin: 3,                    // A 등급 추가 조건: 신뢰 만기 3개 이상 (잠정)
+  aAlignMin:    3,                    // A 등급 추가 조건: 콜 정점 정렬 3개 이상 (잠정)
 };
 
 export function pillars(m) {
@@ -422,11 +517,9 @@ export function pillars(m) {
     fuel = n === 2 ? 3 : n === 1 ? 2 : 1;
   }
 
-  // 위치 (회귀 거리): %B + 콜월까지 ATR 폭
-  const bbPos = m?.bb?.bb_position;
-  let position = bbPos == null ? null
-    : bbPos <= T.bbStrong ? 3 : bbPos <= T.bbMid ? 2 : 1;
-  if (m?.wallDistAtr != null && m.wallDistAtr < T.wallMinAtr) position = 1;
+  // 폭 (회귀 기대 폭): 콜월까지 ATR. 부족하면 약, 아니면 강. 없으면 판단 불가
+  const width = m?.wallDistAtr == null ? null
+    : m.wallDistAtr < T.wallMinAtr ? 1 : 3;
 
   // 타이밍
   let timing = null;
@@ -435,18 +528,71 @@ export function pillars(m) {
       : m.daysToKey <= T.daysMid ? 2 : 1;
   }
 
-  return { skew, fuel, position, timing };
+  return { skew, fuel, timing, width };
 }
 
 // cls: classify() 반환값. grade: 'A' 매수 우선 | 'B' 관심 | 'C' 보류 | 'X' 제외
 export function opinion(m, cls) {
+  const T = PILLAR_THRESHOLDS;
   const p = pillars(m);
-  if (cls?.exclude) return { grade: 'X', pillars: p, exclude: cls.exclude };
+  if (cls?.exclude) return { grade: 'X', pillars: p, exclude: cls.exclude, demoted: null };
   // 판단 불가 기둥(null)은 중으로 간주 → A 불가, C 강제도 안 함
   const levels = Object.values(p).map(v => v ?? 2);
   const min = Math.min(...levels);
-  const grade = min === 3 ? 'A' : min === 2 ? 'B' : 'C';
-  return { grade, pillars: p, exclude: null };
+  let grade = min === 3 ? 'A' : min === 2 ? 'B' : 'C';
+  // v0.5: A 추가 조건 (신뢰 만기·정렬 수). 미달이면 B
+  let demoted = null;
+  if (grade === 'A') {
+    if ((m.reliableCount ?? 0) < T.aReliableMin) demoted = `신뢰 만기 ${m.reliableCount ?? 0} < ${T.aReliableMin}`;
+    else if ((m.alignCount ?? 0) < T.aAlignMin)  demoted = `정렬 ${m.alignCount ?? 0} < ${T.aAlignMin}`;
+    if (demoted) grade = 'B';
+  }
+  return { grade, pillars: p, exclude: null, demoted };
+}
+
+// ─── v0.5: 8주 합산 스트라이크 (기존 차트 모듈 입력용) ─────────────
+// 반환: [{strike, dex, gex, vanna, charm, callOI, putOI, avg_iv}] 오름차순, 단위 $M
+// 부호는 Radar 규약 그대로 (vanna 양수 = IV 하락 시 딜러 매수). EM 차트의 "vanna>0 = VIX↓ 상승 압력" 해석과 일치.
+export function aggregateStrikes(m) {
+  const spot = m?.spot_price;
+  if (!spot || !m.expiries?.length) return [];
+  const w8 = m.expiries.filter(e => e.dte > 0 && e.dte <= 56);
+  const acc = new Map();
+  for (const e of w8) {
+    for (const s of (e.strikes ?? [])) {
+      const sup = strikeSupport(spot, s, e.dte);
+      const a = acc.get(s.strike) ?? { strike: s.strike, dex: 0, gex: 0, vanna: 0, charm: 0, callOI: 0, putOI: 0, _ivSum: 0, _ivN: 0 };
+      a.dex    += sup.dexNet;
+      a.gex    += sup.gexNet;
+      a.vanna  += sup.vannaSupport;
+      a.charm  += sup.charmSupport;
+      a.callOI += s.call_oi ?? 0;
+      a.putOI  += s.put_oi  ?? 0;
+      const iv = s.avg_iv ?? s.call_iv ?? s.put_iv;
+      if (iv > 0) { a._ivSum += iv; a._ivN++; }
+      acc.set(s.strike, a);
+    }
+  }
+  return [...acc.values()]
+    .map(a => ({ strike: a.strike, dex: a.dex, gex: a.gex, vanna: a.vanna, charm: a.charm,
+                 callOI: a.callOI, putOI: a.putOI, avg_iv: a._ivN ? a._ivSum / a._ivN : null }))
+    .sort((a, b) => a.strike - b.strike);
+}
+
+// 만기별 스트라이크 (Vanna 히트맵 입력용): [{expiry, dte, strikes:[{strike, vanna, dex, gex, callOI, putOI}]}]
+export function strikesPerExpiry(m) {
+  const spot = m?.spot_price;
+  if (!spot) return [];
+  return (m.expiries ?? [])
+    .filter(e => e.dte > 0 && e.dte <= 56)
+    .map(e => ({
+      expiry: e.expiry_date, dte: e.dte,
+      strikes: (e.strikes ?? []).map(s => {
+        const sup = strikeSupport(spot, s, e.dte);
+        return { strike: s.strike, vanna: sup.vannaSupport, dex: sup.dexNet, gex: sup.gexNet,
+                 callOI: s.call_oi ?? 0, putOI: s.put_oi ?? 0 };
+      }),
+    }));
 }
 
 const GRADE_RANK = { A: 0, B: 1, C: 2, X: 3 };
@@ -472,8 +618,10 @@ export function reasonString(m) {
     parts.push(`Vanna ${m.vannaTotal.toFixed(1)}M`);
   if (m.concRatio != null)
     parts.push(`집중도 ${m.concRatio.toFixed(1)}x`);
-  if (m.bb?.bb_position != null)
-    parts.push(`%B ${(m.bb.bb_position * 100).toFixed(0)}`);
+  if (m.bbLogPos != null)
+    parts.push(`로그%B ${(m.bbLogPos * 100).toFixed(0)}${m.bbTouch5d ? ` · 하단터치 ${m.bbTouchDate ?? ''}`.trimEnd() : ''}`);
+  if (m.trendOk != null && !m.trendMissing)
+    parts.push(m.trendOk ? '200일선↑' : '200일선↓');
   if (m.wallDistAtr != null)
     parts.push(`폭 ${m.wallDistAtr.toFixed(1)}ATR`);
   return parts.join(' · ');

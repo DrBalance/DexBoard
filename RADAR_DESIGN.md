@@ -1,6 +1,6 @@
 # Radar 탭 설계 문서 (테스트베드)
 
-> 상태: v0.4 (2026-09-12) — v0.3 구현 완료 후 의견 등급·신뢰도 가드·BB 수집 확대 반영. 변경 이력은 §8
+> 상태: v0.5 (2026-09-20) — 소수 정예 선별(로그 BB 하단 터치 필수), 아코디언 상세·시각화, 지수 섹션, 후보 일일 저장, 스케줄러 버그 수정. 변경 이력은 §8
 > 원칙: 기존 Screener / Structure 탭과 그 계산 코드는 손대지 않는다.
 > 저장된 옵션 데이터(daily_screener.strike_data)를 프론트에서 새 기준으로 재계산하는
 > 독립 탭을 만들어 테스트베드로 쓰고, 검증 후 한쪽을 폐기한다.
@@ -29,7 +29,7 @@ VIX(지수 변동성)가 압축되는 국면에서, 옵션 스큐가 크고 딜�
 | strike_data 항목 | strike, call_iv, put_iv, avg_iv, call_delta, call_oi, put_oi | IV·OI만 사용, 저장된 greeks는 무시 |
 | screened_tickers | spot_price, group_code | 현재가, 그룹 |
 | watchlist | company, market_cap, sector | 표시용 |
-| price_indicators (최신일) | close, bb_mid, bb_upper2, bb_lower2, bb_position, atr20 | 위치 기둥(%B), 콜월까지 ATR 폭, 사다리 20일선 |
+| price_indicators (최근 5일) | close, bb_mid, bb_upper2, bb_lower2, bb_position, atr20, **bb_log_pos, bb_log_low_pos, sma50, sma200** (v0.5 추가 컬럼) | 위치 게이트(로그 %B·하단 터치), 추세 필터(200일선), 콜월까지 ATR 폭, 사다리 |
 | KV snapshot:1min | vix (객체: price, changePct, …) | 헤더 현재 VIX — `vix.price` 사용 |
 | spy_daily_close | date, vix_close (최근 6일) | 헤더 VIX 5일 방향 (표시만, 등급 미반영) |
 | KV dex:spy | expirations[*].otm_put_iv 등 | SPY 스큐·GEX (체제) — 2차 |
@@ -96,8 +96,12 @@ VIX(지수 변동성)가 압축되는 국면에서, 옵션 스큐가 크고 딜�
 - `skewA`, `skewB`: 창 A / 창 B에 만기가 있는 옵션들의 OI 가중 skewRel
 - `vannaTotal`: 전 만기 vannaSupport 합 ($M). 정규화 없음 (거래대금 데이터 없음)
 - `vannaReach`: spot부터 위로 vannaSupport > 0 스트라이크가 연속되는 상단 (기존 vanna_limit 대응)
-- `bbPos`: price_indicators.bb_position. **위치 기둥에 사용** (v0.4, 표시 전용에서 승격)
-- `wallDistAtr`: `(callWall − spot) / atr20`. 회귀 기대 폭. 0.6 미만이면 거래비용에 먹히는 폭 → 위치 기둥 약 (v0.4)
+- `bbPos`: price_indicators.bb_position (선형 BB). v0.5부터 **표시 전용**으로 강등 — 판정은 아래 로그 BB 값으로
+- `bbLogPos`: 당일 종가의 **로그 BB(20, 2σ) %B**. 사용자 TradingView 지표(`Log BB + Inner Band`)와 동일 정의:
+  `basis = SMA20(ln close)`, `dev = stdev20(ln close)`, `%B = (ln close − (basis − 2·dev)) / (4·dev)` (v0.5)
+- `bbTouch5d`: 최근 5거래일 중 하루라도 `bb_log_low_pos ≤ 0` (저가가 로그 하단 2σ 밴드 이하). 차트의 초록 화살표 위치 (v0.5)
+- `trendOk`: `close > sma200`. 장기 상승 추세 안의 눌림만 본다 (v0.5). `sma50`은 표시·사다리용
+- `wallDistAtr`: `(callWall − spot) / atr20`. 회귀 기대 폭. 0.6 미만이면 거래비용에 먹히는 폭 → 등급 C (v0.4)
 - `reliableCount`: lowConf 아닌 만기 수. 0이면 제외 (v0.4)
 - `ivHv`: 보류 (HV는 Railway에만 있음, 2차)
 
@@ -112,13 +116,17 @@ VIX(지수 변동성)가 압축되는 국면에서, 옵션 스큐가 크고 딜�
 
 ### 2-6. 선별과 정렬 (결정: 점수 없음, 그룹 분리 없음)
 
-제외 트리 (순서대로, 걸리면 하단 별도 표시):
+제외 트리 (순서대로, 걸리면 하단 별도 표시). **v0.5: 위치·추세가 게이트로 격상** — 종목 수보다 상위권 신뢰성 우선(사용자 결정 2026-09-20):
 ```
-0. reliableCount = 0 (신뢰 만기 없음, 2-2 가드)  → [신뢰도 낮음]   (v0.4)
-1. keyExpiry 없음 (풋 스큐 양수 만기 없음) → [압축 시 매도 구조 / 해당 없음]
-2. vannaReach 없음 (spot 바로 위 vannaSupport <= 0) → [연료 없음]
-3. 소진 (2-7) → [소진]
+0. reliableCount = 0 (신뢰 만기 없음, 2-2 가드)          → [신뢰도 낮음]  (v0.4)
+1. 로그 BB 없음 (price_indicators 미수집)                 → [BB 없음]      (v0.5)
+2. 위치 부적합: NOT (bbTouch5d AND bbLogPos ≤ 0.25)       → [위치 부적합]  (v0.5)
+3. 추세 부적합: close ≤ sma200 (sma200 없으면 통과·배지)  → [추세 부적합]  (v0.5)
+4. keyExpiry 없음 (풋 스큐 양수 만기 없음)                → [콜 스큐 / 해당 없음]
+5. vannaReach 없음 (spot 바로 위 vannaSupport <= 0)       → [연료 없음]
+6. 소진 (2-7)                                             → [소진]
 ```
+하락 후보(콜 스큐 + BB 상단)는 검토 후 **도입하지 않기로 결정** (2026-09-20). 상승 메커니즘(딜러 숏풋·롱콜 되사기)과 구조가 비대칭이라 거울상이 성립하지 않는다.
 
 기본 정렬은 **의견순**(2-6c). 토글로 아래 **스큐순**(v0.3 정렬)도 선택 가능.
 스큐순 정렬 키 (위에서부터):
@@ -139,12 +147,17 @@ lowConf는 배지가 아니라 제외 사유로 격상 (2-2).
 4개 기둥을 각각 강(3)/중(2)/약(1)으로 채점하고 **가장 약한 기둥이 등급을 정한다**. 판단 불가(null)는 중으로 간주해
 A는 막되 C로 떨어뜨리지도 않는다. 임계값은 `PILLAR_THRESHOLDS`에 상수로 두며 전부 **잠정치** — 실데이터 보고 조정.
 
+**v0.5 변경**: 위치 기둥은 게이트(2-6 제외 트리 2·3번)로 빠지고, 등급은 스큐·연료·타이밍 3기둥 + 폭 조건으로 정한다.
+후보 목록에 남은 종목은 이미 "로그 BB 하단 터치 + 200일선 위"를 통과한 종목이다.
+- A 추가 조건 (잠정): `reliableCount ≥ 3`, `alignCount ≥ 3`. 미달이면 B로 강등.
+- `wallDistAtr < 0.6` → C (폭 부족). null이면 등급에 영향 없음.
+
 | 기둥 | 근거 | 강 | 중 | 약 |
 |---|---|---|---|---|
 | 스큐 (방향) | `keyExpiry.skewRel` | ≥ 10% | 3~10% | 0~3% |
 | 연료 (힘) | keyExpiry의 `vannaSupport`·`charmSupport` 부호 | 둘 다 양수 | 하나만 양수 | 둘 다 ≤ 0 |
-| 위치 (회귀 거리) | `bb_position` | ≤ 0.25 (20일선 −1σ 이하) | 0.25~0.5 (20일선 아래) | > 0.5 (20일선 위) |
-| | `wallDistAtr` | | | < 0.6이면 무조건 약 (폭 부족) |
+| ~~위치 (회귀 거리)~~ | v0.5: 게이트로 이동 (2-6). `bbTouch5d && bbLogPos ≤ 0.25` 아니면 제외 | | | |
+| 폭 | `wallDistAtr` | | | < 0.6이면 C (폭 부족) |
 | 타이밍 | `daysToKey` + keyExpiry 창 | 창 B · D-14 이내 | D-30 이내 | 그 외 |
 
 - %B ↔ σ 환산: BB(20,2σ)에서 `가격 − 20일선 = (4·%B − 2)σ`. %B 0.25 = −1σ, 0.5 = 20일선.
@@ -165,6 +178,15 @@ A는 막되 C로 떨어뜨리지도 않는다. 임계값은 `PILLAR_THRESHOLDS`�
 - Radar 탭: `group_code`에 MY가 포함된 종목은 **제외 트리와 무관하게 항상 분석하고 목록 최상단 "MY" 섹션에 고정**한다.
   제외 사유(콜 스큐, 연료 없음, 소진)에 해당하면 배지로만 표시한다. MY 섹션 내부 정렬은 일반 목록과 같은 키.
 - 한 종목이 MY와 다른 그룹에 동시에 속할 수 있다 (screened_tickers는 (ticker, group_code) 다중 행).
+
+### 2-8. 후보 일일 저장 `radar_daily_picks` (v0.5 결정)
+
+검증(창별 5일·10일 선행 수익률)을 하려면 **그날 화면에 뜬 후보 목록 자체**를 남겨야 한다. 임계값을 바꾸면 hist로 재계산한
+과거 후보가 달라지므로, 재계산이 아니라 스냅샷을 저장한다.
+- 테이블: `radar_daily_picks (date, ticker, grade, skew_rel, bb_log_pos, bb_touch_5d, vanna_total, key_expiry, days_to_key, call_wall, spot, engine_ver)` PK (date, ticker)
+- 저장 주체: Radar 탭이 로드 후 후보(등급 A/B/C, 제외 제외)를 `POST /api/v2/radar-picks`로 보낸다. 같은 날 재저장은 REPLACE.
+  프론트가 저장하는 이유: 엔진이 프론트에만 있고, Worker에 엔진을 복제하지 않는다(중복 금지). 하루 첫 로드 때만 저장.
+- 검증 시: TradingView MCP `get_ohlcv` 또는 `price_indicators.close`로 D+5·D+10 수익률 계산 (세션에서 Claude가 수행).
 
 ### 2-7. 소진 판정과 이력 테이블 (결정: 1차 필수)
 
@@ -188,15 +210,26 @@ A는 막되 C로 떨어뜨리지도 않는다. 임계값은 `PILLAR_THRESHOLDS`�
 
 ### 3-1. 목록
 - 헤더: 다음 OPEX, 현재 창(A/B), 지지창 D-n, VIX(현재 + 5일 방향 ▲/▼%), 정렬 토글(의견순/스큐순), 새로고침
-- 섹션 순서: [MY 고정] → [후보 목록 + 등급 카운트 A·B·C] → [제외: 소진 / 연료 없음 / 압축 시 매도 구조 / 신뢰도 낮음]
-- 컬럼: 종목(MY·구조 배지), **의견**(등급 + 기둥 점), 현재가, 핵심만기(D-n·창), skewRel, skewA/B, 정렬수, Vanna, 집중도, 콜월, BB(%B), 이유
+- 섹션 순서 (v0.5): [지수 SPY·QQQ 고정] → [MY 고정] → [후보 목록 + 등급 카운트 A·B·C] → [제외: 위치 부적합 / 추세 부적합 / 소진 / 연료 없음 / 콜 스큐 / 신뢰도 낮음 / BB 없음]
+  - 지수 섹션: `group_code`에 `INDEX`가 포함된 종목. 제외 사유와 무관하게 항상 표시(배지만). 사용자가 admin에서 INDEX 그룹에 SPY·QQQ 추가. 백엔드 변경 없음.
+  - 제외 섹션은 기본 접힘, 그룹별 개수만 표시.
+- 컬럼: 종목(지수·MY·구조 배지), **의견**(등급 + 기둥 점), 현재가, 핵심만기(D-n·창), 스큐, 정렬수, Vanna, 집중도, 콜월, BB, 이유
+- **미니 그래픽 (v0.5)**: 숫자 옆에 인라인 SVG
+  - 스큐: 중앙 0 기준 좌우 막대. 풋 스큐(+) 우측 초록, 콜 스큐(−) 좌측 빨강. 스케일 ±20% 고정
+  - BB: 하단~상단 띠(로그 2σ) 위에 종가 마커, 20일선 눈금, 최근 5일 저가 최저점 마커. 터치 시 띠 하단 강조
+  - Vanna·집중도: 길이 막대 (목록 내 최대값 기준 상대 스케일)
 
-### 3-2. 상세 (행 클릭, 같은 탭 안 패널)
-1. 가격 사다리: oiLowerEdge, BB 20일선, spot, vannaReach, 콜월, BB 2σ 상단, oiUpperEdge (풋 OI 최대·GEX 플립·EM은 미구현)
-2. 만기 표: 만기, DTE, 창, skewRel, vannaSupport, charmSupport, putOI↓, callOI↑, peakCallStrike, 총OI
-3. 맵: 만기 × 스트라이크 DEX 맵 + 만기별 콜 정점 마커 + 8주 합산 행. 합산 행에 콜월·oiUpperEdge·oiLowerEdge 세로선.
-   Vanna 지원 레이어 토글 (양수 = 초록 딜러 매수, 음수 = 빨강). M/m/G 삼중 마커 없음.
-4. (이력 쌓인 뒤) keyExpiry skewRel · vannaTotal 90일 추이선
+### 3-2. 상세 (v0.5: 행 아래 **아코디언**, 페이지 이동 없음)
+- 행 클릭 → 바로 아래 펼침. 동시에 최대 3개까지 열림(4번째 열면 가장 오래된 것 닫힘). 차트는 펼칠 때 그린다(지연 렌더).
+- 펼침 영역 안 소탭 4개:
+  1. **구조**: 가격 사다리(oiLowerEdge, 로그 BB 하단, sma200, sma50, 20일선, spot, vannaReach, 콜월, 로그 BB 상단, oiUpperEdge) + 기둥 원값 표
+  2. **EM**: 기존 `renderVannaDistChart`(options-charts.js) import. 입력은 Radar 엔진이 재계산한 8주 합산 스트라이크(dex·gex·vanna)
+  3. **히트맵**: 기존 `renderVannaHeatmap`(heatmap.js) import + 기존 DEX 맵(canvas). 만기 × 스트라이크
+  4. **만기표**: 만기, DTE, 창, skewRel, vannaSupport, charmSupport, putOI↓, callOI↑, peakCallStrike, 총OI
+- **부호 주의**: 기존 차트 모듈은 Vanna를 "양수 = IV 상승 시 딜러 매수"로 해석한다(§7-1). Radar 엔진 값(양수 = IV 하락 시 딜러 매수)을
+  넘길 때 **부호를 뒤집어** 전달해 색 의미를 기존 탭과 맞춘다. Charm도 동일. 엔진에 `gex` 계산 추가 필요(`gamma·OI·100·spot²·0.01/1e6`, 콜 양수·풋 음수).
+- 데이터는 chains 응답 + 엔진 재계산값만 사용. Railway `/analyze-symbol` 재호출 없음 (순위와 차트가 같은 데이터에서 나오도록).
+- (이력 쌓인 뒤) keyExpiry skewRel · vannaTotal 90일 추이선
 기존 Structure 탭의 다른 섹션은 넣지 않는다.
 
 ---
@@ -206,7 +239,8 @@ A는 막되 C로 떨어뜨리지도 않는다. 임계값은 `PILLAR_THRESHOLDS`�
 | 파일 | 변경 |
 |---|---|
 | cloudflare/src/worker.js | (1) `/d1/daily-screener`에 hist INSERT 추가 (2) `GET /api/v2/chains` 라우트 추가 (3) hist 보관 삭제 라우트 (4) v0.4: chains 응답에 `bb_mid`·`atr20`·`vix_hist` |
-| railway/index.js | 일일 크론 끝에 hist 보관 삭제 호출 1줄. v0.4: `collectBbMapIndicators(extraSymbols)` — 일일 수집 후 BB맵 종목 + 스크리너 전체(`symList`) 가격 지표 수집, 150ms 간격 |
+| railway/index.js | 일일 크론 끝에 hist 보관 삭제 호출 1줄. v0.4: `collectBbMapIndicators(extraSymbols)` — 일일 수집 후 BB맵 종목 + 스크리너 전체(`symList`) 가격 지표 수집, 150ms 간격. **v0.5**: (1) ET 17:30 수집 트리거를 세션 변경 블록 밖으로 이동 + AFTER 블록 플래그 분리 (§7-6 버그) (2) `collectPriceIndicators`에 로그 BB(`bb_log_pos`, `bb_log_low_pos`)·`sma50`·`sma200` 추가, Yahoo range 3mo → 1y |
+| cloudflare/src/worker.js (v0.5) | `/d1/price-indicators` 새 컬럼 4개 저장, `/api/v2/chains` 응답 `bb`에 새 컬럼 + `bb_hist[]`(최근 5일 `{date, bb_log_pos, bb_log_low_pos}`), `POST /api/v2/radar-picks` |
 | frontend/js/radar-engine.js | 신규. 계산 전용, DOM 없음 |
 | frontend/js/tabs/radar.js | 신규. 목록 + 상세 렌더 |
 | frontend/js/tabs.js | TAB_HANDLERS에 radar 등록 |
@@ -251,6 +285,17 @@ A는 막되 C로 떨어뜨리지도 않는다. 임계값은 `PILLAR_THRESHOLDS`�
       기각: IV rank·HV·콘탱고(데이터 없음), 상태 머신, 이중 유니버스, 5버킷, 1년 분위수화. 오류 지적: MR_UP 타깃 `min(SMA20, put_wall)`은 풋월이 현재가 아래라 틀림 → 콜월 사용.
       Positioning은 OI 개수 비율(그록)보다 Radar의 딜러 헷지 $M 계산이 더 정밀하므로 유지.
 
+### 결정됨 (v0.5 추가, 2026-09-20)
+- [x] 위치 조건은 기둥이 아니라 **게이트**: 최근 5거래일 저가가 로그 BB(20, 2σ) 하단 이하 + 당일 로그 %B ≤ 0.25. 아니면 제외
+- [x] BB 정의를 사용자 TradingView 지표(로그 스케일)와 동일하게. 선형 `bb_position`은 표시 전용
+- [x] 추세 필터: 종가 > 200일선 (Yahoo 1y 조회). 50일선은 표시용
+- [x] 하락 후보 도입하지 않음 (비대칭 구조)
+- [x] A 등급 추가 조건 reliableCount ≥ 3, alignCount ≥ 3 (잠정)
+- [x] 상세는 아코디언(최대 3개), 소탭 4개, 기존 차트 모듈 import(부호 반전), Railway 재호출 없음
+- [x] 지수 섹션 SPY·QQQ (`INDEX` 그룹, admin에서 사용자가 추가)
+- [x] `radar_daily_picks` 일일 스냅샷 (프론트가 하루 첫 로드 때 POST)
+- [x] TradingView MCP(2026-09-16 공식 베타, Essential+)는 앱 데이터원이 아니라 Claude 검증·보조 도구로만 사용 (옵션 데이터 없음, MCP 클라이언트 전용)
+
 ### 미결
 - [ ] 소진 판정의 Vanna 감소 임계 (이력 쌓인 뒤)
 - [ ] 기둥 임계값(`PILLAR_THRESHOLDS`) 조정 — BB 373종목 수집 후 A/B/C 분포 보고 결정
@@ -261,10 +306,11 @@ A는 막되 C로 떨어뜨리지도 않는다. 임계값은 `PILLAR_THRESHOLDS`�
 - [ ] 상세 사다리 미구현 항목 (풋 OI 최대, GEX 플립, keyExpiry EM), 90일 추이선
 
 ### 다음 작업
-1. Railway 배포 확인 → 다음 거래일 수집 후 BB 커버리지(8 → 373) 확인, 위치 기둥 `?` 소멸 확인
-2. A/B/C 분포 보고 임계값 조정
-3. hist가 5일 이상 쌓이면: 소진 판정 실동작 확인, `iv_chg_5d`·`skew_chg_5d` 컬럼 검토
-4. 창별 5일·10일 선행 수익률 검증 (벤치마크: %B만 쓴 스크리너 — 그록 제안)
+1. D1 ALTER(§6-1) → Worker 배포 → Railway 배포 → 스크리너 탭 "지금 수집"으로 전체 재수집 → chains `bb` 커버리지 ≈ 종목 수 확인
+2. admin에서 `INDEX` 그룹 생성 + SPY·QQQ 추가 (사용자)
+3. A/B/C 분포 보고 임계값 조정 (후보가 0이면 `bbLogPos ≤ 0.25` → 0.35 완화 검토, 5일 창은 유지)
+4. hist가 5일 이상 쌓이면: 소진 판정 실동작 확인
+5. `radar_daily_picks` 2주 이상 쌓이면 창별 5일·10일 선행 수익률 검증 (TradingView MCP 연결 시 세션에서 수행)
 
 
 ---
@@ -292,6 +338,21 @@ CREATE INDEX IF NOT EXISTS idx_dsh_date ON daily_screener_hist(date);
 ```
 실행: `cd cloudflare && npx wrangler d1 execute options-screener --remote --command "..."`.
 `date`는 Railway가 보내는 `updated_at`의 ET 날짜(YYYY-MM-DD). `spot_price`는 저장 시점 screened_tickers 값.
+
+v0.5 추가 (Worker 배포 **전에** 실행 — 컬럼이 없으면 기존 BB 수집 INSERT가 실패한다):
+```sql
+ALTER TABLE price_indicators ADD COLUMN bb_log_pos REAL;
+ALTER TABLE price_indicators ADD COLUMN bb_log_low_pos REAL;
+ALTER TABLE price_indicators ADD COLUMN sma50 REAL;
+ALTER TABLE price_indicators ADD COLUMN sma200 REAL;
+CREATE TABLE IF NOT EXISTS radar_daily_picks (
+  date TEXT NOT NULL, ticker TEXT NOT NULL, grade TEXT,
+  skew_rel REAL, bb_log_pos REAL, bb_touch_5d INTEGER, vanna_total REAL,
+  key_expiry TEXT, days_to_key INTEGER, call_wall REAL, spot REAL,
+  engine_ver TEXT, created_at TEXT,
+  PRIMARY KEY (date, ticker)
+);
+```
 
 ### 6-2. worker.js 변경 3곳
 1. `POST /d1/daily-screener` (현재 [worker.js:864](cloudflare/src/worker.js:864) 부근): `env.DB.batch([deleteStmt, ...insertStmts])` 앞에
@@ -327,6 +388,11 @@ export function tickerMetrics(t, calendar)         // → 2-4 필드 전부 + ex
 export function classify(m, prev /* 전일 tickerMetrics|null */) // → { exclude: null|'low_conf'|'call_skew'|'no_fuel'|'exhausted', badges:[] }
 export function sortCandidates(list)               // 2-6 스큐순 정렬 키
 export function opexCalendar(today)                // → { opex, nextOpex, window:'B'|'A', daysToSupport, windowOf(expiryDate) }
+// v0.5
+export function logBB(closes, lows, length = 20, mult = 2) // → { basis, upper, lower, pos, lowPos } 마지막 봉 기준. Railway와 동일 수식, 테스트 공유용
+export function positionGate(t)                       // t.bb, t.bb_hist → { ok, touch5d, logPos, reason: null|'no_bb'|'position' }
+export function trendGate(t)                          // → { ok, reason: null|'trend', missing: bool }
+export function aggregateStrikes(m)                   // 8주 합산 {strike, dex, gex, vanna, charm, callOI, putOI}[] — 기존 차트 모듈 입력용 (부호는 Radar 규약, 호출부에서 반전)
 // v0.4
 export const MIN_ATM_IV = 0.05
 export const PILLAR_THRESHOLDS                     // 2-6c 임계값
@@ -358,6 +424,10 @@ export function sortByOpinion(list, gradeOf)       // 등급 → sortCandidates 
 5. MY 그룹 종목이 제외 사유가 있어도 상단에 표시
 6. (v0.4) 후보 목록에 |skewRel| > 100% 종목 없음. 제외 목록에 "신뢰도 낮음" 그룹 표시
 7. (v0.4) BB 수집 확대 배포 후 `withBB`가 스크리너 종목 수와 근접 (2026-09-12 시점 8/373)
+8. (v0.5) 전체 재수집 후 chains `bb.bb_log_pos`·`sma200` 존재 종목 ≈ 종목 수. SPY 로그 %B가 TradingView 차트 값과 ±0.02 이내
+9. (v0.5) 후보 목록의 모든 종목이 `bbTouch5d = true`, `bbLogPos ≤ 0.25`, `close > sma200`
+10. (v0.5) Railway 재시작 없이 ET 17:30에 자동 수집이 실제로 실행됨 (`/screener-status` last_run 갱신)
+11. (v0.5) 행 클릭 시 아코디언 4개 소탭 렌더, EM·히트맵 색이 Structure 탭과 같은 의미
 
 ### 6-6. 로컬 실행
 - 프론트: `cd frontend && npm install && npm run dev` (Vite, :5173). `.claude/launch.json`에 등록됨 (`.gitignore` 대상)
@@ -407,6 +477,13 @@ export function sortByOpinion(list, gradeOf)       // 등급 → sortCandidates 
 - `price_indicators.avg_volume` 컬럼은 있으나 Railway가 채우지 않음 (항상 null).
 - `calcScreenerScore`([vanna_analyzer.js:545](railway/vanna_analyzer.js:545))는 "콜 스큐 양수"를 필수 조건으로 요구 → 풋 스큐 기반 스퀴즈 후보를 걸러냄. (Radar에서는 반대로 풋 스큐가 1순위)
 
+### 7-6. 2026-09-20 세션에서 발견 — 일일 수집 스케줄러가 작동하지 않음 (v0.5에서 수정)
+- [index.js:1655](railway/index.js:1655) ET 17:30 수집 트리거가 `if (session !== lastSession)` 블록 **안**에 있어 세션 변경 순간에만 평가됨 → 사실상 절대 실행 안 됨.
+  추가로 [index.js:1702](railway/index.js:1702) AFTER 진입 블록이 16:00에 `screenerDone = true`를 세워 이중으로 막힘. 2026-05-27부터 이 상태.
+- 결과: 전체 수집은 2026-09-08(수동 "지금 수집") 이후 없음. 이후 갱신은 장중 돌파 재분석분(하루 3~8종목)뿐. NVDA는 09-14 데이터.
+  BB 373종목 수집은 이 수집 완료에 체인되어 있어 함께 실행되지 않았음 (chains `bb` 13/394).
+- Radar뿐 아니라 Screener·Structure 탭도 같은 오래된 데이터를 보고 있었음.
+
 ### 7-5. 2026-09-12 세션에서 추가 발견
 - [vanna_analyzer.js:355](railway/vanna_analyzer.js:355) `atmIV = (atmCallIV + atmPutIV)/2` — 비유동 종목에서 CBOE의 깨진 IV(DBRG 0.030, CZR 0.027)를 그대로 저장. Radar는 `MIN_ATM_IV` 가드로 방어했으나 기존 Screener 탭의 iv_skew·atm_iv 표시는 그대로.
 - `spy_daily_close`에 **휴장일 행**이 있음 (2026-09-07 노동절 vix_close 15.30). 크론이 휴장일에도 저장. Radar VIX 5일 방향에 1일 오차. hist 검증 시 휴장일 필터 필요.
@@ -416,6 +493,13 @@ export function sortByOpinion(list, gradeOf)       // 등급 → sortCandidates 
 ---
 
 ## 8. 변경 이력
+
+### v0.5 (2026-09-20)
+- 선별: 위치·추세 게이트(로그 BB 하단 5일 터치 + 로그 %B ≤ 0.25 + 종가 > sma200), 3기둥 등급, A 추가 조건. 하락 후보 기각
+- 데이터: price_indicators에 `bb_log_pos`·`bb_log_low_pos`·`sma50`·`sma200`, Yahoo 1y, chains `bb_hist` 5일
+- 화면: 아코디언 상세(소탭 4: 구조·EM·히트맵·만기표, 기존 차트 모듈 import), 목록 미니 그래픽, 지수 섹션, 제외 섹션 접힘
+- 저장: `radar_daily_picks` + `POST /api/v2/radar-picks`
+- Railway: ET 17:30 수집 스케줄러 버그 수정 (§7-6)
 
 ### v0.4 (2026-09-12) — 커밋 `3dd690f`, `2978423`
 - 의견 등급(A/B/C/X)·의견순 정렬·기둥 점 표시 (2-6c)

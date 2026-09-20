@@ -358,14 +358,16 @@ export default {
           ${insertMode} INTO price_indicators
             (date, symbol, close, bb_mid, bb_upper1, bb_lower1,
              bb_upper2, bb_lower2, bb_position, atr5, atr20, vol_ratio,
-             avg_volume)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+             avg_volume, bb_log_pos, bb_log_low_pos, sma50, sma200)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         `).bind(
           r.date, r.symbol, r.close,
           r.bb_mid ?? null, r.bb_upper1 ?? null, r.bb_lower1 ?? null,
           r.bb_upper2 ?? null, r.bb_lower2 ?? null, r.bb_position ?? null,
           r.atr5 ?? null, r.atr20 ?? null, r.vol_ratio ?? null,
-          r.avg_volume ?? null
+          r.avg_volume ?? null,
+          // v0.5 (Radar): 로그 BB %B(종가·저가), SMA50/200 — ALTER TABLE 선행 필요 (RADAR_DESIGN §6-1)
+          r.bb_log_pos ?? null, r.bb_log_low_pos ?? null, r.sma50 ?? null, r.sma200 ?? null
         )
       );
       const CHUNK = 50;
@@ -948,7 +950,8 @@ export default {
           GROUP_CONCAT(DISTINCT st.group_code) as groups,
           MAX(st.spot_price) as spot_price,
           w.company, w.market_cap,
-          p.close as bb_close, p.bb_mid, p.bb_upper2, p.bb_lower2, p.bb_position, p.atr20
+          p.close as bb_close, p.bb_mid, p.bb_upper2, p.bb_lower2, p.bb_position, p.atr20,
+          p.date as bb_date, p.bb_log_pos, p.bb_log_low_pos, p.sma50, p.sma200
         FROM daily_screener d
         LEFT JOIN screened_tickers st ON st.ticker = d.ticker
         LEFT JOIN watchlist w ON w.ticker = d.ticker
@@ -970,13 +973,20 @@ export default {
             groups:     r.groups     ?? "",
             spot_price: r.spot_price ?? null,
             bb: (r.bb_close != null) ? {
-              close:       r.bb_close,
-              bb_mid:      r.bb_mid,
-              bb_upper2:   r.bb_upper2,
-              bb_lower2:   r.bb_lower2,
-              bb_position: r.bb_position,
-              atr20:       r.atr20,
+              date:           r.bb_date,
+              close:          r.bb_close,
+              bb_mid:         r.bb_mid,
+              bb_upper2:      r.bb_upper2,
+              bb_lower2:      r.bb_lower2,
+              bb_position:    r.bb_position,
+              atr20:          r.atr20,
+              // v0.5
+              bb_log_pos:     r.bb_log_pos     ?? null,
+              bb_log_low_pos: r.bb_log_low_pos ?? null,
+              sma50:          r.sma50          ?? null,
+              sma200:         r.sma200         ?? null,
             } : null,
+            bb_hist:  [],   // v0.5: 최근 5거래일 {date, bb_log_pos, bb_log_low_pos, close} 오름차순 (아래에서 채움)
             expiries: [],
           });
         }
@@ -1005,6 +1015,25 @@ export default {
           strikes,
         });
       }
+
+      // v0.5: 로그 BB 최근 5거래일 (하단 터치 판정용). 달력 12일 조회 후 종목별 마지막 5개
+      try {
+        const bh = await env.DB.prepare(`
+          SELECT symbol, date, close, bb_log_pos, bb_log_low_pos
+          FROM price_indicators
+          WHERE date >= date('now', '-12 days') AND bb_log_pos IS NOT NULL
+          ${symbolFilter ? "AND symbol = ?" : ""}
+          ORDER BY symbol ASC, date ASC
+        `).bind(...(symbolFilter ? [symbolFilter] : [])).all();
+        for (const r of (bh.results ?? [])) {
+          const t = tickerMap.get(r.symbol);
+          if (!t) continue;
+          t.bb_hist.push({ date: r.date, close: r.close, bb_log_pos: r.bb_log_pos, bb_log_low_pos: r.bb_log_low_pos });
+        }
+        for (const t of tickerMap.values()) {
+          if (t.bb_hist.length > 5) t.bb_hist = t.bb_hist.slice(-5);
+        }
+      } catch (_) { /* 컬럼 미생성 등 — bb_hist는 빈 배열 유지 */ }
 
       // 이력 데이터 (소진 판정용, ?days=N 시)
       let history = {};
@@ -1072,6 +1101,44 @@ export default {
         ...(daysParam >= 1 ? { history } : {}),
       };
       return json(response, 200, corsHeaders);
+    }
+
+    // ── POST /api/v2/radar-picks ──────────────────────────────────
+    // v0.5: Radar 탭이 그날 후보 목록을 스냅샷 저장 (검증용). x-cron-secret. 같은 날 재저장은 REPLACE.
+    // body: { date, engine_ver, picks: [{ticker, grade, skew_rel, bb_log_pos, bb_touch_5d, vanna_total,
+    //         key_expiry, days_to_key, call_wall, spot}] }
+    if (request.method === "POST" && path === "/api/v2/radar-picks") {
+      const secret = request.headers.get("x-cron-secret");
+      if (env.CRON_SECRET && secret !== env.CRON_SECRET) {
+        return json({ error: "Unauthorized" }, 401, corsHeaders);
+      }
+      let body;
+      try { body = await request.json(); } catch (_) { body = null; }
+      const picks = body?.picks;
+      const date  = body?.date;
+      if (!date || !Array.isArray(picks)) {
+        return json({ ok: false, error: "date, picks[] 필요" }, 400, corsHeaders);
+      }
+      const now = new Date().toISOString();
+      const stmts = picks.slice(0, 500).map(p =>
+        env.DB.prepare(`
+          INSERT OR REPLACE INTO radar_daily_picks
+            (date, ticker, grade, skew_rel, bb_log_pos, bb_touch_5d, vanna_total,
+             key_expiry, days_to_key, call_wall, spot, engine_ver, created_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        `).bind(
+          date, p.ticker, p.grade ?? null, p.skew_rel ?? null, p.bb_log_pos ?? null,
+          p.bb_touch_5d ? 1 : 0, p.vanna_total ?? null, p.key_expiry ?? null,
+          p.days_to_key ?? null, p.call_wall ?? null, p.spot ?? null,
+          body.engine_ver ?? null, now
+        )
+      );
+      let saved = 0;
+      for (let i = 0; i < stmts.length; i += 50) {
+        await env.DB.batch(stmts.slice(i, i + 50));
+        saved += Math.min(50, stmts.length - i);
+      }
+      return json({ ok: true, date, saved }, 200, corsHeaders);
     }
 
     // ── POST /d1/hist-retention ───────────────────────────────────
