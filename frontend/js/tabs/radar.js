@@ -101,12 +101,12 @@ function _maybeSaveDailyPicks() {
   }).catch(() => { /* 실패해도 화면엔 영향 없음, 다음 새로고침에서 재시도 */ });
 }
 
-// ── 제외 사유 라벨 (v0.5: 위치·추세 게이트 추가) ──────────────────
+// ── 제외 사유 라벨 (v0.5: 위치·추세 게이트, v0.6: 풋 벽 게이트 추가) ──
 const EXCLUDE_LABEL = {
   low_conf: '신뢰도 낮음', no_bb: 'BB 없음', position: '위치 부적합', trend: '추세 부적합',
-  call_skew: '콜 스큐', no_fuel: '연료 없음', exhausted: '소진',
+  put_wall: '풋벽 아래', call_skew: '콜 스큐', no_fuel: '연료 없음', exhausted: '소진',
 };
-const EXCLUDE_GROUP_ORDER = ['position', 'trend', 'call_skew', 'no_fuel', 'exhausted', 'no_bb', 'low_conf'];
+const EXCLUDE_GROUP_ORDER = ['position', 'trend', 'put_wall', 'call_skew', 'no_fuel', 'exhausted', 'no_bb', 'low_conf'];
 
 // ── 메인 렌더 ────────────────────────────────────────────────────
 function _render() {
@@ -122,7 +122,7 @@ function _render() {
   const indexList  = [];
   const myList     = [];
   const candidates = [];
-  const excGroups  = { low_conf: [], no_bb: [], position: [], trend: [], call_skew: [], no_fuel: [], exhausted: [] };
+  const excGroups  = { low_conf: [], no_bb: [], position: [], trend: [], put_wall: [], call_skew: [], no_fuel: [], exhausted: [] };
 
   for (const m of Object.values(_metrics)) {
     const t      = (_data?.tickers ?? []).find(x => x.symbol === m.symbol);
@@ -503,6 +503,7 @@ function _renderStructurePane(m) {
   const spot = m.spot_price;
   const ladderItems = [
     { label: 'OI 하단 경계', val: m.oiLowerEdge,  dir: 'down' },
+    { label: '풋벽',         val: m.putWall,      dir: m.putWall != null && spot != null ? (m.putWall < spot ? 'down' : 'up') : '' },
     { label: 'BB 20일선',    val: m.bb?.bb_mid,    dir: ''     },
     { label: '50일선',       val: m.bb?.sma50,     dir: ''     },
     { label: 'spot',         val: spot,            dir: 'spot' },
@@ -536,7 +537,8 @@ function _renderStructurePane(m) {
   const gateHtml = `
     <div class="radar-gate-row">위치 게이트: 로그%B <b>${m.bbLogPos != null ? (m.bbLogPos * 100).toFixed(0) : '—'}</b>
       (기준 ≤ ${(PILLAR_THRESHOLDS.bbLogMax * 100).toFixed(0)}) · 5일 하단터치 <b>${m.bbTouch5d ? `Y (${m.bbTouchDate ?? ''})` : 'N'}</b></div>
-    <div class="radar-gate-row">추세 게이트: ${m.trendMissing ? '200일선 데이터 없음' : (m.trendOk ? '<b class="up">200일선 위</b>' : '<b class="down">200일선 아래</b>')}</div>`;
+    <div class="radar-gate-row">추세 게이트: ${m.trendMissing ? '200일선 데이터 없음' : (m.trendOk ? '<b class="up">200일선 위</b>' : '<b class="down">200일선 아래</b>')}</div>
+    <div class="radar-gate-row">풋벽 게이트: 풋벽 <b>$${m.putWall ?? '—'}</b> · ${m.putWallMissing ? '풋 OI 데이터 없음' : (m.putWallOk ? '<b class="up">벽 위(재탈환)</b>' : '<b class="down">벽 아래</b>')}</div>`;
 
   return `
     <div class="radar-acc-cols">

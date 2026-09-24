@@ -293,11 +293,15 @@ export function tickerMetrics(t, calendar) {
   }
 
   // oiLowerEdge: 8주 합산 풋 OI를 spot 아래로 누적해 95% 도달 스트라이크
+  // putWall: 8주 합산 풋 OI 전체(스팟 위·아래 모두) 피크 스트라이크 — v0.6, 업로드 문서 §2-3 게이트
   const lowerOIMap = new Map();
+  const putOIMap = new Map();
   for (const e of w8) {
     for (const s of (e.strikes ?? [])) {
+      const poi = s.put_oi ?? 0;
+      putOIMap.set(s.strike, (putOIMap.get(s.strike) ?? 0) + poi);
       if (s.strike >= spot) continue;
-      lowerOIMap.set(s.strike, (lowerOIMap.get(s.strike) ?? 0) + (s.put_oi ?? 0));
+      lowerOIMap.set(s.strike, (lowerOIMap.get(s.strike) ?? 0) + poi);
     }
   }
   const lowerStrikes = [...lowerOIMap.keys()].sort((a, b) => b - a); // spot에서 아래로
@@ -306,6 +310,11 @@ export function tickerMetrics(t, calendar) {
   for (const k of lowerStrikes) {
     cumLower += lowerOIMap.get(k) ?? 0;
     if (cumLower >= totalPutOI * 0.95) { oiLowerEdge = k; break; }
+  }
+
+  let putWall = null, maxPutOI = -Infinity;
+  for (const [strike, oi] of putOIMap) {
+    if (oi > maxPutOI) { maxPutOI = oi; putWall = strike; }
   }
 
   // concRatio: 만기별 총 OI max / 최저 2개 평균 (OI 500 미만 만기는 분모 제외)
@@ -366,6 +375,8 @@ export function tickerMetrics(t, calendar) {
   // v0.5: 위치·추세 게이트 원값
   const pg = positionGate(t);
   const tg = trendGate(t);
+  // v0.6: 풋 벽 게이트 원값 (putWall은 위에서 계산)
+  const pwg = putWallGate({ spot_price: spot, putWall });
 
   return {
     symbol:       t.symbol,
@@ -378,6 +389,9 @@ export function tickerMetrics(t, calendar) {
     positionOk:   pg.ok,
     trendOk:      tg.ok,
     trendMissing: tg.missing,
+    putWall,
+    putWallOk:      pwg.ok,
+    putWallMissing: pwg.missing,
     expiries,
     callWall,
     alignCount,
@@ -430,9 +444,21 @@ export function trendGate(t) {
   return { ok, missing: false, reason: ok ? null : 'trend' };
 }
 
+// ─── v0.6: 풋 벽 게이트 (현가가 풋 OI 피크 스트라이크 위/재탈환 상태인지) ───
+// m: { spot_price, putWall } — putWall은 8주 합산 풋 OI 피크 스트라이크(위/아래 무관)
+// 업로드 문서 §2-3: 현가가 풋 밀집대 아래면 숏풋 감마가 하락 가속, 위/재탈환이면 커버 매수
+// putWall 없음(풋 OI 데이터 없음)이면 통과 + missing 표시 (trendGate와 동일 패턴)
+export function putWallGate(m) {
+  const spot = m?.spot_price;
+  const wall = m?.putWall;
+  if (spot == null || wall == null) return { ok: true, missing: true, reason: null };
+  const ok = spot >= wall;
+  return { ok, missing: false, reason: ok ? null : 'put_wall' };
+}
+
 // ─── 제외/분류 판정 ───────────────────────────────────────────────
 // prev: 전일 tickerMetrics (소진 판정용, null이면 이력 없음)
-// exclude: null | 'low_conf' | 'no_bb' | 'position' | 'trend' | 'call_skew' | 'no_fuel' | 'exhausted'
+// exclude: null | 'low_conf' | 'no_bb' | 'position' | 'trend' | 'put_wall' | 'call_skew' | 'no_fuel' | 'exhausted'
 export function classify(m, prev = null) {
   if (!m) return { exclude: 'call_skew', badges: [] };
 
@@ -450,6 +476,11 @@ export function classify(m, prev = null) {
   // 3. 추세 부적합: 종가 ≤ 200일선 (v0.5). sma200 없으면 통과하되 배지
   if (m.trendMissing) badges.push('200일선 없음');
   else if (!m.trendOk) return { exclude: 'trend', badges };
+
+  // 3.5 풋 벽 아래: 현가가 근월 풋 OI 피크 스트라이크(풋 벽) 아래 → 숏풋 감마가 하락을 키우는 쪽 (v0.6, 업로드 문서 §2-3)
+  //     현가가 풋 벽 위/재탈환 상태여야 커버 매수가 나온다. 데이터 없으면 통과하되 배지
+  if (m.putWallMissing) badges.push('풋벽 없음');
+  else if (!m.putWallOk) return { exclude: 'put_wall', badges };
 
   // 4. keyExpiry 없음 (풋 스큐 양수 만기 없음)
   if (!m.keyExpiry) return { exclude: 'call_skew', badges };
@@ -489,7 +520,7 @@ export function sortCandidates(list) {
 // ─── 기둥 채점과 의견 (병목 방식: 가장 약한 기둥이 등급을 정함) ───
 // 레벨: 3=강, 2=중, 1=약, null=판단 불가. 임계값은 잠정치.
 // v0.5: 위치는 기둥이 아니라 게이트(positionGate·trendGate → classify). 등급은 스큐·연료·타이밍·폭.
-export const ENGINE_VER = '0.5.0';
+export const ENGINE_VER = '0.6.0';
 
 export const PILLAR_THRESHOLDS = {
   skewStrong: 0.10, skewMid: 0.03,
@@ -622,6 +653,8 @@ export function reasonString(m) {
     parts.push(`로그%B ${(m.bbLogPos * 100).toFixed(0)}${m.bbTouch5d ? ` · 하단터치 ${m.bbTouchDate ?? ''}`.trimEnd() : ''}`);
   if (m.trendOk != null && !m.trendMissing)
     parts.push(m.trendOk ? '200일선↑' : '200일선↓');
+  if (m.putWall != null)
+    parts.push(`풋벽 $${m.putWall}${m.putWallOk ? ' 위' : ' 아래'}`);
   if (m.wallDistAtr != null)
     parts.push(`폭 ${m.wallDistAtr.toFixed(1)}ATR`);
   return parts.join(' · ');

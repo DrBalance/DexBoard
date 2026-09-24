@@ -3,7 +3,7 @@
 import {
   bsGreeks, strikeSupport, opexCalendar, expiryMetrics, tickerMetrics,
   pillars, opinion, sortByOpinion, classify,
-  logBB, positionGate, trendGate, aggregateStrikes, strikesPerExpiry, PILLAR_THRESHOLDS,
+  logBB, positionGate, trendGate, putWallGate, aggregateStrikes, strikesPerExpiry, PILLAR_THRESHOLDS,
 } from './radar-engine.js';
 
 // v0.5 게이트 통과용 BB 모의값 (로그 %B 0.15, 당일 저가가 하단 터치, 200일선 위)
@@ -284,6 +284,36 @@ function assert(label, cond, detail = '') {
     `callWall=${m?.callWall} wallDistAtr=${m?.wallDistAtr}`);
   const m2 = tickerMetrics({ symbol: 'T', spot_price: 100, expiries, bb: null }, cal);
   assert('atr20 없음 → wallDistAtr null', m2?.wallDistAtr === null);
+}
+
+// ── 테스트 9: putWall / putWallGate (v0.6, 업로드 문서 §2-3 풋 벽 게이트)
+{
+  console.log('\n[테스트 9] putWall · putWallGate');
+  assert('putWall 없음 → ok true, missing true', (() => {
+    const g = putWallGate({ spot_price: 100, putWall: null });
+    return g.ok === true && g.missing === true;
+  })());
+  assert('spot < 풋벽 → ok false', putWallGate({ spot_price: 100, putWall: 110 }).ok === false);
+  assert('spot >= 풋벽 → ok true', putWallGate({ spot_price: 100, putWall: 100 }).ok === true);
+
+  const mk = (strike, civ, piv, coi, poi) => ({ strike, call_iv: civ, put_iv: piv, avg_iv: (civ + piv) / 2, call_oi: coi, put_oi: poi });
+  const strikes = [mk(80, .42, .55, 3000, 9000), mk(90, .38, .48, 4000, 7000), mk(100, .33, .38, 5000, 5000),
+    mk(110, .30, .32, 6000, 1500), mk(120, .28, .30, 2000, 500)];
+  const cal = opexCalendar('2026-09-07');
+  const mkT = (strikesArr) => tickerMetrics({ symbol: 'W', spot_price: 100, bb: BB_OK, bb_hist: [],
+    expiries: [{ expiry_date: '2026-09-18', dte: 11, atm_iv: 0.35, strikes: strikesArr },
+               { expiry_date: '2026-11-02', dte: 56, atm_iv: 0.35, strikes: strikesArr }] }, cal);
+
+  const below = mkT(strikes); // 풋 OI 최대가 80(spot 아래) → 재탈환 상태
+  assert('풋 OI가 spot 아래 몰림 → putWall=80, spot(100) 위', below.putWall === 80 && below.putWallOk === true,
+    `putWall=${below.putWall} ok=${below.putWallOk}`);
+  assert("재탈환 상태는 classify에서 put_wall로 제외되지 않음", classify(below, null).exclude !== 'put_wall');
+
+  const heavyAbove = strikes.map(s => s.strike === 110 ? { ...s, put_oi: 50000 } : s);
+  const above = mkT(heavyAbove); // 풋 OI 최대가 110(spot 위) → 아직 풋벽 아래
+  assert('풋 OI가 spot 위 스트라이크에 집중 → putWall=110 > spot', above.putWall === 110 && above.putWallOk === false,
+    `putWall=${above.putWall} ok=${above.putWallOk}`);
+  assert("classify → 'put_wall'", classify(above, null).exclude === 'put_wall');
 }
 
 console.log(`\n결과: ${passed}개 통과 / ${passed + failed}개 중`);

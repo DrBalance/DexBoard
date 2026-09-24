@@ -1,6 +1,6 @@
 # Radar 탭 설계 문서 (테스트베드)
 
-> 상태: v0.5 (2026-09-20) — 소수 정예 선별(로그 BB 하단 터치 필수), 아코디언 상세·시각화, 지수 섹션, 후보 일일 저장, 스케줄러 버그 수정. 변경 이력은 §8
+> 상태: v0.6 (2026-09-25) — 풋 벽 게이트 추가(현가가 근월 풋 OI 피크 스트라이크 위/재탈환 상태인지). 변경 이력은 §8
 > 원칙: 기존 Screener / Structure 탭과 그 계산 코드는 손대지 않는다.
 > 저장된 옵션 데이터(daily_screener.strike_data)를 프론트에서 새 기준으로 재계산하는
 > 독립 탭을 만들어 테스트베드로 쓰고, 검증 후 한쪽을 폐기한다.
@@ -90,6 +90,7 @@ VIX(지수 변동성)가 압축되는 국면에서, 옵션 스큐가 크고 딜�
 - `alignCount`: 만기별 peakCallStrike가 callWall과 일치하는 만기 수. **5 이상 = "구조" 배지**
 - `oiUpperEdge`: 8주 합산 콜 OI를 spot 위로 누적해 95% 도달 스트라이크. **장기 상단** (판단 미사용, 표시만)
 - `oiLowerEdge`: 8주 합산 풋 OI를 spot 아래로 누적해 95% 도달 스트라이크. 범위 하단
+- `putWall`: 8주 합산 풋 OI 전체(spot 위·아래 무관) 피크 스트라이크. **게이트 전용** (판정은 아래 2-6 참고, v0.6)
 - `concRatio`: 만기별 총 OI(콜+풋)의 max / 최저 2개 평균. OI 500 미만 만기는 분모 후보 제외. 비정상 베팅 감지
 - `keyExpiry`: concRatio 최대 만기 중 skewRel > 0인 것. 없으면 skewRel × vannaSupport 최대 만기
 - `daysToKey`: keyExpiry.dte
@@ -122,11 +123,14 @@ VIX(지수 변동성)가 압축되는 국면에서, 옵션 스큐가 크고 딜�
 1. 로그 BB 없음 (price_indicators 미수집)                 → [BB 없음]      (v0.5)
 2. 위치 부적합: NOT (bbTouch5d AND bbLogPos ≤ 0.25)       → [위치 부적합]  (v0.5)
 3. 추세 부적합: close ≤ sma200 (sma200 없으면 통과·배지)  → [추세 부적합]  (v0.5)
+3.5. 풋벽 아래: spot < putWall (풋 OI 데이터 없으면 통과·배지) → [풋벽 아래]  (v0.6)
 4. keyExpiry 없음 (풋 스큐 양수 만기 없음)                → [콜 스큐 / 해당 없음]
 5. vannaReach 없음 (spot 바로 위 vannaSupport <= 0)       → [연료 없음]
 6. 소진 (2-7)                                             → [소진]
 ```
 하락 후보(콜 스큐 + BB 상단)는 검토 후 **도입하지 않기로 결정** (2026-09-20). 상승 메커니즘(딜러 숏풋·롱콜 되사기)과 구조가 비대칭이라 거울상이 성립하지 않는다.
+
+**v0.6 풋벽 게이트 근거**: 업로드된 「풋 헤비 + 볼 압축 시 스퀴즈 조건」 메모의 핵심 조건 — "현가가 풋 밀집대 아래에 있으면 숏풋 감마가 하락을 키우는 쪽, 위로 안착·재탈환하면 숏풋이 무력화되며 커버 매수". `oiLowerEdge`(95% 누적 경계, 표시 전용)와 달리 `putWall`은 spot 위·아래를 가리지 않고 8주 합산 풋 OI가 가장 두꺼운 스트라이크를 찾은 뒤 spot과 비교한다 — spot이 그 스트라이크 아래면 아직 딜러 숏풋 감마가 최대인 구간(위험), 위/동일이면 재탈환(지지)으로 본다. 문서의 다른 조건(딥 OTM 재해보험 구분, 콜 계단식 연속성, 커버드콜 concRatio 편입)은 검토 후 **이번 라운드에 도입하지 않기로 결정** (2026-09-25, 사용자 판단) — 2번(집중도/커버드콜 편입) 보류.
 
 기본 정렬은 **의견순**(2-6c). 토글로 아래 **스큐순**(v0.3 정렬)도 선택 가능.
 스큐순 정렬 키 (위에서부터):
@@ -222,7 +226,7 @@ A는 막되 C로 떨어뜨리지도 않는다. 임계값은 `PILLAR_THRESHOLDS`�
 ### 3-2. 상세 (v0.5: 행 아래 **아코디언**, 페이지 이동 없음)
 - 행 클릭 → 바로 아래 펼침. 동시에 최대 3개까지 열림(4번째 열면 가장 오래된 것 닫힘). 차트는 펼칠 때 그린다(지연 렌더).
 - 펼침 영역 안 소탭 4개:
-  1. **구조**: 가격 사다리(oiLowerEdge, 로그 BB 하단, sma200, sma50, 20일선, spot, vannaReach, 콜월, 로그 BB 상단, oiUpperEdge) + 기둥 원값 표
+  1. **구조**: 가격 사다리(oiLowerEdge, **풋벽**(v0.6), 로그 BB 하단, sma200, sma50, 20일선, spot, vannaReach, 콜월, 로그 BB 상단, oiUpperEdge) + 기둥 원값 표 + 게이트 표시(위치·추세·풋벽)
   2. **EM**: 기존 `renderVannaDistChart`(options-charts.js) import. 입력은 Radar 엔진이 재계산한 8주 합산 스트라이크(dex·gex·vanna)
   3. **히트맵**: 기존 `renderVannaHeatmap`(heatmap.js) import + 기존 DEX 맵(canvas). 만기 × 스트라이크
   4. **만기표**: 만기, DTE, 창, skewRel, vannaSupport, charmSupport, putOI↓, callOI↑, peakCallStrike, 총OI
@@ -296,14 +300,20 @@ A는 막되 C로 떨어뜨리지도 않는다. 임계값은 `PILLAR_THRESHOLDS`�
 - [x] `radar_daily_picks` 일일 스냅샷 (프론트가 하루 첫 로드 때 POST)
 - [x] TradingView MCP(2026-09-16 공식 베타, Essential+)는 앱 데이터원이 아니라 Claude 검증·보조 도구로만 사용 (옵션 데이터 없음, MCP 클라이언트 전용)
 
+### 결정됨 (v0.6 추가, 2026-09-25)
+- [x] 풋벽 게이트 추가: `putWall`(8주 합산 풋 OI 피크 스트라이크, spot 위·아래 무관) 기준 `spot >= putWall` 아니면 제외. 풋 OI 데이터 없으면 통과 + 배지 (positionGate·trendGate와 동일 패턴)
+- [x] 제외 트리에 3.5번으로 삽입 (추세 게이트 다음, keyExpiry 체크 전)
+- [x] 업로드 문서의 나머지 조건(딥OTM 재해보험 구분, 콜 계단식 연속성 점수화, concRatio의 커버드콜 기둥/A조건 편입)은 이번 라운드 보류 — 사용자 결정, concRatio는 기존대로 keyExpiry 선택용 컬럼 유지
+
 ### 미결
+- [ ] 풋벽 게이트로 후보가 과도하게 줄어드는지 데이터로 확인 (임계 `spot >= putWall`은 잠정, 등호 경계값 조정 여지)
 - [ ] 소진 판정의 Vanna 감소 임계 (이력 쌓인 뒤)
 - [ ] 기둥 임계값(`PILLAR_THRESHOLDS`) 조정 — BB 373종목 수집 후 A/B/C 분포 보고 결정
 - [ ] "Vanna 여력" (VIX·IV가 더 빠질 공간) — IV 이력 필요. 그록 지적, hist 이후
 - [ ] SPY 체제 판단 소스 (VIX만 vs VIX + SPY GEX 부호)
 - [ ] 실적일 소스 (Finnhub)
 - [ ] hist 보관 기간 90일이 적정한지
-- [ ] 상세 사다리 미구현 항목 (풋 OI 최대, GEX 플립, keyExpiry EM), 90일 추이선
+- [ ] 상세 사다리 미구현 항목 (GEX 플립, keyExpiry EM), 90일 추이선. 풋 OI 최대(putWall)는 v0.6에서 구현됨
 
 ### 다음 작업
 1. D1 ALTER(§6-1) → Worker 배포 → Railway 배포 → 스크리너 탭 "지금 수집"으로 전체 재수집 → chains `bb` 커버리지 ≈ 종목 수 확인
@@ -392,6 +402,8 @@ export function opexCalendar(today)                // → { opex, nextOpex, wind
 export function logBB(closes, lows, length = 20, mult = 2) // → { basis, upper, lower, pos, lowPos } 마지막 봉 기준. Railway와 동일 수식, 테스트 공유용
 export function positionGate(t)                       // t.bb, t.bb_hist → { ok, touch5d, logPos, reason: null|'no_bb'|'position' }
 export function trendGate(t)                          // → { ok, reason: null|'trend', missing: bool }
+// v0.6
+export function putWallGate(m)                        // m.spot_price, m.putWall → { ok, missing, reason: null|'put_wall' }
 export function aggregateStrikes(m)                   // 8주 합산 {strike, dex, gex, vanna, charm, callOI, putOI}[] — 기존 차트 모듈 입력용 (부호는 Radar 규약, 호출부에서 반전)
 // v0.4
 export const MIN_ATM_IV = 0.05
@@ -493,6 +505,13 @@ export function sortByOpinion(list, gradeOf)       // 등급 → sortCandidates 
 ---
 
 ## 8. 변경 이력
+
+### v0.6 (2026-09-25)
+- 업로드 문서(풋 헤비+볼 압축 스퀴즈 조건) 검토 반영: 풋벽 게이트 추가
+- 선별: `putWall`(8주 합산 풋 OI 피크 스트라이크) 계산 + `spot >= putWall` 게이트, 제외 트리 3.5번, 제외 그룹 "풋벽 아래"
+- 화면: 상세 사다리에 풋벽 항목, 게이트 표시 줄 추가, 이유 문자열에 풋벽 위/아래 표시
+- 엔진 버전 0.5.0 → 0.6.0 (radar_daily_picks 스냅샷 구분용)
+- 보류: concRatio(집중도)의 등급 기둥/A조건 편입은 이번 라운드 미적용 (사용자 결정)
 
 ### v0.5 (2026-09-20)
 - 선별: 위치·추세 게이트(로그 BB 하단 5일 터치 + 로그 %B ≤ 0.25 + 종가 > sma200), 3기둥 등급, A 추가 조건. 하락 후보 기각
